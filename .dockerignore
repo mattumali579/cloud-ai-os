@@ -1,0 +1,36 @@
+# Build context is the repo root; the Dockerfile only COPYs
+# pyproject.toml, src/, config/, db/, scripts/ — everything else is
+# excluded here to keep the context small and secrets out of the image.
+
+.git
+.gitignore
+.github
+
+# Secrets — never in an image layer.
+.env
+.env.*
+!.env.example
+
+# Python cruft
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+*.egg-info
+.venv
+venv
+
+# Not needed inside the image
+tests
+docs
+contracts
+cloudflare
+n8n
+infra
+README.md
+
+# Runtime/local data
+backups
+data
+node_modules
+.wrangler

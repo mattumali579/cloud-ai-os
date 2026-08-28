@@ -1,0 +1,64 @@
+# Cloud AI OS — ORACLE A1 production stack (ARCHITECTURE.md §14).
+# NO db service: DATABASE_URL in .env points at Supabase (free tier, 500 MB budget).
+# restart: always everywhere — the VM may reboot or be recreated; compute is disposable.
+#
+#   docker compose -f infra/docker/docker-compose.oracle.yml up -d --build
+#
+# Memory plan (2 OCPU / 12 GB assumption, ~8 GB planned):
+#   api 512m + worker 1g + n8n 768m = ~2.3 GB limits → ample headroom for OS/Docker.
+
+name: cloudos
+
+services:
+  agent-api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    image: cloudos:oracle
+    command: ["uvicorn", "cloudos.api.app:app", "--host", "0.0.0.0", "--port", "8080"]
+    restart: always
+    ports:
+      - "8080:8080"
+    env_file:
+      - path: ../../.env         # REQUIRED on the VM — bootstrap.sh creates it.
+        required: true           # fail loudly if missing: DATABASE_URL (Supabase) lives here.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 512m
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    image: cloudos:oracle
+    command: ["python", "-m", "cloudos.worker"]
+    restart: always
+    env_file:
+      - path: ../../.env
+        required: true
+    mem_limit: 1g
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    env_file:
+      - path: ../../.env         # supplies N8N_BASIC_AUTH_USER / N8N_BASIC_AUTH_PASSWORD
+        required: true
+    environment:
+      # SQLite backend (contract §12) — n8n state lives in the n8n-data volume,
+      # captured by infra/oracle/backup.sh. NOT in Supabase.
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      NODE_OPTIONS: "--max-old-space-size=512"
+      GENERIC_TIMEZONE: "UTC"
+    volumes:
+      - n8n-data:/home/node/.n8n
+    mem_limit: 768m
+
+volumes:
+  n8n-data:

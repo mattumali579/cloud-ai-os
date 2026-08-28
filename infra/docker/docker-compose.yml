@@ -1,0 +1,91 @@
+﻿# Cloud AI OS â€” LOCAL Phase 1 stack (ARCHITECTURE.md Â§14, Â§15 P1).
+# db + agent-api + worker + n8n. Local postgres â€” on Oracle, Supabase is the DB
+# (see docker-compose.oracle.yml).
+#
+#   docker compose -f infra/docker/docker-compose.yml up -d
+#
+# Memory plan (2 OCPU / 12 GB Oracle assumption, ~8 GB planned budget):
+#   api 512m + worker 1g + n8n 768m + db 512m = ~2.8 GB limits â†’ generous headroom.
+
+name: cloudos
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cloudos
+      POSTGRES_PASSWORD: cloudos
+      POSTGRES_DB: cloudos
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloudos -d cloudos"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m
+
+  agent-api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    image: cloudos:dev
+    command: ["uvicorn", "cloudos.api.app:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8080:8080"
+    env_file:
+      - path: ../../.env
+        required: false          # copy .env.example â†’ .env; compose still validates without it
+    environment:
+      # Inside the compose network the DB host is the service name, not localhost.
+      DATABASE_URL: postgresql://cloudos:cloudos@db:5432/cloudos
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 512m
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    image: cloudos:dev
+    command: ["python", "-m", "cloudos.worker"]
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://cloudos:cloudos@db:5432/cloudos
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 1g
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    ports:
+      - "5679:5678"   # host 5679: 5678 is commonly taken by other local n8n instances
+    env_file:
+      - path: ../../.env         # supplies N8N_BASIC_AUTH_USER / N8N_BASIC_AUTH_PASSWORD
+        required: false
+    environment:
+      # SQLite backend by default (contract Â§12) â€” protects the Supabase 500 MB budget.
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      # NOTE: n8n v1+ replaced basic-auth env with owner-account setup; vars kept per
+      # contract Â§12 and are harmless if ignored â€” first launch prompts for owner account.
+      NODE_OPTIONS: "--max-old-space-size=512"
+      GENERIC_TIMEZONE: "UTC"
+    volumes:
+      - n8n-data:/home/node/.n8n
+    mem_limit: 768m
+
+volumes:
+  db-data:
+  n8n-data:

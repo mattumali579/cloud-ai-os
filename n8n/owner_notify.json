@@ -1,0 +1,139 @@
+{
+  "name": "CloudOS Owner Notify",
+  "active": false,
+  "nodes": [
+    {
+      "id": "0113e001-0001-4001-8001-000000000001",
+      "name": "Owner Notify Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        0
+      ],
+      "webhookId": "0113e001-aaaa-4bbb-8ccc-000000000001",
+      "notes": "Production URL: POST <n8n base>/webhook/owner-notify. Expected JSON body: {severity, code, message, meta}. Callers: agent-api/worker notify (NOTIFY_WEBHOOK_URL, ARCHITECTURE.md section 4), daily_ops IF-branch, health_alert forwarder. n8n webhooks carry no auth of their own -- keep this on the internal docker network or front it with the Cloudflare ingress worker's HMAC-validated /hook/* route (section 13).",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "owner-notify",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "0113e001-0002-4002-8002-000000000002",
+      "name": "Format Notification",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        0
+      ],
+      "notes": "Defensive formatting: every field falls back to a safe default so a malformed or empty payload still produces a deliverable notification instead of a failed execution. meta is stringified and truncated to stay under Discord's 2000-char content limit.",
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "severity",
+              "value": "={{ (($json.body || {}).severity || 'info').toString() }}"
+            },
+            {
+              "name": "code",
+              "value": "={{ (($json.body || {}).code || 'UNSPECIFIED').toString() }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ (($json.body || {}).message || 'No message provided (malformed or empty payload)').toString() }}"
+            },
+            {
+              "name": "meta_json",
+              "value": "={{ JSON.stringify(($json.body || {}).meta || {}).slice(0, 1200) }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ '[' + (($json.body || {}).severity || 'info').toString().toUpperCase() + '] ' + (($json.body || {}).code || 'UNSPECIFIED') + ' -- ' + (($json.body || {}).message || 'No message provided (malformed or empty payload)') + '\\nmeta: ' + JSON.stringify(($json.body || {}).meta || {}).slice(0, 1200) }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0113e001-0003-4003-8003-000000000003",
+      "name": "Send Owner Notification (PLACEHOLDER)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        40,
+        0
+      ],
+      "notes": "PLACEHOLDER notification transport -- point env OWNER_ALERT_WEBHOOK_URL at YOUR channel and adjust the body to match: (1) Discord webhook: works as-is, body {content}. (2) Slack incoming webhook: change jsonBody to {text: $json.text}. (3) Telegram: URL https://api.telegram.org/bot<token>/sendMessage, body {chat_id, text: $json.text}. (4) Email/other: swap this node for the matching n8n node (e.g. emailSend) keeping the same input fields (severity, code, message, meta_json, text). onError=continue so a delivery failure still returns 200 to the caller; failed deliveries remain visible in n8n's execution list.",
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OWNER_ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: $json.text }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "0113e001-0004-4004-8004-000000000004",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        280,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"ok\": true }",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Owner Notify Webhook": {
+      "main": [
+        [
+          {
+            "node": "Format Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Notification": {
+      "main": [
+        [
+          {
+            "node": "Send Owner Notification (PLACEHOLDER)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Owner Notification (PLACEHOLDER)": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "CloudOSOwnNotify"
+}

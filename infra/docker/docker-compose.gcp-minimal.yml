@@ -1,0 +1,51 @@
+# Cloud AI OS — GCP e2-micro DISASTER-RECOVERY DEGRADED MODE ONLY (ARCHITECTURE.md §14).
+#
+# This is NOT active-active and there is NO cross-cloud replication. It exists solely
+# so that if the Oracle A1 VM is unavailable AND cannot be recreated promptly, a free
+# GCP e2-micro (~1 GB usable RAM) can run the core loop against the same Supabase DB.
+#
+# Degraded means: agent-api + worker ONLY. No n8n (no workflow automation, no
+# owner-notify fan-out beyond the notifications table), no local postgres.
+# See infra/gcp/README.md and infra/oracle/RUNBOOK.md.
+#
+#   docker compose -f infra/docker/docker-compose.gcp-minimal.yml up -d --build
+#
+# Memory plan: api 256m + worker 512m = 768m limits ≈ ~1 GB total footprint.
+
+name: cloudos
+
+services:
+  agent-api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    image: cloudos:gcp
+    command: ["uvicorn", "cloudos.api.app:app", "--host", "0.0.0.0", "--port", "8080"]
+    restart: always
+    ports:
+      - "8080:8080"
+    env_file:
+      - path: ../../.env         # DATABASE_URL = the SAME Supabase as Oracle; ENVIRONMENT=gcp
+        required: true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 256m
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    image: cloudos:gcp
+    command: ["python", "-m", "cloudos.worker"]
+    restart: always
+    env_file:
+      - path: ../../.env
+        required: true
+    environment:
+      # Half the RAM of Oracle — keep the worker single-threaded in degraded mode.
+      WORKER_CONCURRENCY: "1"
+    mem_limit: 512m

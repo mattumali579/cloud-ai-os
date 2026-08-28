@@ -11,7 +11,26 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _find_repo_root() -> Path:
+    """Locate the directory holding db/migrations and config/.
+
+    Source checkout: src/cloudos/config.py → parents[2] is the repo root.
+    Installed (Docker: cloudos in site-packages, assets copied to /app):
+    CLOUDOS_ROOT env wins, else fall back to a CWD that has db/migrations.
+    """
+    env = os.environ.get("CLOUDOS_ROOT")
+    if env:
+        return Path(env).resolve()
+    src_root = Path(__file__).resolve().parents[2]
+    if (src_root / "db" / "migrations").is_dir():
+        return src_root
+    cwd = Path.cwd()
+    if (cwd / "db" / "migrations").is_dir():
+        return cwd
+    return src_root
+
+
+REPO_ROOT = _find_repo_root()
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -31,6 +50,15 @@ def _int(name: str, default: int) -> int:
 
 def _str(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
+
+
+def _path(name: str, default: Path) -> str:
+    """Path-valued env var; relative values resolve against REPO_ROOT, not CWD."""
+    v = os.environ.get(name)
+    if v is None or v.strip() == "":
+        return str(default)
+    p = Path(v.strip())
+    return str(p if p.is_absolute() else REPO_ROOT / p)
 
 
 @dataclass(frozen=True)
@@ -96,15 +124,15 @@ def get_settings() -> Settings:
         allow_paid_infrastructure=_bool("ALLOW_PAID_INFRASTRUCTURE", False),
         max_daily_paid_ai_usd=0.0,
         max_monthly_paid_ai_usd=0.0,
-        free_model_allowlist_path=_str(
-            "FREE_MODEL_ALLOWLIST_PATH", str(REPO_ROOT / "config" / "free_model_allowlist.json")
+        free_model_allowlist_path=_path(
+            "FREE_MODEL_ALLOWLIST_PATH", REPO_ROOT / "config" / "free_model_allowlist.json"
         ),
         cf_account_id=_str("CF_ACCOUNT_ID"),
         cf_workers_ai_token=_str("CF_WORKERS_AI_TOKEN"),
         workers_ai_daily_budget=_int("WORKERS_AI_DAILY_BUDGET", 9000),
         gemini_api_key=_str("GEMINI_API_KEY"),
         gemini_daily_request_budget=_int("GEMINI_DAILY_REQUEST_BUDGET", 200),
-        privacy_config_path=_str("PRIVACY_CONFIG_PATH", str(REPO_ROOT / "config" / "privacy.yaml")),
+        privacy_config_path=_path("PRIVACY_CONFIG_PATH", REPO_ROOT / "config" / "privacy.yaml"),
         second_brain_path=_str("SECOND_BRAIN_PATH"),
         second_brain_git_url=_str("SECOND_BRAIN_GIT_URL"),
         supabase_db_budget_mb=_int("SUPABASE_DB_BUDGET_MB", 500),

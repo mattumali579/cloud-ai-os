@@ -1,0 +1,135 @@
+{
+  "name": "CloudOS Health Alert",
+  "active": false,
+  "nodes": [
+    {
+      "id": "hea17001-0001-4001-8001-000000000001",
+      "name": "Health Alert Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        0
+      ],
+      "webhookId": "hea17001-aaaa-4bbb-8ccc-000000000001",
+      "notes": "Production URL: POST <n8n base>/webhook/health-alert. Called by the Cloudflare ingress worker's scheduled health cron when GET origin /healthz fails (ARCHITECTURE.md section 13). Payload shape is Agent 7's; this flow is tolerant of any/malformed body. Same auth note as owner-notify: keep internal or front with the HMAC-validated Cloudflare /hook/* route.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "health-alert",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "hea17001-0002-4002-8002-000000000002",
+      "name": "Format Health Alert",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        0
+      ],
+      "notes": "Normalizes the Cloudflare report into the standard {severity, code, message, meta} envelope. Defaults keep a malformed/empty payload deliverable: severity=critical, code=ORIGIN_DOWN.",
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "severity",
+              "value": "={{ (($json.body || {}).severity || 'critical').toString() }}"
+            },
+            {
+              "name": "code",
+              "value": "={{ (($json.body || {}).code || 'ORIGIN_DOWN').toString() }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ (($json.body || {}).message || ('Cloudflare health cron reports the origin is DOWN (healthz failed)' + ((($json.body || {}).origin) ? ' for ' + ($json.body || {}).origin : ''))).toString() }}"
+            },
+            {
+              "name": "meta_json",
+              "value": "={{ JSON.stringify(Object.assign({ source: 'n8n.health_alert' }, (typeof ($json.body || {}).meta === 'object' && ($json.body || {}).meta) || {}, { report: ($json.body || {}) })).slice(0, 1200) }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "hea17001-0003-4003-8003-000000000003",
+      "name": "Forward To Owner Notify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        40,
+        0
+      ],
+      "notes": "Forwards the normalized envelope to the owner_notify workflow's webhook (env NOTIFY_WEBHOOK_URL) so ALL notification-transport configuration lives in exactly one place (owner_notify's placeholder node). owner_notify must be ACTIVE. onError=continue so the Cloudflare cron still gets a 200 and does not retry-storm; a failed forward stays visible in n8n's execution list.",
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOTIFY_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ severity: $json.severity, code: $json.code, message: $json.message, meta: JSON.parse($json.meta_json) }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "hea17001-0004-4004-8004-000000000004",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        280,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"ok\": true }",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Health Alert Webhook": {
+      "main": [
+        [
+          {
+            "node": "Format Health Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Health Alert": {
+      "main": [
+        [
+          {
+            "node": "Forward To Owner Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Forward To Owner Notify": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "CloudOSHealthAlr"
+}

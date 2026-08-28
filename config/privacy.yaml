@@ -24,3 +24,11 @@ external_ai:
     - "**/.env*"
     - "**/*.key"
     - "**/*.pem"
+    # -- appended by Agent 10 (extend-only; contract keys unchanged) --
+    - "**/id_rsa*"
+    - "**/id_ed25519*"
+    - "**/*.p12"
+    - "**/*.pfx"
+    - "**/service-account*.json"
+    - "**/credentials.json"
+    - "**/*.kdbx"

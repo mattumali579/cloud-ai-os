@@ -1,0 +1,9 @@
+{
+  "name": "cloudos-ingress",
+  "private": true,
+  "type": "module",
+  "description": "Marker file so node:test can import src/index.js as an ES module. No dependencies, no build step; wrangler does not use this file.",
+  "scripts": {
+    "test": "node --test test/index.test.mjs"
+  }
+}
