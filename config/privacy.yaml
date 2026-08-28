@@ -1,0 +1,26 @@
+# Privacy classification for external AI routing. Deterministic — never AI-decided.
+# Contract keys are FIXED (ARCHITECTURE.md §10). Agent 10 / owner may extend the glob
+# lists; do not rename keys.
+
+default_label: internal
+frontmatter_key: privacy
+internal_external_ok_key: external_ok
+
+external_ai:
+  # Files matching `allowed` classify as PUBLIC → eligible for free external AI.
+  allowed:
+    - "architecture/**"
+    - "public_research/**"
+    - "agents/public/**"
+    - "knowledge/public/**"
+  # Files matching `blocked` classify as SENSITIVE → never sent to external AI.
+  blocked:
+    - "personal/**"
+    - "secrets/**"
+    - "financial/**"
+    - "credentials/**"
+    - "private/**"
+    - "02 Journals/**"
+    - "**/.env*"
+    - "**/*.key"
+    - "**/*.pem"
