@@ -140,6 +140,28 @@ def block(conn: Any, job_id: Any, error_code: ErrorCode | str | None, error: Opt
     conn.commit()
 
 
+DEFER_SQL = (
+    "UPDATE jobs SET status = 'queued', error_code = %s, error = %s, "
+    "run_at = now() + make_interval(mins => %s), "
+    "locked_by = NULL, locked_at = NULL, started_at = NULL "
+    "WHERE id = %s"
+)
+
+
+def defer(conn: Any, job_id: Any, minutes: int, error_code: ErrorCode | str | None, note: Optional[str]) -> str:
+    """Preserve the task: back to 'queued' with a future run_at.
+
+    Unlike fail(), attempts are NOT incremented — a deferral (subscription
+    quota window, missing login) is not a failure of the job itself, and the
+    task must survive any number of deferrals rather than ever spending money
+    (SUBSCRIPTION_PROVIDERS.md).
+    """
+    with conn.cursor() as cur:
+        cur.execute(DEFER_SQL, (_code_str(error_code), _clip_error(note), max(1, int(minutes)), job_id))
+    conn.commit()
+    return JobStatus.QUEUED.value
+
+
 def enqueue(
     conn: Any,
     type: str,  # noqa: A002 — parameter name pinned by contract §8

@@ -33,21 +33,41 @@ class ErrorCode(str, Enum):
     MODEL_NOT_ALLOWED = "MODEL_NOT_ALLOWED"
     PRIVACY_BLOCKED = "PRIVACY_BLOCKED"
     SECRET_DETECTED = "SECRET_DETECTED"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    BILLING_RISK = "BILLING_RISK"
     DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
+class ProviderState(str, Enum):
+    """Reported state of a subscription AI provider (SUBSCRIPTION_PROVIDERS.md)."""
+
+    AVAILABLE_SUBSCRIPTION = "AVAILABLE_SUBSCRIPTION"
+    QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    UNAVAILABLE = "UNAVAILABLE"
+    BILLING_RISK = "BILLING_RISK"
+
+
 # Error codes that mean "do not retry — fail closed, notify the owner".
+# BILLING_RISK is here on purpose: it means money COULD move; only the owner
+# may clear it. QUOTA_EXHAUSTED is deliberately NOT here anymore — a plan
+# allowance refills, so the task is preserved and deferred instead of blocked.
 FAIL_CLOSED_CODES = frozenset(
     {
         ErrorCode.LIMIT_REACHED,
-        ErrorCode.QUOTA_EXHAUSTED,
         ErrorCode.PAID_DISABLED,
         ErrorCode.PRIVACY_BLOCKED,
         ErrorCode.SECRET_DETECTED,
+        ErrorCode.BILLING_RISK,
     }
 )
+
+# Error codes that mean "preserve the task and retry after the quota/auth state
+# changes" — requeued with a future run_at, attempts NOT incremented, never a
+# paid fallback.
+DEFER_CODES = frozenset({ErrorCode.QUOTA_EXHAUSTED, ErrorCode.AUTH_REQUIRED})
 
 
 class CloudOSError(Exception):

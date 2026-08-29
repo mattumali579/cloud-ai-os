@@ -186,6 +186,21 @@ def list_runs(limit: int = 50) -> list[dict]:
     return [to_jsonable(r) for r in rows]
 
 
+def provider_status_rows() -> list[dict]:
+    """Subscription provider observability rows. Contains NO credentials —
+    auth_mode is a label (e.g. 'subscription_oauth'), never a token."""
+    sql = (
+        "SELECT provider, auth_mode, provider_type, state, last_success, "
+        "last_auth_validation, task_count, last_failure_reason, cooldown_until, "
+        "updated_at FROM provider_status ORDER BY provider"
+    )
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, ())
+            rows = cur.fetchall()
+    return [to_jsonable(r) for r in rows]
+
+
 def quota_today() -> list[dict]:
     sql = (
         "SELECT provider, day, requests, units FROM quota_usage "

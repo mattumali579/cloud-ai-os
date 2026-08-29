@@ -133,20 +133,40 @@ async def list_runs(limit: int = Query(default=50, ge=1, le=200)) -> dict:
 
 @app.get("/v1/quota", dependencies=[authed])
 async def quota() -> dict:
-    settings = get_settings()
+    """Daily usage + provider state. Keeps the {usage, budgets, fail_closed}
+    shape (n8n daily_ops reads it); budgets are now informational counters —
+    hard limits live with each subscription plan, not here."""
     usage = store.quota_today()
-    budgets = {
-        "workers_ai": settings.workers_ai_daily_budget,  # neurons/day (units)
-        "gemini": settings.gemini_daily_request_budget,  # requests/day
-    }
-    by_provider = {row.get("provider"): row for row in usage}
+    providers = store.provider_status_rows()
     fail_closed = {
-        "workers_ai": int(by_provider.get("workers_ai", {}).get("units", 0) or 0)
-        >= budgets["workers_ai"],
-        "gemini": int(by_provider.get("gemini", {}).get("requests", 0) or 0)
-        >= budgets["gemini"],
+        row.get("provider"): row.get("state")
+        in ("QUOTA_EXHAUSTED", "AUTH_REQUIRED", "BILLING_RISK")
+        for row in providers
     }
-    return {"usage": usage, "budgets": budgets, "fail_closed": fail_closed}
+    return {"usage": usage, "budgets": {}, "fail_closed": fail_closed, "providers": providers}
+
+
+@app.get("/v1/providers", dependencies=[authed])
+async def providers(probe: bool = Query(default=False)) -> dict:
+    """Subscription provider observability. probe=true runs a live (passive,
+    no-AI-call) auth probe and refreshes stored rows."""
+    live = None
+    if probe:
+        try:
+            from cloudos.router import probe_all
+
+            live = [
+                {
+                    "provider": s.provider,
+                    "state": s.state.value,
+                    "auth_mode": s.auth_mode,
+                    "detail": s.detail,
+                }
+                for s in probe_all()
+            ]
+        except Exception:  # noqa: BLE001 — router absent: stored rows still serve
+            live = None
+    return {"providers": store.provider_status_rows(), "probe": live}
 
 
 # ---------------------------------------------------------------- webhooks

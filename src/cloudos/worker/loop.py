@@ -19,7 +19,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from cloudos.config import get_settings
-from cloudos.contracts import CloudOSError, ErrorCode, FAIL_CLOSED_CODES, JobStatus
+from cloudos.contracts import (
+    CloudOSError,
+    DEFER_CODES,
+    ErrorCode,
+    FAIL_CLOSED_CODES,
+    JobStatus,
+)
 from cloudos.notify import notify_owner
 
 from . import handlers, queue
@@ -133,6 +139,39 @@ class Worker:
                     "job %s (%s) BLOCKED [%s]: %s", job_id, job_type, exc.code.value, exc.message
                 )
                 return JobStatus.BLOCKED.value
+            if exc.code in DEFER_CODES:
+                # SUBSCRIPTION_PROVIDERS.md: preserve the task, retry after the
+                # quota/auth state changes — never a paid fallback, never a
+                # burned attempt.
+                settings = get_settings()
+                minutes = (
+                    settings.ai_retry_after_auth_minutes
+                    if exc.code is ErrorCode.AUTH_REQUIRED
+                    else settings.ai_retry_after_quota_minutes
+                )
+                minutes = int(exc.details.get("retry_after_minutes") or minutes)
+                queue.defer(conn, job_id, minutes, exc.code, exc.message)
+                write_event(
+                    conn,
+                    "warning",
+                    "worker",
+                    exc.code.value,
+                    f"job {job_id} ({job_type}) deferred {minutes}m: {exc.message}",
+                    {"job_id": str(job_id), "job_type": job_type, "details": exc.details},
+                )
+                if exc.code is ErrorCode.AUTH_REQUIRED:
+                    notify_owner(
+                        conn,
+                        "warning",
+                        exc.code,
+                        f"AI provider login required — job {job_id} deferred {minutes}m",
+                        {"job_id": str(job_id), "job_type": job_type, "details": exc.details},
+                    )
+                log.warning(
+                    "job %s (%s) DEFERRED %dm [%s]: %s",
+                    job_id, job_type, minutes, exc.code.value, exc.message,
+                )
+                return JobStatus.QUEUED.value
             status = queue.fail(conn, job, exc.code, exc.message)
             log.warning(
                 "job %s (%s) error [%s] → %s: %s",
