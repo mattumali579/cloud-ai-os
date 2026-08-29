@@ -16,6 +16,7 @@ import httpx
 
 from cloudos.config import get_settings
 from cloudos.contracts import CloudOSError, ErrorCode, PrivacyLabel, RouteRequest
+from cloudos.worker.task_exec import handle_task_run
 
 log = logging.getLogger("cloudos.worker.handlers")
 
@@ -146,6 +147,7 @@ def handle_notify_flush(payload: dict) -> dict:
 
 HANDLERS: dict[str, Callable[[dict], dict]] = {
     "noop": handle_noop,
+    "task.run": handle_task_run,
     "ai.generate": handle_ai_generate,
     "sb.reindex": handle_sb_reindex,
     "retention.prune": handle_retention_prune,
