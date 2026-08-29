@@ -9,3 +9,5 @@ backups/
 data/
 node_modules/
 .wrangler/
+# runtime logs, not source
+logs/
