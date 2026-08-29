@@ -11,6 +11,7 @@ name: cloudos
 
 services:
   db:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: cloudos
@@ -28,6 +29,7 @@ services:
     mem_limit: 512m
 
   agent-api:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile
@@ -53,6 +55,7 @@ services:
     mem_limit: 512m
 
   worker:
+    profiles: ["container-worker"]
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile
