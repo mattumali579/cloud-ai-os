@@ -4,7 +4,6 @@ No network. The IMAP and Discord boundaries are exercised through their pure
 helpers and a stubbed transport, so a broken payload shape or a dedup
 regression is caught here rather than by a missing phone notification.
 """
-import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -171,3 +170,80 @@ def test_long_subject_is_truncated_for_discord(monkeypatch):
     result = classify("payment received", "payment received", "bank@x.example", {}, ())
     notifier.send_email_alert("https://discord.example/hook", message, result)
     assert len(captured["p"]["embeds"][0]["title"]) <= 256
+
+
+# ------------------------------------------------- end-to-end run() loop ---
+
+def _msg(uid, mid, subject, sender, snippet):
+    return mailbox.Message(
+        uid=uid, message_id=mid, subject=subject, sender=sender,
+        received=datetime.now(timezone.utc), snippet=snippet, headers={},
+    )
+
+
+@pytest.fixture
+def wired(tmp_path, monkeypatch):
+    """run() with a fake mailbox and a recording Discord transport."""
+    from cloudos.email_alerts import main as main_mod
+
+    sent = []
+    monkeypatch.setattr(notifier, "_post",
+                        lambda url, payload: (sent.append(payload), 204)[1])
+    monkeypatch.setattr(main_mod, "STATE_PATH", tmp_path / "seen.json")
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/hook")
+    monkeypatch.delenv("CLOUDOS_NOTIFY_URL", raising=False)
+    monkeypatch.delenv("CLOUDOS_NOTIFY_TOKEN", raising=False)
+    monkeypatch.setenv("EMAIL_ADDRESS", "matt.umali579@gmail.com")
+    monkeypatch.setenv("EMAIL_APP_PASSWORD", "not-a-real-password")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr("sys.argv", ["email-alerts"])
+    return main_mod, sent
+
+
+INBOX = [
+    _msg("1", "<pay@x>", "Nathan Lott paid you $35.00", "venmo@venmo.com",
+         "Nathan Lott paid you $35.00. Money credited to your Venmo account."),
+    _msg("2", "<news@x>", "The Best Books of September",
+         "barnesandnoble@e.barnesandnoble.com", "Fiction, nonfiction, YA."),
+]
+
+
+def test_run_alerts_once_and_never_again(wired, monkeypatch):
+    main_mod, sent = wired
+    monkeypatch.setattr("cloudos.email_alerts.mailbox.fetch_recent",
+                        lambda *a, **k: list(INBOX))
+
+    assert main_mod.run() == 0
+    assert len(sent) == 1, "only the payment should have alerted"
+    assert "Nathan Lott" in sent[0]["embeds"][0]["title"]
+
+    # Same mailbox, second run: the dedup file must suppress a repeat.
+    assert main_mod.run() == 0
+    assert len(sent) == 1, "the same email was sent twice"
+
+
+def test_run_reports_a_dead_mailbox_instead_of_going_quiet(wired, monkeypatch):
+    main_mod, sent = wired
+
+    def boom(*a, **k):
+        raise OSError("[AUTHENTICATIONFAILED] Invalid credentials")
+
+    monkeypatch.setattr("cloudos.email_alerts.mailbox.fetch_recent", boom)
+    # Exit code 1 is what makes the workflow step fail and fire the Discord
+    # "watcher failed" notice. Returning 0 here would be a silent outage.
+    assert main_mod.run() == 1
+
+
+def test_dry_run_sends_nothing(wired, monkeypatch):
+    main_mod, sent = wired
+    monkeypatch.setattr("cloudos.email_alerts.mailbox.fetch_recent",
+                        lambda *a, **k: list(INBOX))
+    monkeypatch.setattr("sys.argv", ["email-alerts", "--dry-run"])
+    assert main_mod.run() == 0
+    assert sent == []
+
+
+def test_missing_credentials_fail_loudly(wired, monkeypatch):
+    main_mod, _sent = wired
+    monkeypatch.setenv("EMAIL_APP_PASSWORD", "")
+    assert main_mod.run() == 1
