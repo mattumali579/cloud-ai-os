@@ -29,7 +29,19 @@ from typing import Iterable, Mapping, Optional
 # --- Category signals ------------------------------------------------------
 
 MONEY_RE = re.compile(
-    r"\b(?:paid you|sent you \$|payment (?:received|failed|declined|due)|"
+    # Real billing mail almost never writes "payment failed" as two
+    # adjacent words -- it writes "your payment of $842.00 failed" or
+    # "payment for invoice 41 was declined". Requiring adjacency silently
+    # missed every one of those, which is the most expensive class of mail
+    # to miss. Let the amount or reference sit in between, but only for
+    # unambiguous failure outcomes; "received"/"due" stay adjacent so a
+    # phrase like "payment options are due for review" cannot trip it.
+    r"\b(?:paid you|sent you \$|"
+    r"payment[^.\n]{0,40}?(?:failed|declined|unsuccessful|"
+    r"(?:was|could) not be processed)|"
+    r"(?:could not|couldn'?t|unable to|failed to) "
+    r"(?:process|complete|charge)[^.\n]{0,40}?payment|"
+    r"payment (?:received|due)|"
     r"you(?:'ve| have) been paid|refund(?:ed)?|deposit(?:ed)?|"
     r"past due|overdue (?:balance|invoice|payment)|invoice due|"
     r"card (?:declined|expired)|insufficient funds|direct deposit)\b",

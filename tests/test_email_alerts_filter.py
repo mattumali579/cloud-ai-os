@@ -6,6 +6,8 @@ mail rather than invented examples is that invented spam is always easy to
 reject; the mail that actually causes false positives is a marketing blast
 whose snippet happens to say "they understood the assignment".
 """
+import pytest
+
 from cloudos.email_alerts.filter import classify
 
 # Headers a normal mailing-list/marketing sender carries.
@@ -168,3 +170,42 @@ def test_empty_message_is_safe():
     result = classify("", "", "", {}, OWNER)
     assert result.important is False
     assert result.score == 0
+
+
+class TestPaymentFailureWording:
+    """Money mail is the most expensive category to miss, and real senders
+    never use the adjacent phrasing the first version of the rule required."""
+
+    @pytest.mark.parametrize(
+        "subject, body",
+        [
+            ("Your payment of $842.00 failed",
+             "We could not process your rent payment. Act by Sept 1."),
+            ("Payment for invoice 41 was declined", "Please update your card."),
+            ("We were unable to process your payment",
+             "Your card on file was rejected."),
+            ("Your payment was unsuccessful", "Please try another method."),
+            ("Payment declined", "Card ending 4242 was declined."),
+        ],
+    )
+    def test_real_payment_failures_alert(self, subject, body):
+        result = classify(subject, body, "billing@vendor.com", {},
+                          owner_addresses=())
+        assert result.important, f"missed a payment failure: {subject!r}"
+        assert result.label == "money"
+
+    @pytest.mark.parametrize(
+        "subject, body, headers",
+        [
+            # "payment ... due" must stay adjacent or this becomes a false alarm.
+            ("Your payment options are due for review",
+             "Update your saved cards at your convenience.",
+             {"list-unsubscribe": "<https://x.com/u>"}),
+            ("Manage your payment methods",
+             "You can add or remove a card anytime.", {}),
+        ],
+    )
+    def test_payment_admin_chatter_stays_quiet(self, subject, body, headers):
+        result = classify(subject, body, "billing@saas.com", headers,
+                          owner_addresses=())
+        assert not result.important, f"false alarm on: {subject!r}"
