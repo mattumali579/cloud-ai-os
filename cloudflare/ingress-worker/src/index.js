@@ -157,11 +157,68 @@ export async function routeRequest(request, env, fetchImpl = globalThis.fetch) {
     return handleHook(request, env, fetchImpl);
   }
 
+  if (path === "/notify" && request.method === "POST") {
+    return handleNotify(request, env, fetchImpl);
+  }
+
   if (path === "/api" || path.startsWith("/api/")) {
     return handleApi(request, url, env, fetchImpl);
   }
 
   return errorResponse("VALIDATION_ERROR", "route not found", { path }, 404);
+}
+
+/**
+ * Relay an arbitrary Discord payload from an authenticated cloud caller.
+ *
+ * Exists so DISCORD_WEBHOOK_URL lives in exactly one place. The scheduled
+ * email watcher (GitHub Actions) sends its alerts through here instead of
+ * holding a second copy of the webhook: one secret, one place to rotate it,
+ * and the Worker's own heartbeat already proves the path is alive.
+ */
+async function handleNotify(request, env, fetchImpl) {
+  const auth = request.headers.get("Authorization") || "";
+  const expected = `Bearer ${env.AGENT_API_TOKEN}`;
+  if (!env.AGENT_API_TOKEN || !timingSafeEqualStr(auth, expected)) {
+    return errorResponse("VALIDATION_ERROR", "invalid or missing bearer token", {}, 401);
+  }
+  if (!env.DISCORD_WEBHOOK_URL) return configError("DISCORD_WEBHOOK_URL");
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return errorResponse("VALIDATION_ERROR", "body must be JSON", {}, 400);
+  }
+
+  const hasContent = typeof payload?.content === "string" && payload.content.trim() !== "";
+  const hasEmbeds = Array.isArray(payload?.embeds) && payload.embeds.length > 0;
+  if (!hasContent && !hasEmbeds) {
+    return errorResponse(
+      "VALIDATION_ERROR",
+      "payload needs a non-empty content string or embeds array",
+      {},
+      400,
+    );
+  }
+
+  // Forward only the fields Discord needs. Anything else the caller sent
+  // (including anything that could @-mention everyone) is dropped.
+  const outbound = {};
+  if (hasContent) outbound.content = String(payload.content).slice(0, 2000);
+  if (hasEmbeds) outbound.embeds = payload.embeds.slice(0, 10);
+  outbound.allowed_mentions = { parse: [] };
+
+  const result = await sendToDiscord(env, outbound, fetchImpl);
+  if (!result.sent) {
+    return errorResponse(
+      "DEPENDENCY_UNAVAILABLE",
+      "discord delivery failed",
+      { failure: result.failure, status: result.status },
+      502,
+    );
+  }
+  return jsonResponse(result);
 }
 
 async function handleHeartbeat(request, env, fetchImpl) {
@@ -299,6 +356,41 @@ export function formatChicagoTimestamp(date = new Date()) {
   return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute} ${CHICAGO_TIME_ZONE}`;
 }
 
+/**
+ * POST an already-built payload to DISCORD_WEBHOOK_URL. Never throws.
+ * Shared by the cron heartbeat and the authenticated /notify relay so there is
+ * exactly one piece of code that knows the webhook URL.
+ */
+export async function sendToDiscord(env, payload, fetchImpl = globalThis.fetch) {
+  if (!env.DISCORD_WEBHOOK_URL) {
+    return { sent: false, failure: "not_configured", status: null };
+  }
+  try {
+    const webhookUrl = new URL(env.DISCORD_WEBHOOK_URL);
+    webhookUrl.searchParams.set("wait", "true");
+    const response = await fetchImpl(webhookUrl.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return { sent: false, failure: "non_2xx", status: response.status };
+    }
+    let discordMessageId = null;
+    try {
+      const receipt = await response.json();
+      discordMessageId = String(receipt.id || "") || null;
+    } catch {
+      // Discord returns JSON with wait=true; delivery is still accepted on 204.
+    }
+    return { sent: true, status: response.status, discord_message_id: discordMessageId };
+  } catch (error) {
+    const failure = error && error.name === "TimeoutError" ? "timeout" : "fetch_failed";
+    return { sent: false, failure, status: null };
+  }
+}
+
 /** Send the laptop-independent heartbeat straight to Discord. Never throws. */
 export async function runHeartbeat(
   env,
@@ -308,50 +400,29 @@ export async function runHeartbeat(
   const timestamp = formatChicagoTimestamp(now());
   const message = `Cloud heartbeat OK — ${timestamp}`;
 
-  if (!env.DISCORD_WEBHOOK_URL) {
-    console.error("cloud heartbeat failed", JSON.stringify({ failure: "not_configured", timestamp }));
-    return { sent: false, failure: "not_configured", status: null, timestamp };
-  }
-
-  try {
-    const webhookUrl = new URL(env.DISCORD_WEBHOOK_URL);
-    webhookUrl.searchParams.set("wait", "true");
-    const response = await fetchImpl(webhookUrl.toString(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: message }),
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      console.error(
-        "cloud heartbeat failed",
-        JSON.stringify({ failure: "non_2xx", status: response.status, timestamp }),
-      );
-      return { sent: false, failure: "non_2xx", status: response.status, timestamp };
-    }
-    let discordMessageId = null;
-    try {
-      const receipt = await response.json();
-      discordMessageId = String(receipt.id || "") || null;
-    } catch {
-      // Discord normally returns JSON with wait=true; delivery is still accepted on 204.
-    }
-    console.log(
-      "cloud heartbeat sent",
-      JSON.stringify({ status: response.status, timestamp, discord_message_id: discordMessageId }),
+  const result = await sendToDiscord(env, { content: message }, fetchImpl);
+  if (!result.sent) {
+    console.error(
+      "cloud heartbeat failed",
+      JSON.stringify({ failure: result.failure, status: result.status, timestamp }),
     );
-    return {
-      sent: true,
-      status: response.status,
-      timestamp,
-      message,
-      discord_message_id: discordMessageId,
-    };
-  } catch (error) {
-    const failure = error && error.name === "TimeoutError" ? "timeout" : "fetch_failed";
-    console.error("cloud heartbeat failed", JSON.stringify({ failure, timestamp }));
-    return { sent: false, failure, status: null, timestamp };
+    return { sent: false, failure: result.failure, status: result.status, timestamp };
   }
+  console.log(
+    "cloud heartbeat sent",
+    JSON.stringify({
+      status: result.status,
+      timestamp,
+      discord_message_id: result.discord_message_id,
+    }),
+  );
+  return {
+    sent: true,
+    status: result.status,
+    timestamp,
+    message,
+    discord_message_id: result.discord_message_id,
+  };
 }
 
 /**

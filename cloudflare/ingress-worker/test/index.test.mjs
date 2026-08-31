@@ -366,3 +366,103 @@ test("scheduled: notification endpoint failure is swallowed (next cron retries)"
   assert.equal(result.healthy, false);
   assert.equal(result.notified, false);
 });
+
+/* -------------------------------------------------------------- /notify */
+
+function notifyRequest(body, token = TOKEN) {
+  return new Request("https://w.example.com/notify", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+}
+
+test("POST /notify requires the agent bearer token", async () => {
+  const fetch = mockFetch();
+  const resp = await routeRequest(notifyRequest({ content: "hi" }, "wrong"), baseEnv, fetch);
+  assert.equal(resp.status, 401);
+  assert.equal(fetch.calls.length, 0); // Discord never contacted
+});
+
+test("POST /notify relays content to the Discord webhook", async () => {
+  const fetch = mockFetch(() =>
+    new Response(JSON.stringify({ id: "999" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  const resp = await routeRequest(notifyRequest({ content: "important mail" }), baseEnv, fetch);
+  assert.equal(resp.status, 200);
+  const json = await resp.json();
+  assert.equal(json.sent, true);
+  assert.equal(json.discord_message_id, "999");
+  assert.ok(fetch.calls[0].url.startsWith(baseEnv.DISCORD_WEBHOOK_URL));
+  const sent = JSON.parse(fetch.calls[0].init.body);
+  assert.equal(sent.content, "important mail");
+});
+
+test("POST /notify relays embeds", async () => {
+  const fetch = mockFetch(() => new Response(JSON.stringify({ id: "1" }), { status: 200 }));
+  const resp = await routeRequest(
+    notifyRequest({ embeds: [{ title: "MATH 1550 homework due" }] }),
+    baseEnv,
+    fetch,
+  );
+  assert.equal(resp.status, 200);
+  const sent = JSON.parse(fetch.calls[0].init.body);
+  assert.equal(sent.embeds[0].title, "MATH 1550 homework due");
+});
+
+test("POST /notify strips mentions so a relayed alert cannot ping everyone", async () => {
+  const fetch = mockFetch(() => new Response(JSON.stringify({ id: "1" }), { status: 200 }));
+  await routeRequest(
+    notifyRequest({ content: "@everyone hi", allowed_mentions: { parse: ["everyone"] } }),
+    baseEnv,
+    fetch,
+  );
+  const sent = JSON.parse(fetch.calls[0].init.body);
+  assert.deepEqual(sent.allowed_mentions, { parse: [] });
+});
+
+test("POST /notify rejects an empty payload", async () => {
+  const fetch = mockFetch();
+  const resp = await routeRequest(notifyRequest({ content: "   " }), baseEnv, fetch);
+  assert.equal(resp.status, 400);
+  assert.equal(fetch.calls.length, 0);
+});
+
+test("POST /notify rejects non-JSON", async () => {
+  const fetch = mockFetch();
+  const resp = await routeRequest(notifyRequest("not json at all"), baseEnv, fetch);
+  assert.equal(resp.status, 400);
+  assert.equal(fetch.calls.length, 0);
+});
+
+test("POST /notify fails closed when the webhook is not configured", async () => {
+  const fetch = mockFetch();
+  const resp = await routeRequest(
+    notifyRequest({ content: "hi" }),
+    { ...baseEnv, DISCORD_WEBHOOK_URL: "" },
+    fetch,
+  );
+  assert.equal(resp.status, 500);
+  const json = await resp.json();
+  assert.equal(json.error.details.missing, "DISCORD_WEBHOOK_URL");
+});
+
+test("POST /notify surfaces a Discord rejection as 502", async () => {
+  const fetch = mockFetch(() => new Response("rate limited", { status: 429 }));
+  const resp = await routeRequest(notifyRequest({ content: "hi" }), baseEnv, fetch);
+  assert.equal(resp.status, 502);
+  const json = await resp.json();
+  assert.equal(json.error.details.status, 429);
+});
+
+test("GET /notify is not a route (404)", async () => {
+  const resp = await routeRequest(
+    new Request("https://w.example.com/notify", { method: "GET" }),
+    baseEnv,
+    mockFetch(),
+  );
+  assert.equal(resp.status, 404);
+});

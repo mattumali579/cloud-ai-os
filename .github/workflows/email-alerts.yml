@@ -1,0 +1,115 @@
+name: Important email alerts
+
+# Runs on GitHub's machines, never on the laptop. The laptop can be powered
+# off, asleep, or in another country and this still fires.
+#
+# Deliberately NOT every 15/30 minutes. GitHub Free gives 2,000 Actions
+# minutes/month on private repos and bills every job rounded UP to a whole
+# minute, so a */30 schedule would burn ~1,488 minutes/month on this job alone
+# and eventually exhaust the quota -- at which point every scheduled workflow
+# in the account silently stops. Nine runs a day costs ~279 minutes/month and
+# leaves the rest of the budget alone.
+#
+# Nothing is installed: the alerter is pure Python standard library, so a run
+# is checkout + python and takes seconds.
+on:
+  schedule:
+    - cron: "0 7,9,11,13,15,17,19,21,23 * * *"
+      timezone: "America/Chicago"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "normal = read the mailbox; self-test = prove cloud+Discord only"
+        type: choice
+        options: [normal, self-test, dry-run]
+        default: normal
+
+permissions:
+  contents: write
+
+concurrency:
+  group: email-alerts
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prove this is not running on the laptop
+        run: |
+          echo "runner:   $RUNNER_NAME ($RUNNER_OS)"
+          echo "host:     $(hostname)"
+          echo "utc now:  $(date -u '+%Y-%m-%d %H:%M:%SZ')"
+          echo "central:  $(TZ=America/Chicago date '+%Y-%m-%d %H:%M:%S %Z')"
+
+      - name: Check the mailbox and alert
+        id: alerts
+        env:
+          PYTHONPATH: src
+          # Preferred path: the already-deployed Cloudflare Worker holds the
+          # Discord webhook, so it is not copied into this repo at all.
+          CLOUDOS_NOTIFY_URL: ${{ secrets.CLOUDOS_NOTIFY_URL }}
+          CLOUDOS_NOTIFY_TOKEN: ${{ secrets.CLOUDOS_NOTIFY_TOKEN }}
+          # Fallback if the relay is ever removed.
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          EMAIL_IMAP_HOST: ${{ secrets.EMAIL_IMAP_HOST || 'imap.gmail.com' }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_OWNER_ALIASES: ${{ secrets.EMAIL_OWNER_ALIASES }}
+          # Two hours of headroom over the 2-hour cadence, so a late-starting
+          # run cannot leave a gap. The dedup file stops the overlap resending.
+          EMAIL_SINCE_HOURS: "4"
+        run: |
+          case "${{ github.event.inputs.mode }}" in
+            self-test) python -m cloudos.email_alerts.main --self-test ;;
+            dry-run)   python -m cloudos.email_alerts.main --dry-run ;;
+            *)         python -m cloudos.email_alerts.main ;;
+          esac
+
+      # Each run is a fresh clone, so the record of what has already been sent
+      # has to be committed back or every run re-alerts the same mail.
+      - name: Persist dedup state
+        if: ${{ github.event.inputs.mode != 'self-test' && github.event.inputs.mode != 'dry-run' }}
+        run: |
+          if [ -n "$(git status --porcelain state/email_alerts_seen.json)" ]; then
+            git config user.name "email-alerts-bot"
+            git config user.email "email-alerts-bot@users.noreply.github.com"
+            git add state/email_alerts_seen.json
+            git commit -m "email alerts: update dedup state [skip ci]"
+            git push
+            echo "Dedup state pushed."
+          else
+            echo "No new alerts - dedup state unchanged."
+          fi
+
+      - name: Tell Discord if this watcher itself broke
+        if: ${{ failure() }}
+        continue-on-error: true
+        env:
+          PYTHONPATH: src
+          # Preferred path: the already-deployed Cloudflare Worker holds the
+          # Discord webhook, so it is not copied into this repo at all.
+          CLOUDOS_NOTIFY_URL: ${{ secrets.CLOUDOS_NOTIFY_URL }}
+          CLOUDOS_NOTIFY_TOKEN: ${{ secrets.CLOUDOS_NOTIFY_TOKEN }}
+          # Fallback if the relay is ever removed.
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PYEOF'
+          import os
+          from cloudos.email_alerts.notifier import send_plain
+          send_plain(
+              os.environ["DISCORD_WEBHOOK_URL"],
+              "\N{POLICE CARS REVOLVING LIGHT} Email watcher failed",
+              "The cloud email check did not complete, so important mail may not "
+              "have been reported. Run log: "
+              f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+              f"/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              color=15158332,
+          )
+          PYEOF
