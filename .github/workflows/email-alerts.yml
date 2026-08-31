@@ -19,10 +19,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "normal = read the mailbox; self-test = prove cloud+Discord only"
-        type: choice
-        options: [normal, self-test, dry-run]
-        default: normal
+        description: "normal | self-test | dry-run"
+        required: false
+        default: "normal"
 
 permissions:
   contents: write
