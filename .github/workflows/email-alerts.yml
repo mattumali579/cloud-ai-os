@@ -16,10 +16,6 @@ on:
   schedule:
     - cron: "0 7,9,11,13,15,17,19,21,23 * * *"
       timezone: "America/Chicago"
-    # TEMPORARY - proving the scheduled trigger actually fires. Removed once
-    # a scheduled run appears in the run list.
-    - cron: "10,14,18,22,26,30 4 * * *"
-      timezone: "America/Chicago"
   workflow_dispatch:
     inputs:
       mode:
