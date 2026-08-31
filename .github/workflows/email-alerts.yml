@@ -47,6 +47,28 @@ jobs:
           echo "utc now:  $(date -u '+%Y-%m-%d %H:%M:%SZ')"
           echo "central:  $(TZ=America/Chicago date '+%Y-%m-%d %H:%M:%S %Z')"
 
+      # Distinguishes "GitHub cannot reach the mail server" from "the password
+      # is wrong". Without this, both look like the same failed run.
+      - name: Verify the mail server is reachable from this runner
+        env:
+          EMAIL_IMAP_HOST: ${{ secrets.EMAIL_IMAP_HOST || 'imap.gmail.com' }}
+        run: |
+          python - <<'PYEOF'
+          import os, socket, ssl, sys
+          host = os.environ["EMAIL_IMAP_HOST"]
+          try:
+              with socket.create_connection((host, 993), timeout=20) as raw:
+                  with ssl.create_default_context().wrap_socket(
+                      raw, server_hostname=host
+                  ) as tls:
+                      greeting = tls.recv(200).decode("ascii", "replace").strip()
+              print(f"{host}:993 reachable over TLS -> {greeting[:80]}")
+          except Exception as exc:
+              print(f"::error::cannot reach {host}:993 from this runner "
+                    f"({type(exc).__name__})")
+              sys.exit(1)
+          PYEOF
+
       - name: Check the mailbox and alert
         id: alerts
         env:

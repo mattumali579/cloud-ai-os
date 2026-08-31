@@ -74,9 +74,16 @@ def _body_snippet(msg) -> str:
                     html = chunk
         else:
             try:
-                plain = msg.get_content()
+                body = msg.get_content()
             except Exception:
-                plain = (msg.get_payload(decode=True) or b"").decode("utf-8", "replace")
+                body = (msg.get_payload(decode=True) or b"").decode("utf-8", "replace")
+            # Single-part mail is very often text/html only (banks, LMS, most
+            # transactional senders). Routing it into `plain` would hand raw
+            # markup to the filter and wreck the scoring.
+            if msg.get_content_type() == "text/html":
+                html = body
+            else:
+                plain = body
     except Exception:
         pass
     text = plain or _strip_html(html)
