@@ -69,6 +69,49 @@ jobs:
               sys.exit(1)
           PYEOF
 
+      # The whole point of this job is that it survives the laptop being off.
+      # A notify URL pointing at localhost or a private address would still
+      # look fine in a green run on a developer machine and then silently
+      # deliver nothing from the cloud, so assert it is publicly routable.
+      # Prints only the scheme and a verdict -- never the URL itself.
+      - name: Verify the alert destination is public, not the laptop
+        env:
+          CLOUDOS_NOTIFY_URL: ${{ secrets.CLOUDOS_NOTIFY_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PYEOF'
+          import ipaddress, os, sys
+          from urllib.parse import urlparse
+
+          def verdict(name, raw):
+              raw = (raw or "").strip()
+              if not raw:
+                  return None
+              parsed = urlparse(raw)
+              host = (parsed.hostname or "").lower()
+              if parsed.scheme != "https":
+                  return f"{name}: scheme is {parsed.scheme!r}, expected https"
+              if host in ("localhost", "localhost.localdomain") or host.endswith(".local"):
+                  return f"{name}: points at {host!r} -- that is the laptop"
+              try:
+                  addr = ipaddress.ip_address(host)
+              except ValueError:
+                  print(f"{name}: https, public hostname -- ok")
+                  return None
+              if addr.is_loopback or addr.is_private or addr.is_link_local:
+                  return f"{name}: points at a non-routable address"
+              print(f"{name}: https, public literal address -- ok")
+              return None
+
+          problems = [p for p in (
+              verdict("CLOUDOS_NOTIFY_URL", os.environ.get("CLOUDOS_NOTIFY_URL")),
+              verdict("DISCORD_WEBHOOK_URL", os.environ.get("DISCORD_WEBHOOK_URL")),
+          ) if p]
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PYEOF
+
       - name: Check the mailbox and alert
         id: alerts
         env:
