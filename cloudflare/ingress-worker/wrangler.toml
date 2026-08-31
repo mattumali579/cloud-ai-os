@@ -7,19 +7,21 @@ name = "cloudos-ingress"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
 
-# Health cron: every 15 minutes (free-plan cron triggers are included).
+# Direct Discord heartbeat + origin health check every 30 minutes.
+# Cron Triggers are included on the Workers Free plan.
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/30 * * * *"]
 
 # ── Configuration ────────────────────────────────────────────────────────────
 # ALL runtime configuration is delivered as SECRETS, never as committed vars
-# (ORIGIN_URL and NOTIFY_WEBHOOK_URL reveal infrastructure endpoints; the other
-# two are credentials). Set each one with:
+# (the webhook/origin URLs reveal infrastructure endpoints; the other two are
+# credentials). Set each one with:
 #
 #   wrangler secret put WEBHOOK_SECRET       # HMAC key for POST /hook/* (X-Signature)
 #   wrangler secret put AGENT_API_TOKEN      # bearer for /api/* + origin auth (§4 AGENT_API_TOKEN)
 #   wrangler secret put ORIGIN_URL           # e.g. https://<oracle-vm-host>:8080 (no trailing slash)
 #   wrangler secret put NOTIFY_WEBHOOK_URL   # n8n health_alert webhook (direct, or this worker's /hook/health-alert)
+#   wrangler secret put DISCORD_WEBHOOK_URL  # direct heartbeat destination
 #
 # Placeholders below are documentation only — leave [vars] empty in production;
 # a secret with the same name overrides a var.
@@ -28,3 +30,4 @@ crons = ["*/15 * * * *"]
 # AGENT_API_TOKEN    = "<set via wrangler secret put>"
 # ORIGIN_URL         = "<set via wrangler secret put>"
 # NOTIFY_WEBHOOK_URL = "<set via wrangler secret put>"
+# DISCORD_WEBHOOK_URL = "<set via wrangler secret put>"

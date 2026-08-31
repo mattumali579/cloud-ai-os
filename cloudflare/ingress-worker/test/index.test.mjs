@@ -9,7 +9,9 @@ import workerDefault, {
   signBody,
   isAllowedApiPath,
   routeRequest,
+  runHeartbeat,
   runScheduled,
+  formatChicagoTimestamp,
   hexToBytes,
   timingSafeEqualStr,
 } from "../src/index.js";
@@ -23,6 +25,7 @@ const baseEnv = {
   AGENT_API_TOKEN: TOKEN,
   ORIGIN_URL: ORIGIN,
   NOTIFY_WEBHOOK_URL: "https://notify.example.com/webhook/health-alert",
+  DISCORD_WEBHOOK_URL: "https://discord.example.com/api/webhooks/test",
 };
 
 const enc = new TextEncoder();
@@ -225,7 +228,66 @@ test("default export fetch handler answers /ping (mocked env, no network)", asyn
   assert.equal(resp.status, 200);
 });
 
+test("POST /heartbeat requires the agent bearer token", async () => {
+  const fetch = mockFetch(() => new Response('{"id":"discord-manual-1"}', {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  }));
+  const unauthorized = await routeRequest(
+    new Request("https://w.dev/heartbeat", { method: "POST" }),
+    baseEnv,
+    fetch,
+  );
+  assert.equal(unauthorized.status, 401);
+  assert.equal(fetch.calls.length, 0);
+
+  const authorized = await routeRequest(
+    new Request("https://w.dev/heartbeat", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    }),
+    baseEnv,
+    fetch,
+  );
+  assert.equal(authorized.status, 200);
+  assert.equal((await authorized.json()).sent, true);
+  assert.equal(fetch.calls.length, 1);
+});
+
 /* --------------------------------------------------------------- scheduled */
+
+test("heartbeat formats America/Chicago time and sends Discord content", async () => {
+  const fetch = mockFetch(() => new Response('{"id":"discord-message-1"}', {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  }));
+  const instant = new Date("2026-08-31T07:30:00.000Z");
+  assert.equal(formatChicagoTimestamp(instant), "2026-08-31 02:30 America/Chicago");
+
+  const result = await runHeartbeat(baseEnv, fetch, () => instant);
+  assert.deepEqual(result, {
+    sent: true,
+    status: 200,
+    timestamp: "2026-08-31 02:30 America/Chicago",
+    message: "Cloud heartbeat OK — 2026-08-31 02:30 America/Chicago",
+    discord_message_id: "discord-message-1",
+  });
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(fetch.calls[0].url, `${baseEnv.DISCORD_WEBHOOK_URL}?wait=true`);
+  assert.deepEqual(JSON.parse(fetch.calls[0].init.body), { content: result.message });
+});
+
+test("heartbeat fails closed when Discord is not configured", async () => {
+  const fetch = mockFetch();
+  const result = await runHeartbeat(
+    { ...baseEnv, DISCORD_WEBHOOK_URL: "" },
+    fetch,
+    () => new Date("2026-08-31T07:30:00.000Z"),
+  );
+  assert.equal(result.sent, false);
+  assert.equal(result.failure, "not_configured");
+  assert.equal(fetch.calls.length, 0);
+});
 
 test("scheduled: healthy origin (200) → no notification", async () => {
   const fetch = mockFetch(() => new Response('{"status":"ok","db":true}', { status: 200 }));

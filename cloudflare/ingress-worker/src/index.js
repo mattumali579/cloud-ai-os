@@ -5,6 +5,7 @@
  *
  * Routes:
  *   GET  /ping     → 200 {"status":"ok"}                       (no auth)
+ *   POST /heartbeat → Bearer AGENT_API_TOKEN; send a direct Discord heartbeat.
  *   POST /hook/*   → X-Signature (hex sha256 HMAC of raw body, key WEBHOOK_SECRET)
  *                    → forward raw body to ORIGIN_URL/v1/webhooks/n8n with bearer
  *                    AGENT_API_TOKEN → relay origin status.
@@ -13,16 +14,18 @@
  *                    else 404; method + body + query proxied to ORIGIN_URL.
  *   anything else  → 404
  *
- * Scheduled (cron every 15 min): GET ORIGIN_URL/healthz with a 10s timeout; on non-200 or
- * failure, POST a critical DEPENDENCY_UNAVAILABLE notification to NOTIFY_WEBHOOK_URL
- * (signed with WEBHOOK_SECRET so it may point at this worker's own /hook/* route).
+ * Scheduled (cron every 30 min): send a timestamped Discord heartbeat directly, then
+ * GET ORIGIN_URL/healthz with a 10s timeout. On non-200 or failure, POST a critical
+ * DEPENDENCY_UNAVAILABLE notification to NOTIFY_WEBHOOK_URL (signed with WEBHOOK_SECRET
+ * so it may point at this worker's own /hook/* route).
  *
  * Deliberately NO Workers AI calls, NO queues, NO durable objects, NO KV: the Worker
  * is a stateless, trivial-CPU ingress. Workers AI is consumed from the VM by the
  * router (Agent 8) via REST — never from here.
  *
  * Secrets (wrangler secret put): WEBHOOK_SECRET, AGENT_API_TOKEN, ORIGIN_URL,
- * NOTIFY_WEBHOOK_URL. Secrets never appear in error bodies, logs, or notifications.
+ * NOTIFY_WEBHOOK_URL, DISCORD_WEBHOOK_URL. Secrets never appear in error bodies,
+ * logs, or notifications.
  */
 
 /** Origin path prefixes reachable through /api/* (everything else → 404). */
@@ -34,6 +37,7 @@ export const API_ALLOWED_PREFIXES = [
 ];
 
 const HEALTH_TIMEOUT_MS = 10_000;
+const CHICAGO_TIME_ZONE = "America/Chicago";
 
 const encoder = new TextEncoder();
 
@@ -145,6 +149,10 @@ export async function routeRequest(request, env, fetchImpl = globalThis.fetch) {
     return jsonResponse({ status: "ok" });
   }
 
+  if (path === "/heartbeat" && request.method === "POST") {
+    return handleHeartbeat(request, env, fetchImpl);
+  }
+
   if (path.startsWith("/hook/") && request.method === "POST") {
     return handleHook(request, env, fetchImpl);
   }
@@ -154,6 +162,31 @@ export async function routeRequest(request, env, fetchImpl = globalThis.fetch) {
   }
 
   return errorResponse("VALIDATION_ERROR", "route not found", { path }, 404);
+}
+
+async function handleHeartbeat(request, env, fetchImpl) {
+  const auth = request.headers.get("Authorization") || "";
+  const expected = `Bearer ${env.AGENT_API_TOKEN}`;
+  if (!env.AGENT_API_TOKEN || !timingSafeEqualStr(auth, expected)) {
+    return errorResponse(
+      "VALIDATION_ERROR",
+      "invalid or missing bearer token",
+      {},
+      401,
+    );
+  }
+
+  const result = await runHeartbeat(env, fetchImpl);
+  if (!result.sent) {
+    const notConfigured = result.failure === "not_configured";
+    return errorResponse(
+      notConfigured ? "INTERNAL_ERROR" : "DEPENDENCY_UNAVAILABLE",
+      "heartbeat delivery failed",
+      { failure: result.failure, status: result.status },
+      notConfigured ? 500 : 502,
+    );
+  }
+  return jsonResponse(result);
 }
 
 async function handleHook(request, env, fetchImpl) {
@@ -251,6 +284,76 @@ function relay(resp) {
 
 /* ---------------------------------------------------------------- scheduled */
 
+/** Format a stable, minute-precision timestamp in Matt's local time zone. */
+export function formatChicagoTimestamp(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: CHICAGO_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute} ${CHICAGO_TIME_ZONE}`;
+}
+
+/** Send the laptop-independent heartbeat straight to Discord. Never throws. */
+export async function runHeartbeat(
+  env,
+  fetchImpl = globalThis.fetch,
+  now = () => new Date(),
+) {
+  const timestamp = formatChicagoTimestamp(now());
+  const message = `Cloud heartbeat OK — ${timestamp}`;
+
+  if (!env.DISCORD_WEBHOOK_URL) {
+    console.error("cloud heartbeat failed", JSON.stringify({ failure: "not_configured", timestamp }));
+    return { sent: false, failure: "not_configured", status: null, timestamp };
+  }
+
+  try {
+    const webhookUrl = new URL(env.DISCORD_WEBHOOK_URL);
+    webhookUrl.searchParams.set("wait", "true");
+    const response = await fetchImpl(webhookUrl.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: message }),
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      console.error(
+        "cloud heartbeat failed",
+        JSON.stringify({ failure: "non_2xx", status: response.status, timestamp }),
+      );
+      return { sent: false, failure: "non_2xx", status: response.status, timestamp };
+    }
+    let discordMessageId = null;
+    try {
+      const receipt = await response.json();
+      discordMessageId = String(receipt.id || "") || null;
+    } catch {
+      // Discord normally returns JSON with wait=true; delivery is still accepted on 204.
+    }
+    console.log(
+      "cloud heartbeat sent",
+      JSON.stringify({ status: response.status, timestamp, discord_message_id: discordMessageId }),
+    );
+    return {
+      sent: true,
+      status: response.status,
+      timestamp,
+      message,
+      discord_message_id: discordMessageId,
+    };
+  } catch (error) {
+    const failure = error && error.name === "TimeoutError" ? "timeout" : "fetch_failed";
+    console.error("cloud heartbeat failed", JSON.stringify({ failure, timestamp }));
+    return { sent: false, failure, status: null, timestamp };
+  }
+}
+
 /**
  * Health cron: GET ORIGIN_URL/healthz (10s timeout). On non-200 or failure, POST
  * a critical notification to NOTIFY_WEBHOOK_URL. The body is signed with
@@ -329,6 +432,6 @@ export default {
   },
 
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(runScheduled(env));
+    ctx.waitUntil(Promise.all([runHeartbeat(env), runScheduled(env)]));
   },
 };
