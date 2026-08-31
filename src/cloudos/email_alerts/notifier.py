@@ -51,7 +51,16 @@ def resolve_destination(webhook_url: str = "") -> tuple:
 
 
 def _post(webhook_url: str, payload: dict) -> int:
-    url, headers, _kind = resolve_destination(webhook_url)
+    """POST the payload and print Discord's own receipt for the message.
+
+    The relay asks Discord for ``wait=true``, so a 2xx here means Discord
+    actually created the message and handed back its id -- not merely that the
+    Worker accepted the request. Logging that id is the difference between
+    "we think it sent" and "here is the message Discord created", which is the
+    only evidence that survives when someone later asks whether an alert was
+    really delivered.
+    """
+    url, headers, kind = resolve_destination(webhook_url)
     if not url:
         raise RuntimeError("no Discord destination configured")
     request = urllib.request.Request(
@@ -61,7 +70,26 @@ def _post(webhook_url: str, payload: dict) -> int:
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        body = response.read(2000)
+        print(f"delivery receipt: HTTP {response.status} via {kind}"
+              f"{_receipt_detail(body)}")
         return response.status
+
+
+def _receipt_detail(body: bytes) -> str:
+    """Pull the Discord message id out of a relay receipt, if it is there.
+
+    Best-effort and silent on anything unexpected: a receipt that cannot be
+    parsed must never turn a delivered alert into a failed one.
+    """
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    message_id = data.get("discord_message_id") or data.get("id")
+    return f" discord_message_id={message_id}" if message_id else ""
 
 
 def send_email_alert(webhook_url: str, message, classification) -> bool:

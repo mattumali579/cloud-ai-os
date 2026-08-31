@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "normal | self-test | dry-run"
+        description: "normal | self-test | dry-run | fail-test"
         required: false
         default: "normal"
 
@@ -90,13 +90,18 @@ jobs:
           case "${{ github.event.inputs.mode }}" in
             self-test) python -m cloudos.email_alerts.main --self-test ;;
             dry-run)   python -m cloudos.email_alerts.main --dry-run ;;
+            # Deliberately fail, so the "watcher broke" alarm below can be
+            # proven to fire. An alarm that has never been triggered is an
+            # assumption, and this job is the thing that is supposed to notice
+            # when nothing else does.
+            fail-test) echo "::error::deliberate failure to test the alarm"; exit 1 ;;
             *)         python -m cloudos.email_alerts.main ;;
           esac
 
       # Each run is a fresh clone, so the record of what has already been sent
       # has to be committed back or every run re-alerts the same mail.
       - name: Persist dedup state
-        if: ${{ github.event.inputs.mode != 'self-test' && github.event.inputs.mode != 'dry-run' }}
+        if: ${{ github.event.inputs.mode != 'self-test' && github.event.inputs.mode != 'dry-run' && github.event.inputs.mode != 'fail-test' }}
         run: |
           if [ -n "$(git status --porcelain state/email_alerts_seen.json)" ]; then
             git config user.name "email-alerts-bot"
@@ -124,7 +129,7 @@ jobs:
           python - <<'PYEOF'
           import os
           from cloudos.email_alerts.notifier import send_plain
-          send_plain(
+          delivered = send_plain(
               os.environ["DISCORD_WEBHOOK_URL"],
               "\N{POLICE CARS REVOLVING LIGHT} Email watcher failed",
               "The cloud email check did not complete, so important mail may not "
@@ -133,4 +138,9 @@ jobs:
               f"/actions/runs/{os.environ['GITHUB_RUN_ID']}",
               color=15158332,
           )
+          # A silent alarm is worse than no alarm: it is the case where everyone
+          # believes they would have been told. Say plainly which one happened.
+          print(f"failure alarm delivered: {delivered}")
+          if not delivered:
+              print("::warning::the watcher failed AND could not report it")
           PYEOF

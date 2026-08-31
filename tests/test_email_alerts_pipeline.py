@@ -247,3 +247,38 @@ def test_missing_credentials_fail_loudly(wired, monkeypatch):
     main_mod, _sent = wired
     monkeypatch.setenv("EMAIL_APP_PASSWORD", "")
     assert main_mod.run() == 1
+
+
+class TestDeliveryReceipt:
+    """The receipt is the only durable evidence that Discord created a message.
+
+    It must never be the reason a delivered alert is reported as failed, so
+    every malformed shape has to degrade to an empty string rather than raise.
+    """
+
+    def test_relay_receipt_yields_discord_message_id(self):
+        from cloudos.email_alerts.notifier import _receipt_detail
+
+        body = b'{"sent": true, "status": 200, "discord_message_id": "141"}'
+        assert _receipt_detail(body) == " discord_message_id=141"
+
+    def test_direct_webhook_receipt_uses_discord_id_field(self):
+        from cloudos.email_alerts.notifier import _receipt_detail
+
+        assert _receipt_detail(b'{"id": "992", "type": 0}') == " discord_message_id=992"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"",                        # 204 No Content
+            b"not json at all",         # HTML error page
+            b"[1, 2, 3]",               # JSON, but not an object
+            b"{}",                      # object with no id
+            b'{"discord_message_id": null}',
+            b"\xff\xfe\x00garbage",     # undecodable bytes
+        ],
+    )
+    def test_unusable_receipts_degrade_to_empty_string(self, body):
+        from cloudos.email_alerts.notifier import _receipt_detail
+
+        assert _receipt_detail(body) == ""
