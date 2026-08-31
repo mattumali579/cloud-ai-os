@@ -150,16 +150,29 @@ jobs:
       - name: Persist dedup state
         if: ${{ github.event.inputs.mode != 'self-test' && github.event.inputs.mode != 'dry-run' && github.event.inputs.mode != 'fail-test' }}
         run: |
-          if [ -n "$(git status --porcelain state/email_alerts_seen.json)" ]; then
-            git config user.name "email-alerts-bot"
-            git config user.email "email-alerts-bot@users.noreply.github.com"
-            git add state/email_alerts_seen.json
-            git commit -m "email alerts: update dedup state [skip ci]"
-            git push
-            echo "Dedup state pushed."
-          else
+          if [ -z "$(git status --porcelain state/email_alerts_seen.json)" ]; then
             echo "No new alerts - dedup state unchanged."
+            exit 0
           fi
+          git config user.name "email-alerts-bot"
+          git config user.email "email-alerts-bot@users.noreply.github.com"
+          git add state/email_alerts_seen.json
+          git commit -m "email alerts: update dedup state [skip ci]"
+          # Losing a push race must not cost the record of what was already
+          # sent: dropping it would re-alert every one of those emails on the
+          # next run and raise a failure alarm for something that is not
+          # actually broken. Rebase onto whatever landed and try again.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Dedup state pushed (attempt $attempt)."
+              exit 0
+            fi
+            echo "Push rejected; rebasing onto origin/master and retrying."
+            git fetch origin master
+            git rebase origin/master || { git rebase --abort; exit 1; }
+          done
+          echo "::error::could not persist dedup state after 3 attempts - the "               "next run may re-alert mail that was already reported"
+          exit 1
 
       - name: Tell Discord if this watcher itself broke
         if: ${{ failure() }}
