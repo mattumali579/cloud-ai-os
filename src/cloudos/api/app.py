@@ -15,10 +15,11 @@ from fastapi import Depends, FastAPI, Query, Request
 
 from cloudos.config import get_settings
 from cloudos.contracts import CloudOSError, ErrorCode, PrivacyLabel, RouteRequest
+from cloudos.brightreach.service import BookingInput, ClientSetup, LeadInput, get_service
 
 from . import store
 from .auth import require_bearer, require_webhook_auth
-from .errors import install_exception_handlers
+from .errors import NotFound, install_exception_handlers
 from .schemas import InvokeRequest, JobCreate
 
 log = logging.getLogger("cloudos.api")
@@ -42,6 +43,16 @@ app = FastAPI(title="Cloud AI OS — Agent API", version="1.0", lifespan=lifespa
 install_exception_handlers(app)
 
 authed = Depends(require_bearer)
+
+
+def _brightreach(callable_):
+    """Keep the small BrightReach flow on the API's normal safe error shape."""
+    try:
+        return callable_()
+    except KeyError as exc:
+        raise NotFound(str(exc)) from None
+    except ValueError as exc:
+        raise CloudOSError(ErrorCode.VALIDATION_ERROR, str(exc)) from None
 
 
 # ---------------------------------------------------------------- health
@@ -144,6 +155,41 @@ async def quota() -> dict:
         for row in providers
     }
     return {"usage": usage, "budgets": {}, "fail_closed": fail_closed, "providers": providers}
+
+
+# ---------------------------------------------------------------- BrightReach
+
+@app.post("/v1/brightreach/clients", status_code=201, dependencies=[authed])
+async def brightreach_create_client(body: ClientSetup) -> dict:
+    """Store a client's service, area, and plain qualification rules."""
+    return _brightreach(lambda: get_service().create_client(body))
+
+
+@app.post("/v1/brightreach/clients/{client_id}/leads", status_code=201, dependencies=[authed])
+async def brightreach_create_lead(client_id: str, body: LeadInput) -> dict:
+    """Capture a lead and immediately create the safe response to hand off."""
+    return _brightreach(lambda: get_service().create_lead(client_id, body))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/qualify", dependencies=[authed])
+async def brightreach_qualify(lead_id: str) -> dict:
+    return _brightreach(lambda: get_service().qualify(lead_id))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/follow-up", dependencies=[authed])
+async def brightreach_follow_up(lead_id: str) -> dict:
+    return _brightreach(lambda: get_service().follow_up(lead_id))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/booking", dependencies=[authed])
+async def brightreach_record_booking(lead_id: str, body: BookingInput) -> dict:
+    """Record an event only after the connected calendar returns its real ID."""
+    return _brightreach(lambda: get_service().record_booking(lead_id, body))
+
+
+@app.get("/v1/brightreach/clients/{client_id}/report", dependencies=[authed])
+async def brightreach_report(client_id: str) -> dict:
+    return _brightreach(lambda: get_service().report(client_id))
 
 
 @app.get("/v1/providers", dependencies=[authed])
