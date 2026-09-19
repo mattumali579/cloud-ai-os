@@ -144,17 +144,27 @@ async def list_runs(limit: int = Query(default=50, ge=1, le=200)) -> dict:
 
 @app.get("/v1/quota", dependencies=[authed])
 async def quota() -> dict:
-    """Daily usage + provider state. Keeps the {usage, budgets, fail_closed}
-    shape (n8n daily_ops reads it); budgets are now informational counters —
-    hard limits live with each subscription plan, not here."""
+    """Daily usage and provider state with compatibility-safe observability."""
+    settings = get_settings()
     usage = store.quota_today()
-    providers = store.provider_status_rows()
-    fail_closed = {
-        row.get("provider"): row.get("state")
-        in ("QUOTA_EXHAUSTED", "AUTH_REQUIRED", "BILLING_RISK")
-        for row in providers
+    budgets = {
+        "workers_ai": int(getattr(settings, "workers_ai_daily_budget", 9000)),
+        "gemini": int(getattr(settings, "gemini_daily_request_budget", 200)),
     }
-    return {"usage": usage, "budgets": {}, "fail_closed": fail_closed, "providers": providers}
+    by_provider = {row.get("provider"): row for row in usage}
+    fail_closed = {
+        "workers_ai": int(by_provider.get("workers_ai", {}).get("units", 0) or 0) >= budgets["workers_ai"],
+        "gemini": int(by_provider.get("gemini", {}).get("requests", 0) or 0) >= budgets["gemini"],
+    }
+    try:
+        providers = store.provider_status_rows()
+    except Exception:  # provider_status is newer than quota_usage; keep quota observable during migration
+        providers = []
+    for row in providers:
+        provider = row.get("provider")
+        if provider in fail_closed and row.get("state") in {"QUOTA_EXHAUSTED", "AUTH_REQUIRED", "BILLING_RISK"}:
+            fail_closed[provider] = True
+    return {"usage": usage, "budgets": budgets, "fail_closed": fail_closed, "providers": providers}
 
 
 # ---------------------------------------------------------------- BrightReach
