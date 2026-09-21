@@ -173,6 +173,8 @@ def _route_inner(req: RouteRequest, settings: Settings, state: dict) -> RouteRes
     exhausted: list[str] = []
     need_auth: list[str] = []
     errors: list[str] = []
+    privacy_blocked: list[str] = []
+    first_privacy_block: Optional[CloudOSError] = None
     now = datetime.now(timezone.utc)
 
     for level, name in enumerate(enabled, start=1):
@@ -186,8 +188,27 @@ def _route_inner(req: RouteRequest, settings: Settings, state: dict) -> RouteRes
 
         # google_cli keeps the strict unpaid-external gate; claude/codex are
         # subscription-trusted for INTERNAL. Re-gate only when stricter.
+        #
+        # A stricter gate failing is a statement about THIS provider, not about
+        # the request: the label is fine for the trusted providers that already
+        # passed the baseline gate. So skip the provider and keep going — it
+        # must not convert a deferrable QUOTA_EXHAUSTED into a fail-closed
+        # PRIVACY_BLOCKED. Secrets (and a broken gate) still abort immediately.
         if name not in SUBSCRIPTION_TRUSTED:
-            _privacy_gate_or_raise(req, trusted=False)
+            try:
+                _privacy_gate_or_raise(req, trusted=False)
+            except CloudOSError as exc:
+                if exc.code is not ErrorCode.PRIVACY_BLOCKED:
+                    raise
+                privacy_blocked.append(name)
+                if first_privacy_block is None:
+                    first_privacy_block = exc
+                log.info(
+                    "provider %s blocked by the strict external gate (%s) — skipped",
+                    name,
+                    exc.message,
+                )
+                continue
 
         state.update(level=level, model=f"{name}_cli")
         try:
@@ -257,6 +278,10 @@ def _route_inner(req: RouteRequest, settings: Settings, state: dict) -> RouteRes
             "no subscription provider is logged in — owner login required",
             details={"providers": need_auth},
         )
+    if privacy_blocked and not errors and first_privacy_block is not None:
+        # Every provider that could have served was blocked by the strict gate
+        # and nothing else went wrong — the label really is the reason.
+        raise first_privacy_block
     raise CloudOSError(
         ErrorCode.DEPENDENCY_UNAVAILABLE,
         "no subscription AI provider could serve",
