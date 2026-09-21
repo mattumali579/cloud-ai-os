@@ -191,9 +191,13 @@ def _route_inner(req: RouteRequest, settings: Settings, state: dict) -> RouteRes
 
         state.update(level=level, model=f"{name}_cli")
         try:
-            pr: ProviderResponse = provider.generate(
-                req.prompt, max_tokens=req.max_tokens, timeout=settings.cli_timeout_seconds
-            )
+            kwargs = {
+                "max_tokens": req.max_tokens,
+                "timeout": settings.cli_timeout_seconds,
+            }
+            if name == "codex":
+                kwargs["web_search"] = bool(req.meta.get("web_search"))
+            pr: ProviderResponse = provider.generate(req.prompt, **kwargs)
         except ProviderError as exc:
             _update_provider_status(
                 settings, ProviderStatus(name, exc.state, detail=exc.detail),

@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+discord = ["discord.py>=2.4,<3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

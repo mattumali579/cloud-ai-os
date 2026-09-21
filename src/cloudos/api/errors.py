@@ -25,6 +25,8 @@ STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.SECRET_DETECTED: 403,
     ErrorCode.QUOTA_EXHAUSTED: 429,
     ErrorCode.LIMIT_REACHED: 429,
+    ErrorCode.AUTH_REQUIRED: 401,
+    ErrorCode.BILLING_RISK: 403,
     ErrorCode.DEPENDENCY_UNAVAILABLE: 503,
     ErrorCode.INTERNAL_ERROR: 500,
 }
