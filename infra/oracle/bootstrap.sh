@@ -90,6 +90,32 @@ else
     chmod 600 .env || true
 fi
 
+# ------------------------------------------------------ 3b. Runtime secrets --
+# Replace blank/template credentials with random VM-local values. Hex output
+# keeps KEY=value replacement safe. Secrets remain in chmod-600 .env only.
+ensure_runtime_secret() {
+    local key="$1"
+    local current=""
+    current="$(sed -n "s/^${key}=//p" .env | head -n 1)"
+    if [[ -n "$current" && ! "$current" =~ ^(change-me|replace-me|placeholder)$ ]]; then
+        return
+    fi
+
+    local generated
+    generated="$(openssl rand -hex 32)"
+    if grep -q "^${key}=" .env; then
+        sed -i "s/^${key}=.*/${key}=${generated}/" .env
+    else
+        printf '\n%s=%s\n' "$key" "$generated" >> .env
+    fi
+    log "Generated $key in VM-local .env"
+}
+
+ensure_runtime_secret AGENT_API_TOKEN
+ensure_runtime_secret N8N_BASIC_AUTH_PASSWORD
+ensure_runtime_secret N8N_ENCRYPTION_KEY
+chmod 600 .env
+
 # ------------------------------------------------------------- 4. Compose up --
 log "Building and starting the Oracle stack ($COMPOSE_FILE)"
 $DOCKER compose -f "$COMPOSE_FILE" up -d --build

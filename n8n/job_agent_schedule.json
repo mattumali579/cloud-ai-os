@@ -1,0 +1,55 @@
+{
+  "name": "CloudOS Job Agent Schedule",
+  "active": false,
+  "nodes": [
+    {
+      "id": "job-morning-trigger",
+      "name": "Morning Discovery and Apply",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-500, -180],
+      "parameters": {"rule": {"interval": [{"field": "cronExpression", "expression": "0 7 * * 1-6"}]}}
+    },
+    {
+      "id": "job-afternoon-trigger",
+      "name": "Afternoon Apply",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-500, 0],
+      "parameters": {"rule": {"interval": [{"field": "cronExpression", "expression": "0 13 * * 1-6"}]}}
+    },
+    {
+      "id": "job-evening-trigger",
+      "name": "Evening Apply",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-500, 180],
+      "parameters": {"rule": {"interval": [{"field": "cronExpression", "expression": "0 18 * * 1-6"}]}}
+    },
+    {
+      "id": "job-enqueue",
+      "name": "Enqueue Job Agent Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-180, 0],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/jobs",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"}]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"type\":\"job.agent.run\",\"payload\":{\"dry_run\":false},\"max_attempts\":1}",
+        "options": {"timeout": 30000}
+      }
+    }
+  ],
+  "connections": {
+    "Morning Discovery and Apply": {"main": [[{"node": "Enqueue Job Agent Run", "type": "main", "index": 0}]]},
+    "Afternoon Apply": {"main": [[{"node": "Enqueue Job Agent Run", "type": "main", "index": 0}]]},
+    "Evening Apply": {"main": [[{"node": "Enqueue Job Agent Run", "type": "main", "index": 0}]]}
+  },
+  "settings": {"executionOrder": "v1", "timezone": "America/Chicago"},
+  "id": "CloudOSJobAgent1"
+}
