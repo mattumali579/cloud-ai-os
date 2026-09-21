@@ -52,6 +52,31 @@ def _str(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _first_str(*names: str, default: str = "") -> str:
+    """First env var that is set AND not blank.
+
+    A key left in .env as `HOSTINGER_SMTP_USERNAME=` is a placeholder, not an
+    answer. Plain _str() would return that empty string and shadow the fallback,
+    which silently left the mailbox unauthenticated.
+    """
+    for name in names:
+        value = os.environ.get(name, "")
+        if value.strip():
+            return value
+    return default
+
+
+def _first_int(*names: str, default: int) -> int:
+    for name in names:
+        value = os.environ.get(name, "")
+        if value.strip():
+            try:
+                return int(value.strip())
+            except ValueError:
+                continue
+    return default
+
+
 def _path(name: str, default: Path) -> str:
     """Path-valued env var; relative values resolve against REPO_ROOT, not CWD."""
     v = os.environ.get(name)
@@ -194,12 +219,12 @@ def get_settings() -> Settings:
         # Hostinger is the intended mailbox. The generic SMTP_* names are read as a
         # fallback so an already-working mailbox keeps sending while Hostinger
         # credentials are not yet in place.
-        hostinger_smtp_host=_str("HOSTINGER_SMTP_HOST", _str("SMTP_HOST", "smtp.hostinger.com")),
-        hostinger_smtp_port=_int("HOSTINGER_SMTP_PORT", _int("SMTP_PORT", 465)),
-        hostinger_smtp_username=_str("HOSTINGER_SMTP_USERNAME", _str("SMTP_USER")),
-        hostinger_smtp_password=_str("HOSTINGER_SMTP_PASSWORD", _str("SMTP_PASS")),
-        email_from_name=_str("EMAIL_FROM_NAME", _str("SMTP_FROM_NAME")),
-        email_from_address=_str("EMAIL_FROM_ADDRESS", _str("SMTP_FROM_EMAIL")),
+        hostinger_smtp_host=_first_str("HOSTINGER_SMTP_HOST", "SMTP_HOST", default="smtp.hostinger.com"),
+        hostinger_smtp_port=_first_int("HOSTINGER_SMTP_PORT", "SMTP_PORT", default=465),
+        hostinger_smtp_username=_first_str("HOSTINGER_SMTP_USERNAME", "SMTP_USER"),
+        hostinger_smtp_password=_first_str("HOSTINGER_SMTP_PASSWORD", "SMTP_PASS"),
+        email_from_name=_first_str("EMAIL_FROM_NAME", "SMTP_FROM_NAME"),
+        email_from_address=_first_str("EMAIL_FROM_ADDRESS", "SMTP_FROM_EMAIL"),
         email_send_enabled=_bool("EMAIL_SEND_ENABLED", False),
         email_outbox_path=_path("EMAIL_OUTBOX_PATH", REPO_ROOT / "email_outbox"),
         supabase_db_budget_mb=_int("SUPABASE_DB_BUDGET_MB", 500),

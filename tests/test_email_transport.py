@@ -60,3 +60,47 @@ def test_starttls_failure_closes_the_socket(monkeypatch):
     except OSError:
         pass
     assert closed["value"], "a failed TLS upgrade must not leak an open plaintext socket"
+
+
+def test_full_send_works_over_starttls(monkeypatch, tmp_path):
+    """The 587 path must complete a real send, not just open a socket."""
+    import json
+
+    from cloudos import config
+    from cloudos.contracts import CloudOSError  # noqa: F401
+
+    (tmp_path / "pending").mkdir()
+    (tmp_path / "pending" / "st.json").write_text(
+        json.dumps({"messages": [{"to": "a@example.test", "subject": "S", "text": "T"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EMAIL_OUTBOX_PATH", str(tmp_path))
+    monkeypatch.setenv("EMAIL_SEND_ENABLED", "true")
+    monkeypatch.setenv("HOSTINGER_SMTP_USERNAME", "sender@example.test")
+    monkeypatch.setenv("HOSTINGER_SMTP_PASSWORD", "pw")
+    monkeypatch.setenv("HOSTINGER_SMTP_PORT", "587")
+    if hasattr(config.get_settings, "cache_clear"):
+        config.get_settings.cache_clear()
+
+    delivered = []
+
+    class _SMTP(_FakePlain):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, u, p):
+            return None
+
+        def send_message(self, msg):
+            delivered.append(msg["To"])
+
+    monkeypatch.setattr(email_outbox.smtplib, "SMTP", _SMTP)
+    fingerprint = email_outbox.preview("st")["fingerprint"]
+    result = email_outbox.send("st", fingerprint)
+    assert result["sent_count"] == 1
+    assert delivered == ["a@example.test"]
+    if hasattr(config.get_settings, "cache_clear"):
+        config.get_settings.cache_clear()

@@ -60,6 +60,9 @@ def test_send_uses_hostinger_smtp_and_cannot_repeat(monkeypatch, tmp_path):
     monkeypatch.setenv("EMAIL_SEND_ENABLED", "true")
     monkeypatch.setenv("HOSTINGER_SMTP_USERNAME", "sender@example.com")
     monkeypatch.setenv("HOSTINGER_SMTP_PASSWORD", "secret-password")
+    # Pin the port: the transport is chosen from it, so leaving it to whatever
+    # the machine's .env happens to say made this test depend on the machine.
+    monkeypatch.setenv("HOSTINGER_SMTP_PORT", "465")
     reset_settings_cache()
     sent = []
 

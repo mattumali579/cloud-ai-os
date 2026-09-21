@@ -89,3 +89,22 @@ def test_send_refuses_a_wrong_confirmation_code(outbox):
     email_outbox.create_draft("camp-7", [{"to": "a@example.test", "subject": "S", "text": "T"}])
     with pytest.raises(CloudOSError):
         email_outbox.send("camp-7", "000000000000")
+
+
+def test_multiline_body_with_raw_newlines_is_recovered():
+    """Real email copy spans lines; a model often writes them literally."""
+    broken = (
+        FENCE + "json\n"
+        '{"messages": [{"to": "a@example.test", "subject": "Hi",\n'
+        '  "text": "Line one\n'
+        "\n"
+        'Line two"}]}\n' + FENCE
+    )
+    rows = email_outbox.extract_messages(broken)
+    assert rows[0]["text"].startswith("Line one")
+    assert "Line two" in rows[0]["text"]
+
+
+def test_repair_does_not_invent_valid_json_from_garbage():
+    with pytest.raises(CloudOSError):
+        email_outbox.extract_messages(FENCE + "json\n{this is not json at all\n" + FENCE)

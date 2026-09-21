@@ -109,6 +109,38 @@ def _fenced_blocks(text: str) -> list[str]:
     return sorted(set(blocks), key=len, reverse=True)
 
 
+def _repair_json(block: str) -> str:
+    """Escape raw newlines that appear inside a JSON string literal.
+
+    Email bodies are multi-line by nature, and a model writing the draft will
+    sometimes press enter inside the "text" value instead of writing an escape.
+    That is invalid JSON but unambiguous, so repair it rather than discarding a
+    campaign the owner already reviewed. Anything outside a string is untouched.
+    """
+    out = []
+    in_string = False
+    escaped = False
+    for char in block:
+        if escaped:
+            out.append(char)
+            escaped = False
+            continue
+        if char == chr(92):
+            out.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            out.append(char)
+            continue
+        if in_string and char in (chr(10), chr(13)):
+            if char == chr(10):
+                out.append('\\n')
+            continue
+        out.append(char)
+    return "".join(out)
+
+
 def extract_messages(text: str) -> list[dict]:
     """Pull the machine-readable draft out of an employee's written answer.
 
@@ -120,7 +152,10 @@ def extract_messages(text: str) -> list[dict]:
         try:
             data = json.loads(block)
         except ValueError:
-            continue
+            try:
+                data = json.loads(_repair_json(block))
+            except ValueError:
+                continue
         rows = data.get("messages") if isinstance(data, dict) else None
         if isinstance(rows, list) and rows:
             return rows
