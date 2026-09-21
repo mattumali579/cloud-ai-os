@@ -58,14 +58,18 @@ services:
     profiles: ["container-worker"]
     build:
       context: ../..
-      dockerfile: infra/docker/Dockerfile
-    image: cloudos:dev
+      dockerfile: infra/docker/Dockerfile.job-agent
+    image: cloudos-job-worker:dev
     command: ["python", "-m", "cloudos.worker"]
     env_file:
       - path: ../../.env
         required: false
     environment:
       DATABASE_URL: postgresql://cloudos:cloudos@db:5432/cloudos
+      JOB_BROWSER_EXECUTABLE_PATH: /usr/bin/chromium
+    volumes:
+      - ../../data:/app/data
+      - job-resumes:/app/resumes
     depends_on:
       db:
         condition: service_healthy
@@ -80,11 +84,11 @@ services:
         required: false
     environment:
       # SQLite backend by default (contract Â§12) â€” protects the Supabase 500 MB budget.
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      # NOTE: n8n v1+ replaced basic-auth env with owner-account setup; vars kept per
-      # contract Â§12 and are harmless if ignored â€” first launch prompts for owner account.
       NODE_OPTIONS: "--max-old-space-size=512"
       GENERIC_TIMEZONE: "UTC"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
     volumes:
       - n8n-data:/home/node/.n8n
     mem_limit: 768m
@@ -92,3 +96,4 @@ services:
 volumes:
   db-data:
   n8n-data:
+  job-resumes:

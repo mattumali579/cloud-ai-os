@@ -2,11 +2,17 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.tools/
+.firecrawl/
 *.egg-info/
 .venv/
 venv/
 backups/
 data/
+resumes/*.pdf
+resumes/tailored/
+playwright-report/
+test-results/
 node_modules/
 .wrangler/
 # runtime logs, not source

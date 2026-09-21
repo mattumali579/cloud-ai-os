@@ -122,6 +122,24 @@ class Settings:
 
     supabase_db_budget_mb: int = 500
     notify_webhook_url: str = ""
+    # Autonomous job agent. Personal data and browser state are runtime-only
+    # files and are deliberately excluded from Git.
+    job_agent_config_path: str = str(REPO_ROOT / "config" / "job_agent.yaml")
+    job_profile_path: str = str(REPO_ROOT / "data" / "applicant-profile.yaml")
+    job_answers_path: str = str(REPO_ROOT / "data" / "application_answers.yaml")
+    job_browser_state_path: str = str(REPO_ROOT / "data" / "browser-state")
+    job_browser_executable_path: str = ""
+    quick_apply_only: bool = True
+    max_application_minutes: int = 8
+    max_custom_questions: int = 5
+    skip_assessments: bool = True
+    skip_long_applications: bool = True
+    auto_submit: bool = True
+    dry_run: bool = True
+    job_min_score: int = 65
+    max_applications_per_run: int = 10
+    application_timeout_seconds: int = 480
+    discovery_http_timeout_seconds: int = 20
 
     extra: dict = field(default_factory=dict)
 
@@ -177,6 +195,22 @@ def get_settings() -> Settings:
         email_outbox_path=_path("EMAIL_OUTBOX_PATH", REPO_ROOT / "email_outbox"),
         supabase_db_budget_mb=_int("SUPABASE_DB_BUDGET_MB", 500),
         notify_webhook_url=_str("NOTIFY_WEBHOOK_URL"),
+        job_agent_config_path=_path("JOB_AGENT_CONFIG_PATH", REPO_ROOT / "config" / "job_agent.yaml"),
+        job_profile_path=_path("JOB_PROFILE_PATH", REPO_ROOT / "data" / "applicant-profile.yaml"),
+        job_answers_path=_path("JOB_ANSWERS_PATH", REPO_ROOT / "data" / "application_answers.yaml"),
+        job_browser_state_path=_path("JOB_BROWSER_STATE_PATH", REPO_ROOT / "data" / "browser-state"),
+        job_browser_executable_path=_str("JOB_BROWSER_EXECUTABLE_PATH"),
+        quick_apply_only=_bool("QUICK_APPLY_ONLY", True),
+        max_application_minutes=_int("MAX_APPLICATION_MINUTES", 8),
+        max_custom_questions=_int("MAX_CUSTOM_QUESTIONS", 5),
+        skip_assessments=_bool("SKIP_ASSESSMENTS", True),
+        skip_long_applications=_bool("SKIP_LONG_APPLICATIONS", True),
+        auto_submit=_bool("AUTO_SUBMIT", True),
+        dry_run=_bool("DRY_RUN", True),
+        job_min_score=_int("JOB_MIN_SCORE", 65),
+        max_applications_per_run=_int("MAX_APPLICATIONS_PER_RUN", 10),
+        application_timeout_seconds=_int("APPLICATION_TIMEOUT_SECONDS", 480),
+        discovery_http_timeout_seconds=_int("DISCOVERY_HTTP_TIMEOUT_SECONDS", 20),
     )
 
 

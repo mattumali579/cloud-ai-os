@@ -33,14 +33,20 @@ services:
   worker:
     build:
       context: ../..
-      dockerfile: infra/docker/Dockerfile
-    image: cloudos:oracle
+      dockerfile: infra/docker/Dockerfile.job-agent
+    image: cloudos-job-worker:oracle
     command: ["python", "-m", "cloudos.worker"]
     restart: always
     env_file:
       - path: ../../.env
         required: true
-    mem_limit: 1g
+    environment:
+      JOB_BROWSER_EXECUTABLE_PATH: /usr/bin/chromium
+    volumes:
+      - ../../data:/app/data
+      - job-resumes:/app/resumes
+    shm_size: 512mb
+    mem_limit: 2g
 
   n8n:
     image: docker.n8n.io/n8nio/n8n
@@ -53,12 +59,15 @@ services:
     environment:
       # SQLite backend (contract §12) — n8n state lives in the n8n-data volume,
       # captured by infra/oracle/backup.sh. NOT in Supabase.
-      N8N_BASIC_AUTH_ACTIVE: "true"
       NODE_OPTIONS: "--max-old-space-size=512"
       GENERIC_TIMEZONE: "UTC"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
     volumes:
       - n8n-data:/home/node/.n8n
     mem_limit: 768m
 
 volumes:
   n8n-data:
+  job-resumes:

@@ -15,10 +15,11 @@ from fastapi import Depends, FastAPI, Query, Request
 
 from cloudos.config import get_settings
 from cloudos.contracts import CloudOSError, ErrorCode, PrivacyLabel, RouteRequest
+from cloudos.brightreach.service import BookingInput, ClientSetup, LeadInput, get_service
 
 from . import store
 from .auth import require_bearer, require_webhook_auth
-from .errors import install_exception_handlers
+from .errors import NotFound, install_exception_handlers
 from .schemas import (
     EmailDraftRequest,
     EmailSendRequest,
@@ -49,6 +50,16 @@ app = FastAPI(title="Cloud AI OS — Agent API", version="1.0", lifespan=lifespa
 install_exception_handlers(app)
 
 authed = Depends(require_bearer)
+
+
+def _brightreach(callable_):
+    """Keep the small BrightReach flow on the API's normal safe error shape."""
+    try:
+        return callable_()
+    except KeyError as exc:
+        raise NotFound(str(exc)) from None
+    except ValueError as exc:
+        raise CloudOSError(ErrorCode.VALIDATION_ERROR, str(exc)) from None
 
 
 # ---------------------------------------------------------------- health
@@ -190,17 +201,62 @@ async def list_runs(limit: int = Query(default=50, ge=1, le=200)) -> dict:
 
 @app.get("/v1/quota", dependencies=[authed])
 async def quota() -> dict:
-    """Daily usage + provider state. Keeps the {usage, budgets, fail_closed}
-    shape (n8n daily_ops reads it); budgets are now informational counters —
-    hard limits live with each subscription plan, not here."""
+    """Daily usage and provider state with compatibility-safe observability."""
+    settings = get_settings()
     usage = store.quota_today()
-    providers = store.provider_status_rows()
-    fail_closed = {
-        row.get("provider"): row.get("state")
-        in ("QUOTA_EXHAUSTED", "AUTH_REQUIRED", "BILLING_RISK")
-        for row in providers
+    budgets = {
+        "workers_ai": int(getattr(settings, "workers_ai_daily_budget", 9000)),
+        "gemini": int(getattr(settings, "gemini_daily_request_budget", 200)),
     }
-    return {"usage": usage, "budgets": {}, "fail_closed": fail_closed, "providers": providers}
+    by_provider = {row.get("provider"): row for row in usage}
+    fail_closed = {
+        "workers_ai": int(by_provider.get("workers_ai", {}).get("units", 0) or 0) >= budgets["workers_ai"],
+        "gemini": int(by_provider.get("gemini", {}).get("requests", 0) or 0) >= budgets["gemini"],
+    }
+    try:
+        providers = store.provider_status_rows()
+    except Exception:  # provider_status is newer than quota_usage; keep quota observable during migration
+        providers = []
+    for row in providers:
+        provider = row.get("provider")
+        if provider in fail_closed and row.get("state") in {"QUOTA_EXHAUSTED", "AUTH_REQUIRED", "BILLING_RISK"}:
+            fail_closed[provider] = True
+    return {"usage": usage, "budgets": budgets, "fail_closed": fail_closed, "providers": providers}
+
+
+# ---------------------------------------------------------------- BrightReach
+
+@app.post("/v1/brightreach/clients", status_code=201, dependencies=[authed])
+async def brightreach_create_client(body: ClientSetup) -> dict:
+    """Store a client's service, area, and plain qualification rules."""
+    return _brightreach(lambda: get_service().create_client(body))
+
+
+@app.post("/v1/brightreach/clients/{client_id}/leads", status_code=201, dependencies=[authed])
+async def brightreach_create_lead(client_id: str, body: LeadInput) -> dict:
+    """Capture a lead and immediately create the safe response to hand off."""
+    return _brightreach(lambda: get_service().create_lead(client_id, body))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/qualify", dependencies=[authed])
+async def brightreach_qualify(lead_id: str) -> dict:
+    return _brightreach(lambda: get_service().qualify(lead_id))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/follow-up", dependencies=[authed])
+async def brightreach_follow_up(lead_id: str) -> dict:
+    return _brightreach(lambda: get_service().follow_up(lead_id))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/booking", dependencies=[authed])
+async def brightreach_record_booking(lead_id: str, body: BookingInput) -> dict:
+    """Record an event only after the connected calendar returns its real ID."""
+    return _brightreach(lambda: get_service().record_booking(lead_id, body))
+
+
+@app.get("/v1/brightreach/clients/{client_id}/report", dependencies=[authed])
+async def brightreach_report(client_id: str) -> dict:
+    return _brightreach(lambda: get_service().report(client_id))
 
 
 @app.get("/v1/providers", dependencies=[authed])
