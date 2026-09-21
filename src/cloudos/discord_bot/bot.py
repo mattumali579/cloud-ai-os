@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict, deque
 
 import httpx
 
 from cloudos.config import get_settings
-from cloudos.employees import role_for_channel
+from cloudos.employees import EMPLOYEES, normalize_role, role_for_channel
 
 
 def _chunks(text: str, limit: int = 1900) -> list[str]:
@@ -44,6 +45,16 @@ class CloudOSClient:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
                 f"{self.base_url}/v1/providers?probe=true", headers=self.headers
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def build_email(self, draft_id: str, source_text: str) -> dict:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{self.base_url}/v1/email/build",
+                headers=self.headers,
+                json={"draft_id": draft_id, "source_text": source_text},
             )
             response.raise_for_status()
             return response.json()
@@ -95,9 +106,31 @@ def main() -> None:
 
     api = CloudOSClient(settings.discord_api_url, settings.agent_api_token)
     histories: dict[int, deque[str]] = defaultdict(lambda: deque(maxlen=8))
+    # Full, untruncated last employee reply per channel. histories[] clips each
+    # entry to keep the prompt small, which would cut a draft's JSON in half.
+    last_reply: dict[int, str] = {}
+    sticky_role: dict[int, str] = {}
+    owner_ids = {part.strip() for part in settings.discord_owner_ids.split(",") if part.strip()}
     intents = discord.Intents.default()
     intents.message_content = True
+    intents.dm_messages = True
     client = discord.Client(intents=intents)
+
+    def resolve_role(message) -> str | None:
+        """Which employee should answer this message.
+
+        In a server the channel name decides. In a DM there is no channel name,
+        so use whatever !use last set, falling back to the configured default.
+        """
+        if message.guild is not None:
+            return role_for_channel(getattr(message.channel, "name", "") or "")
+        chosen = sticky_role.get(message.channel.id)
+        if chosen:
+            return chosen
+        try:
+            return normalize_role(settings.discord_default_role)
+        except ValueError:
+            return None
 
     @client.event
     async def on_ready():
@@ -105,9 +138,14 @@ def main() -> None:
 
     @client.event
     async def on_message(message):
-        if message.author.bot or not message.guild:
+        if message.author.bot:
             return
-        if settings.discord_allowed_guild_id and str(message.guild.id) != settings.discord_allowed_guild_id:
+        if message.guild is None:
+            # Direct messages are owner-only. Without an owner list a DM could
+            # let any stranger spend the plan's Codex usage.
+            if not owner_ids or str(message.author.id) not in owner_ids:
+                return
+        elif settings.discord_allowed_guild_id and str(message.guild.id) != settings.discord_allowed_guild_id:
             return
 
         content = message.content.strip()
@@ -144,6 +182,58 @@ def main() -> None:
                 await message.reply(_error_text(exc))
             return
 
+        if content in ("!help", "!commands"):
+            roles = ", ".join(sorted(EMPLOYEES))
+            await message.reply(
+                "Text me normally and the right employee answers.\n"
+                f"Employees: {roles}\n"
+                "`!use <employee>` - pick who answers in this DM\n"
+                "`!email draft` - turn the last email reply into a reviewable draft\n"
+                "`!email preview <id>` - show a draft and its confirmation code\n"
+                "`!email confirm <id> <code>` - actually send it\n"
+                "`!status` - what is online"
+            )
+            return
+
+        if content.startswith("!use"):
+            wanted = content[len("!use") :].strip()
+            if not wanted:
+                current = sticky_role.get(message.channel.id) or settings.discord_default_role
+                await message.reply(f"Right now I answer as **{current}**. Change it with `!use <employee>`.")
+                return
+            try:
+                chosen = normalize_role(wanted)
+            except ValueError:
+                await message.reply(f"I do not have an employee called `{wanted}`. Try: {', '.join(sorted(EMPLOYEES))}")
+                return
+            sticky_role[message.channel.id] = chosen
+            await message.reply(f"Okay - **{chosen}** answers from now on here.")
+            return
+
+        if content.startswith("!email draft"):
+            source = last_reply.get(message.channel.id)
+            if not source:
+                await message.reply(
+                    "I have no email reply to turn into a draft yet. Ask the email marketer for the "
+                    "campaign first, including who it goes to."
+                )
+                return
+            requested = content[len("!email draft") :].strip()
+            draft_id = requested or f"draft-{int(time.time())}"
+            try:
+                payload = await api.build_email(draft_id, source)
+            except Exception as exc:  # noqa: BLE001
+                await message.reply(_error_text(exc))
+                return
+            lines = [
+                f"Draft `{payload['draft_id']}` is ready - **{payload['count']} recipients**. Nothing has been sent.",
+                f"Confirmation code: `{payload['fingerprint']}`",
+            ]
+            lines.extend(f"- {row['to']} - {row['subject']}" for row in payload.get("messages", []))
+            lines.append(f"Send it with: `!email confirm {payload['draft_id']} {payload['fingerprint']}`")
+            await message.reply("\n".join(lines))
+            return
+
         if content.startswith("!email preview "):
             draft_id = content.split(maxsplit=2)[2]
             try:
@@ -175,7 +265,7 @@ def main() -> None:
                 await message.reply(_error_text(exc))
             return
 
-        role = role_for_channel(message.channel.name)
+        role = resolve_role(message)
         if role is None:
             return
         history = list(histories[message.channel.id])
@@ -184,6 +274,7 @@ def main() -> None:
             async with message.channel.typing():
                 payload = await api.invoke_employee(role, content, history)
             answer = payload.get("text") or "No output returned."
+            last_reply[message.channel.id] = answer
             histories[message.channel.id].append(f"{role.upper()}: {answer[:2500]}")
             for chunk in _chunks(answer):
                 await message.reply(chunk)

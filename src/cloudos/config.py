@@ -107,6 +107,8 @@ class Settings:
     discord_bot_token: str = ""
     discord_allowed_guild_id: str = ""
     discord_api_url: str = "http://127.0.0.1:8080"
+    discord_owner_ids: str = ""
+    discord_default_role: str = "researcher"
 
     higgsfield_cli_bin: str = "higgsfield"
     higgsfield_allow_generation: bool = False
@@ -117,6 +119,7 @@ class Settings:
     hostinger_smtp_username: str = ""
     hostinger_smtp_password: str = ""
     email_from_name: str = ""
+    email_from_address: str = ""
     email_send_enabled: bool = False
     email_outbox_path: str = str(REPO_ROOT / "email_outbox")
 
@@ -183,14 +186,20 @@ def get_settings() -> Settings:
         discord_bot_token=_str("DISCORD_BOT_TOKEN"),
         discord_allowed_guild_id=_str("DISCORD_ALLOWED_GUILD_ID"),
         discord_api_url=_str("DISCORD_API_URL", "http://127.0.0.1:8080"),
+        discord_owner_ids=_str("DISCORD_OWNER_IDS"),
+        discord_default_role=_str("DISCORD_DEFAULT_ROLE", "researcher"),
         higgsfield_cli_bin=_str("HIGGSFIELD_CLI_BIN", "higgsfield"),
         higgsfield_allow_generation=_bool("HIGGSFIELD_ALLOW_GENERATION", False),
         higgsfield_timeout_seconds=_int("HIGGSFIELD_TIMEOUT_SECONDS", 900),
-        hostinger_smtp_host=_str("HOSTINGER_SMTP_HOST", "smtp.hostinger.com"),
-        hostinger_smtp_port=_int("HOSTINGER_SMTP_PORT", 465),
-        hostinger_smtp_username=_str("HOSTINGER_SMTP_USERNAME"),
-        hostinger_smtp_password=_str("HOSTINGER_SMTP_PASSWORD"),
-        email_from_name=_str("EMAIL_FROM_NAME"),
+        # Hostinger is the intended mailbox. The generic SMTP_* names are read as a
+        # fallback so an already-working mailbox keeps sending while Hostinger
+        # credentials are not yet in place.
+        hostinger_smtp_host=_str("HOSTINGER_SMTP_HOST", _str("SMTP_HOST", "smtp.hostinger.com")),
+        hostinger_smtp_port=_int("HOSTINGER_SMTP_PORT", _int("SMTP_PORT", 465)),
+        hostinger_smtp_username=_str("HOSTINGER_SMTP_USERNAME", _str("SMTP_USER")),
+        hostinger_smtp_password=_str("HOSTINGER_SMTP_PASSWORD", _str("SMTP_PASS")),
+        email_from_name=_str("EMAIL_FROM_NAME", _str("SMTP_FROM_NAME")),
+        email_from_address=_str("EMAIL_FROM_ADDRESS", _str("SMTP_FROM_EMAIL")),
         email_send_enabled=_bool("EMAIL_SEND_ENABLED", False),
         email_outbox_path=_path("EMAIL_OUTBOX_PATH", REPO_ROOT / "email_outbox"),
         supabase_db_budget_mb=_int("SUPABASE_DB_BUDGET_MB", 500),

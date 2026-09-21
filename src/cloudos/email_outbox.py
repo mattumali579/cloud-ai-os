@@ -67,6 +67,93 @@ def _load(draft_id: str) -> tuple[list[OutboxMessage], str]:
     return messages, fingerprint
 
 
+def _connect(settings, context: ssl.SSLContext):
+    """Open an SMTP session using the style the port implies.
+
+    Port 465 is implicit TLS (SMTP_SSL). Port 587 is plaintext-then-STARTTLS.
+    Hostinger offers both; Gmail and most other hosts only offer 587, so
+    assuming 465 silently broke every non-Hostinger mailbox.
+    """
+    host = settings.hostinger_smtp_host
+    port = int(settings.hostinger_smtp_port)
+    if port == 465:
+        return smtplib.SMTP_SSL(host, port, context=context, timeout=30)
+    smtp = smtplib.SMTP(host, port, timeout=30)
+    try:
+        smtp.ehlo()
+        smtp.starttls(context=context)
+        smtp.ehlo()
+    except Exception:
+        smtp.close()
+        raise
+    return smtp
+
+
+def _fenced_blocks(text: str) -> list[str]:
+    """Every fenced code block body, longest first, plus any bare JSON object."""
+    blocks = re.findall(r"```[^\n`]*\n(.*?)```", text, re.DOTALL)
+    blocks = [b.strip() for b in blocks if b.strip()]
+    # A model sometimes answers with a bare object and no fence at all.
+    depth = 0
+    start = -1
+    for index, char in enumerate(text):
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                blocks.append(text[start : index + 1])
+                start = -1
+    return sorted(set(blocks), key=len, reverse=True)
+
+
+def extract_messages(text: str) -> list[dict]:
+    """Pull the machine-readable draft out of an employee's written answer.
+
+    The email-marketer employee is told to emit a JSON object with a "messages"
+    list. Prose wraps it, so scan candidate blocks rather than parsing the whole
+    reply. Raises if no usable block is present so the caller never guesses.
+    """
+    for block in _fenced_blocks(text or ""):
+        try:
+            data = json.loads(block)
+        except ValueError:
+            continue
+        rows = data.get("messages") if isinstance(data, dict) else None
+        if isinstance(rows, list) and rows:
+            return rows
+    raise CloudOSError(
+        ErrorCode.VALIDATION_ERROR,
+        "no EMAIL_DRAFT JSON block found in that reply; ask the email marketer for the recipients",
+    )
+
+
+def create_draft(draft_id: str, messages: list) -> dict:
+    """Write a pending draft, then re-read it through the same validator.
+
+    Writing and validating are deliberately separate: the file on disk is the
+    only thing send() trusts, so the preview must come from re-reading it, not
+    from the in-memory list that produced it.
+    """
+    path = _draft_path(draft_id)
+    if not isinstance(messages, list) or not messages:
+        raise CloudOSError(ErrorCode.VALIDATION_ERROR, "a draft needs at least one message")
+    if len(messages) > MAX_EMAILS_PER_DRAFT:
+        raise CloudOSError(
+            ErrorCode.VALIDATION_ERROR,
+            f"{len(messages)} recipients exceeds the {MAX_EMAILS_PER_DRAFT}-recipient cap",
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"messages": messages}, indent=2), encoding="utf-8")
+    try:
+        return preview(draft_id)
+    except CloudOSError:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def preview(draft_id: str) -> dict:
     messages, fingerprint = _load(draft_id)
     return {
@@ -105,17 +192,13 @@ def send(draft_id: str, fingerprint: str) -> dict:
 
     context = ssl.create_default_context()
     sent: list[str] = []
+    from_address = settings.email_from_address or settings.hostinger_smtp_username
     try:
-        with smtplib.SMTP_SSL(
-            settings.hostinger_smtp_host,
-            settings.hostinger_smtp_port,
-            context=context,
-            timeout=30,
-        ) as smtp:
+        with _connect(settings, context) as smtp:
             smtp.login(settings.hostinger_smtp_username, settings.hostinger_smtp_password)
             for item in messages:
                 email = EmailMessage()
-                sender = formataddr((settings.email_from_name, settings.hostinger_smtp_username))
+                sender = formataddr((settings.email_from_name, from_address))
                 email["From"] = sender
                 email["To"] = item.to
                 email["Subject"] = item.subject

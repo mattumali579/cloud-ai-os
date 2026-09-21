@@ -21,6 +21,7 @@ from . import store
 from .auth import require_bearer, require_webhook_auth
 from .errors import NotFound, install_exception_handlers
 from .schemas import (
+    EmailBuildRequest,
     EmailDraftRequest,
     EmailSendRequest,
     EmployeeInvokeRequest,
@@ -176,6 +177,19 @@ async def higgsfield_generate(body: HiggsfieldGenerateRequest) -> dict:
     from cloudos.higgsfield import generate
 
     return {"ok": True, "output": generate(body.kind, body.prompt, confirmed=body.confirmed)}
+
+
+@app.post("/v1/email/build", dependencies=[authed])
+async def email_build(body: EmailBuildRequest) -> dict:
+    """Extract the draft out of an employee reply and store it for review.
+
+    This never sends. It only produces the previewable draft plus the
+    fingerprint that a later send has to match exactly.
+    """
+    from cloudos.email_outbox import create_draft, extract_messages
+
+    messages = extract_messages(body.source_text)
+    return {"ok": True, **create_draft(body.draft_id, messages)}
 
 
 @app.post("/v1/email/preview", dependencies=[authed])

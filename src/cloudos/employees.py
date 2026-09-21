@@ -76,11 +76,13 @@ EMPLOYEES: dict[str, Employee] = {
         ),
         deliverable=(
             "Return campaign goal, segmentation, send sequence, subject/preheader options, complete "
-            "email copy, CTA, automation triggers, and metrics to review. If the owner asks to send, "
-            "write a draft to email_outbox/pending/<draft-id>.json using this exact shape: "
+            "email copy, CTA, automation triggers, and metrics to review. When the owner names real "
+            "recipients, END your reply with a fenced json code block containing exactly this shape "
+            "and nothing else: "
             "{\"messages\":[{\"to\":\"person@example.com\",\"subject\":\"...\",\"text\":\"...\"}]}. "
-            "Use no more than 10 verified recipients. Never send it yourself; the owner previews and "
-            "confirms the draft through Discord."
+            "One entry per recipient, at most 10, plain text bodies only, and never invent an address. "
+            "Do NOT write any file and do NOT send anything: the owner turns that block into a draft "
+            "and confirms it through Discord."
         ),
     ),
     "analyst": Employee(

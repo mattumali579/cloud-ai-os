@@ -50,5 +50,11 @@ class EmailDraftRequest(BaseModel):
     draft_id: str = Field(min_length=1, max_length=64)
 
 
+class EmailBuildRequest(EmailDraftRequest):
+    """Turn an email-marketer reply into a reviewable draft on disk."""
+
+    source_text: str = Field(min_length=1, max_length=200_000)
+
+
 class EmailSendRequest(EmailDraftRequest):
     fingerprint: str = Field(pattern="^[a-fA-F0-9]{12}$")
