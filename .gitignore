@@ -18,3 +18,7 @@ node_modules/
 # runtime logs, not source
 logs/
 email_outbox/
+
+# Local tool debris (Playwright MCP runs, wave fingerprint cache)
+.playwright-mcp/
+wave.fp
