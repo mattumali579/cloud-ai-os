@@ -96,12 +96,29 @@ class Settings:
     cli_timeout_seconds: int = 300
     claude_cli_bin: str = "claude"
     codex_cli_bin: str = "codex"
+    codex_workspace: str = ""
     gemini_cli_bin: str = "gemini"
     claude_cli_model: str = ""  # empty = CLI default
 
     privacy_config_path: str = str(REPO_ROOT / "config" / "privacy.yaml")
     second_brain_path: str = ""
     second_brain_git_url: str = ""
+
+    discord_bot_token: str = ""
+    discord_allowed_guild_id: str = ""
+    discord_api_url: str = "http://127.0.0.1:8080"
+
+    higgsfield_cli_bin: str = "higgsfield"
+    higgsfield_allow_generation: bool = False
+    higgsfield_timeout_seconds: int = 900
+
+    hostinger_smtp_host: str = "smtp.hostinger.com"
+    hostinger_smtp_port: int = 465
+    hostinger_smtp_username: str = ""
+    hostinger_smtp_password: str = ""
+    email_from_name: str = ""
+    email_send_enabled: bool = False
+    email_outbox_path: str = str(REPO_ROOT / "email_outbox")
 
     supabase_db_budget_mb: int = 500
     notify_webhook_url: str = ""
@@ -139,11 +156,25 @@ def get_settings() -> Settings:
         cli_timeout_seconds=_int("CLI_TIMEOUT_SECONDS", 300),
         claude_cli_bin=_str("CLAUDE_CLI_BIN", "claude"),
         codex_cli_bin=_str("CODEX_CLI_BIN", "codex"),
+        codex_workspace=_path("CODEX_WORKSPACE", REPO_ROOT),
         gemini_cli_bin=_str("GEMINI_CLI_BIN", "gemini"),
         claude_cli_model=_str("CLAUDE_CLI_MODEL", ""),
         privacy_config_path=_path("PRIVACY_CONFIG_PATH", REPO_ROOT / "config" / "privacy.yaml"),
         second_brain_path=_str("SECOND_BRAIN_PATH"),
         second_brain_git_url=_str("SECOND_BRAIN_GIT_URL"),
+        discord_bot_token=_str("DISCORD_BOT_TOKEN"),
+        discord_allowed_guild_id=_str("DISCORD_ALLOWED_GUILD_ID"),
+        discord_api_url=_str("DISCORD_API_URL", "http://127.0.0.1:8080"),
+        higgsfield_cli_bin=_str("HIGGSFIELD_CLI_BIN", "higgsfield"),
+        higgsfield_allow_generation=_bool("HIGGSFIELD_ALLOW_GENERATION", False),
+        higgsfield_timeout_seconds=_int("HIGGSFIELD_TIMEOUT_SECONDS", 900),
+        hostinger_smtp_host=_str("HOSTINGER_SMTP_HOST", "smtp.hostinger.com"),
+        hostinger_smtp_port=_int("HOSTINGER_SMTP_PORT", 465),
+        hostinger_smtp_username=_str("HOSTINGER_SMTP_USERNAME"),
+        hostinger_smtp_password=_str("HOSTINGER_SMTP_PASSWORD"),
+        email_from_name=_str("EMAIL_FROM_NAME"),
+        email_send_enabled=_bool("EMAIL_SEND_ENABLED", False),
+        email_outbox_path=_path("EMAIL_OUTBOX_PATH", REPO_ROOT / "email_outbox"),
         supabase_db_budget_mb=_int("SUPABASE_DB_BUDGET_MB", 500),
         notify_webhook_url=_str("NOTIFY_WEBHOOK_URL"),
     )

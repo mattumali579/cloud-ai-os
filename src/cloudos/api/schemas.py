@@ -25,3 +25,30 @@ class InvokeRequest(BaseModel):
     privacy_label: str = Field(default="internal")
     model_hint: Optional[str] = None
     max_tokens: int = Field(default=1024, ge=1, le=65_536)
+
+
+class EmployeeInvokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=20_000)
+    history: list[str] = Field(default_factory=list, max_length=12)
+    privacy_label: str = Field(default="internal")
+    max_tokens: int = Field(default=4096, ge=1, le=65_536)
+
+
+class HiggsfieldGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(pattern="^(image|video)$")
+    prompt: str = Field(min_length=1, max_length=8_000)
+    confirmed: bool = False
+
+
+class EmailDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str = Field(min_length=1, max_length=64)
+
+
+class EmailSendRequest(EmailDraftRequest):
+    fingerprint: str = Field(pattern="^[a-fA-F0-9]{12}$")

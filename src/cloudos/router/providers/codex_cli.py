@@ -84,7 +84,13 @@ def _classify_failure(rc: int, text: str, timed_out: bool) -> Exception:
     return ProviderUnavailable(f"codex CLI exit={rc}")
 
 
-def generate(prompt: str, max_tokens: int = 1024, timeout: int = 300) -> ProviderResponse:
+def generate(
+    prompt: str,
+    max_tokens: int = 1024,
+    timeout: int = 300,
+    *,
+    web_search: bool = False,
+) -> ProviderResponse:
     status = probe()
     if status.state is not ProviderState.AVAILABLE_SUBSCRIPTION:
         if status.state in (ProviderState.QUOTA_EXHAUSTED, ProviderState.AUTH_REQUIRED, ProviderState.BILLING_RISK):
@@ -93,8 +99,11 @@ def generate(prompt: str, max_tokens: int = 1024, timeout: int = 300) -> Provide
 
     settings = get_settings()
     binary = base.which(settings.codex_cli_bin) or settings.codex_cli_bin
-    argv = [binary, "exec", "--skip-git-repo-check", prompt]
-    res = base.RUNNER(argv, timeout=timeout)
+    argv = [binary]
+    if web_search:
+        argv.append("--search")
+    argv.extend(["exec", "--skip-git-repo-check", prompt])
+    res = base.RUNNER(argv, timeout=timeout, cwd=settings.codex_workspace or None)
     combined = (res.stdout or "") + "\n" + (res.stderr or "")
 
     if res.returncode != 0 or res.timed_out:

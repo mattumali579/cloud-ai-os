@@ -19,7 +19,14 @@ from cloudos.contracts import CloudOSError, ErrorCode, PrivacyLabel, RouteReques
 from . import store
 from .auth import require_bearer, require_webhook_auth
 from .errors import install_exception_handlers
-from .schemas import InvokeRequest, JobCreate
+from .schemas import (
+    EmailDraftRequest,
+    EmailSendRequest,
+    EmployeeInvokeRequest,
+    HiggsfieldGenerateRequest,
+    InvokeRequest,
+    JobCreate,
+)
 
 log = logging.getLogger("cloudos.api")
 
@@ -122,6 +129,56 @@ async def agent_invoke(body: InvokeRequest) -> dict:
     )
     result = route(req)  # CloudOSError propagates to the §6 handler
     return result.to_dict()
+
+
+@app.post("/v1/employees/{role}/invoke", dependencies=[authed])
+async def employee_invoke(role: str, body: EmployeeInvokeRequest) -> dict:
+    try:
+        label = PrivacyLabel(body.privacy_label.strip().lower())
+    except ValueError:
+        raise CloudOSError(
+            ErrorCode.VALIDATION_ERROR,
+            "invalid privacy_label",
+            {"privacy_label": body.privacy_label[:64], "allowed": [p.value for p in PrivacyLabel]},
+        ) from None
+
+    try:
+        from cloudos.employees import invoke_employee
+
+        result, context_files = invoke_employee(
+            role,
+            body.message,
+            history=body.history,
+            privacy_label=label,
+            max_tokens=body.max_tokens,
+        )
+    except ValueError as exc:
+        raise CloudOSError(ErrorCode.VALIDATION_ERROR, str(exc)) from None
+    payload = result.to_dict()
+    payload["employee"] = role
+    payload["context_files"] = context_files
+    return payload
+
+
+@app.post("/v1/higgsfield/generate", dependencies=[authed])
+async def higgsfield_generate(body: HiggsfieldGenerateRequest) -> dict:
+    from cloudos.higgsfield import generate
+
+    return {"ok": True, "output": generate(body.kind, body.prompt, confirmed=body.confirmed)}
+
+
+@app.post("/v1/email/preview", dependencies=[authed])
+async def email_preview(body: EmailDraftRequest) -> dict:
+    from cloudos.email_outbox import preview
+
+    return {"ok": True, **preview(body.draft_id)}
+
+
+@app.post("/v1/email/send", dependencies=[authed])
+async def email_send(body: EmailSendRequest) -> dict:
+    from cloudos.email_outbox import send
+
+    return {"ok": True, **send(body.draft_id, body.fingerprint)}
 
 
 # ---------------------------------------------------------------- observability
