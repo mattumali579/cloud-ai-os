@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Query, Request
+from fastapi.responses import HTMLResponse
 
 from cloudos.config import get_settings
 from cloudos.contracts import CloudOSError, ErrorCode, PrivacyLabel, RouteRequest
@@ -28,7 +29,9 @@ from .schemas import (
     HiggsfieldGenerateRequest,
     InvokeRequest,
     JobCreate,
+    PhoneTaskRequest,
 )
+from .phone import execute_phone_task
 
 log = logging.getLogger("cloudos.api")
 
@@ -76,6 +79,30 @@ async def healthz() -> dict:
     except Exception:  # module missing or healthcheck itself broken → report false
         db_ok = False
     return {"status": "ok", "db": db_ok}
+
+
+PHONE_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cloud AI OS</title><style>
+body{margin:0;background:#101827;color:#f8fafc;font:17px system-ui,sans-serif}main{max-width:680px;margin:auto;padding:24px}
+h1{font-size:1.5rem}textarea,select,button{box-sizing:border-box;width:100%;margin:8px 0;border-radius:10px;border:1px solid #475569;padding:12px;font:inherit}
+textarea{min-height:140px;background:#0f172a;color:#fff}select{background:#1e293b;color:#fff}button{background:#38bdf8;color:#082f49;font-weight:700;border:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#020617;padding:14px;border-radius:10px;min-height:72px}
+</style></head><body><main><h1>Cloud AI OS</h1><p>Private Tailscale task runner</p>
+<form id="task-form"><textarea id="task" placeholder="Describe a task for this HP 15"></textarea><select id="agent"><option value="auto">Auto (Claude)</option><option value="claude">Claude</option><option value="codex">Codex</option></select><button id="send" type="submit">Send</button></form><pre id="output">Ready.</pre>
+<script>(function(){var form=document.getElementById('task-form'),task=document.getElementById('task'),agent=document.getElementById('agent'),send=document.getElementById('send'),out=document.getElementById('output');function finish(){send.disabled=false;send.textContent='Send'}function error(message){out.textContent='Error: '+message;finish()}form.addEventListener('submit',function(event){event.preventDefault();var text=task.value.trim();if(!text){out.textContent='Enter a task.';return}out.textContent='Running...';send.disabled=true;send.textContent='Running...';var request=new XMLHttpRequest();request.open('POST','/v1/phone/task',true);request.setRequestHeader('Content-Type','application/json');request.timeout=900000;request.onload=function(){var data;try{data=JSON.parse(request.responseText||'{}')}catch(e){error('invalid response from Cloud AI OS');return}if(request.status>=200&&request.status<300){var result='Agent: '+(data.agent||agent.value)+'\\n\\n'+(data.output||'No response returned.');if(data.files_created&&data.files_created.length){result+='\\n\\nFiles: '+data.files_created.join(', ')}out.textContent=result;finish()}else{error((data.error&&data.error.message)||('HTTP '+request.status))}};request.onerror=function(){error('network request failed')};request.ontimeout=function(){error('request timed out after 15 minutes')};try{request.send(JSON.stringify({task:text,agent:agent.value}))}catch(e){error(e.message||'request could not be sent')}});}());</script>
+</main></body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def phone_page() -> str:
+    """Tiny UI, reachable remotely only through the loopback Tailscale proxy."""
+    return PHONE_PAGE
+
+
+@app.post("/v1/phone/task")
+def phone_task(body: PhoneTaskRequest) -> dict:
+    """Run one DB-free private task and return the CLI response directly."""
+    return execute_phone_task(body.task, body.agent)
 
 
 # ---------------------------------------------------------------- jobs

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +25,15 @@ class InvokeRequest(BaseModel):
     privacy_label: str = Field(default="internal")
     model_hint: Optional[str] = None
     max_tokens: int = Field(default=1024, ge=1, le=65_536)
+
+
+class PhoneTaskRequest(BaseModel):
+    """Small, DB-independent task request accepted from the private phone UI."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: str = Field(min_length=1, max_length=12_000)
+    agent: Literal["auto", "claude", "codex"] = "auto"
 
 
 class EmployeeInvokeRequest(BaseModel):

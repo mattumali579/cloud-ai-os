@@ -7,6 +7,7 @@ DATABASE_URL).
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,23 @@ def test_healthcheck_unreachable_is_false_not_raise(set_db_url, monkeypatch):
     monkeypatch.setattr(db, "POOL_TIMEOUT_SECONDS", 2.0)
     set_db_url("postgresql://cloudos:wrong@127.0.0.1:9/cloudos?connect_timeout=1")
     assert db.healthcheck() is False
+
+
+def test_healthcheck_uses_short_per_borrow_timeout(monkeypatch):
+    class Pool:
+        def __init__(self):
+            self.timeout = None
+
+        @contextmanager
+        def connection(self, *, timeout):
+            self.timeout = timeout
+            yield FakeConn()
+
+    pool = Pool()
+    monkeypatch.setattr(db, "get_pool", lambda: pool)
+
+    assert db.healthcheck() is False  # FakeConn has no SELECT 1 row.
+    assert pool.timeout == db.HEALTHCHECK_TIMEOUT_SECONDS
 
 
 def test_reset_pool_is_safe_without_a_pool():

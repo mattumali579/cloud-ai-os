@@ -38,6 +38,10 @@ MIGRATION_LOCK_KEY = 0x636C6F75646F7321
 POOL_MIN_SIZE = 1
 POOL_MAX_SIZE = 4
 POOL_TIMEOUT_SECONDS = 30.0
+# A health endpoint must report a dependency outage promptly.  This is kept
+# separate from the normal pool timeout so migrations and ordinary work retain
+# their existing startup/connection budget.
+HEALTHCHECK_TIMEOUT_SECONDS = 5.0
 
 _SCHEMA_MIGRATIONS_DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -111,7 +115,10 @@ def migrate(conn=None) -> list[str]:
 def healthcheck() -> bool:
     """SELECT 1 round-trip. Returns False on ANY failure -- never raises."""
     try:
-        with get_conn() as conn:
+        # Do not let an unavailable remote pooler make /healthz appear down for
+        # the full normal pool timeout.  ``ConnectionPool.connection`` accepts
+        # a per-borrow timeout without changing the pool's normal behavior.
+        with get_pool().connection(timeout=HEALTHCHECK_TIMEOUT_SECONDS) as conn:
             cur = conn.execute("SELECT 1 AS ok")
             return _row_value(cur.fetchone(), "ok") == 1
     except Exception:
