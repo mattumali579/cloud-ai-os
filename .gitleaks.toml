@@ -1,0 +1,14 @@
+[allowlist]
+description = "Intentional local fixtures, generated research caches, vendor code, and documented detector examples"
+paths = [
+  '''^\.env$''',
+  '''^\.firecrawl/''',
+  '''^\.tools/''',
+  '''^\.pytest_cache/''',
+  '''^tests/__pycache__/''',
+  '''^tests/test_privacy_secrets\.py$''',
+  '''^tests/test_privacy_gate\.py$''',
+  '''^tests/test_router\.py$''',
+  '''^docs/SECURITY\.md$''',
+  '''^tests/test_second_brain\.py$'''
+]

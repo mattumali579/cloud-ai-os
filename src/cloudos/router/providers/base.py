@@ -62,6 +62,7 @@ def run_cli(
     stdin_text: Optional[str] = None,
     timeout: int = 300,
     extra_env: Optional[dict] = None,
+    cwd: Optional[str] = None,
 ) -> CliResult:
     """Run a CLI with the scrubbed environment. Never raises on nonzero exit;
     raises FileNotFoundError only if the binary is missing (callers pre-check
@@ -76,6 +77,7 @@ def run_cli(
             errors="replace",
             timeout=timeout,
             env=scrubbed_env(extra_env),
+            cwd=cwd,
         )
         return CliResult(proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired as exc:

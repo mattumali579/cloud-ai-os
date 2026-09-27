@@ -145,6 +145,16 @@ def handle_notify_flush(payload: dict) -> dict:
         return {"attempted": len(rows), "delivered": delivered, "pending": len(rows) - delivered}
 
 
+def handle_job_agent_run(payload: dict) -> dict:
+    """Run discovery + safe quick applications; each application is isolated internally."""
+    import cloudos.db as db
+    from cloudos.job_agent.orchestrator import JobAgent
+
+    dry_run = payload.get("dry_run") if isinstance(payload.get("dry_run"), bool) else None
+    with db.get_conn() as conn:
+        return JobAgent(conn).run(dry_run=dry_run)
+
+
 HANDLERS: dict[str, Callable[[dict], dict]] = {
     "noop": handle_noop,
     "task.run": handle_task_run,
@@ -152,6 +162,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "sb.reindex": handle_sb_reindex,
     "retention.prune": handle_retention_prune,
     "notify.flush": handle_notify_flush,
+    "job.agent.run": handle_job_agent_run,
 }
 
 

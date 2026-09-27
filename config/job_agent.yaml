@@ -1,0 +1,72 @@
+version: 1
+timezone: America/Chicago
+limits:
+  max_applications_per_run: 10
+  max_applications_per_company_per_day: 2
+  max_attempts_per_application: 2
+  polite_delay_seconds: 3
+priorities:
+  - student worker
+  - office assistant
+  - administrative assistant
+  - front desk
+  - library assistant
+  - library page
+  - gym front desk
+  - membership services
+  - recreation attendant
+  - remote ai
+  - ai operations assistant
+  - ai data evaluation
+  - leasing assistant
+  - apartment office assistant
+  - construction office assistant
+  - project assistant
+  - project coordinator assistant
+  - estimating assistant
+  - preconstruction assistant
+  - construction management internship
+  - executive assistant to ceo
+locations:
+  # Personal commute radius is NOT stored in this public repo.
+  # The full town list lives in the local .env as JOB_AGENT_LOCAL_TERMS.
+  local:
+    - Baton Rouge
+    - LSU
+  remote: true
+  max_commute_miles: 45
+reject:
+  commission_only: true
+  mlm: true
+  pay_to_work: true
+  expired: true
+  duplicates: true
+sources:
+  # Direct employer ATS feeds only. Discovery failures are isolated per source.
+  - name: LSU
+    employer: Louisiana State University
+    type: workday
+    url: https://lsu.wd1.myworkdayjobs.com/wday/cxs/lsu/LSU/jobs
+    careers_url: https://lsu.wd1.myworkdayjobs.com/en-US/LSU
+    enabled: true
+  - name: Louisiana State Government
+    employer: State of Louisiana
+    type: governmentjobs
+    url: https://www.governmentjobs.com/careers/louisiana
+    keywords: [student, office assistant, front desk]
+    enabled: true
+  - name: xAI
+    employer: xAI
+    type: greenhouse
+    url: https://boards-api.greenhouse.io/v1/boards/xai/jobs
+    enabled: true
+  - name: Scale AI
+    employer: Scale AI
+    type: greenhouse
+    url: https://boards-api.greenhouse.io/v1/boards/scaleai/jobs
+    enabled: true
+  - name: Holder Construction
+    employer: Holder Construction Company
+    type: greenhouse
+    url: https://boards-api.greenhouse.io/v1/boards/holderconstruction/jobs
+    enabled: true

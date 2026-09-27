@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,3 +25,45 @@ class InvokeRequest(BaseModel):
     privacy_label: str = Field(default="internal")
     model_hint: Optional[str] = None
     max_tokens: int = Field(default=1024, ge=1, le=65_536)
+
+
+class PhoneTaskRequest(BaseModel):
+    """Small, DB-independent task request accepted from the private phone UI."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: str = Field(min_length=1, max_length=12_000)
+    agent: Literal["auto", "claude", "codex"] = "auto"
+
+
+class EmployeeInvokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=20_000)
+    history: list[str] = Field(default_factory=list, max_length=12)
+    privacy_label: str = Field(default="internal")
+    max_tokens: int = Field(default=4096, ge=1, le=65_536)
+
+
+class HiggsfieldGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(pattern="^(image|video)$")
+    prompt: str = Field(min_length=1, max_length=8_000)
+    confirmed: bool = False
+
+
+class EmailDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str = Field(min_length=1, max_length=64)
+
+
+class EmailBuildRequest(EmailDraftRequest):
+    """Turn an email-marketer reply into a reviewable draft on disk."""
+
+    source_text: str = Field(min_length=1, max_length=200_000)
+
+
+class EmailSendRequest(EmailDraftRequest):
+    fingerprint: str = Field(pattern="^[a-fA-F0-9]{12}$")

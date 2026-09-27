@@ -34,3 +34,13 @@ pip install -e .[dev]
 pytest                        # unit tests, no DB needed
 DATABASE_URL=postgresql://cloudos:cloudos@localhost:5432/cloudos pytest  # + integration
 ```
+
+## Discord AI employees (Codex, no Anthropic API)
+
+The Discord adapter routes named employee channels through Cloud AI OS to the
+Codex CLI authenticated with a ChatGPT account. Research roles enable Codex web
+search, employee prompts are enriched from the configured Second Brain, and
+Higgsfield generation is available only through an explicit credit-spend
+confirmation command.
+
+See [`docs/DISCORD_CODEX_EMPLOYEES.md`](docs/DISCORD_CODEX_EMPLOYEES.md).

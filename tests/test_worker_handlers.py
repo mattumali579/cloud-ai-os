@@ -21,7 +21,7 @@ def _fresh_settings():
 
 def test_registry_has_all_contract_types():
     assert set(handlers.HANDLERS) == {
-        "noop", "ai.generate", "sb.reindex", "retention.prune", "notify.flush"
+        "noop", "task.run", "ai.generate", "sb.reindex", "retention.prune", "notify.flush", "job.agent.run"
     }
 
 

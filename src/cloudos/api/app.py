@@ -12,14 +12,26 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Query, Request
+from fastapi.responses import HTMLResponse
 
 from cloudos.config import get_settings
 from cloudos.contracts import CloudOSError, ErrorCode, PrivacyLabel, RouteRequest
+from cloudos.brightreach.service import BookingInput, ClientSetup, LeadInput, get_service
 
 from . import store
 from .auth import require_bearer, require_webhook_auth
-from .errors import install_exception_handlers
-from .schemas import InvokeRequest, JobCreate
+from .errors import NotFound, install_exception_handlers
+from .schemas import (
+    EmailBuildRequest,
+    EmailDraftRequest,
+    EmailSendRequest,
+    EmployeeInvokeRequest,
+    HiggsfieldGenerateRequest,
+    InvokeRequest,
+    JobCreate,
+    PhoneTaskRequest,
+)
+from .phone import execute_phone_task
 
 log = logging.getLogger("cloudos.api")
 
@@ -44,6 +56,16 @@ install_exception_handlers(app)
 authed = Depends(require_bearer)
 
 
+def _brightreach(callable_):
+    """Keep the small BrightReach flow on the API's normal safe error shape."""
+    try:
+        return callable_()
+    except KeyError as exc:
+        raise NotFound(str(exc)) from None
+    except ValueError as exc:
+        raise CloudOSError(ErrorCode.VALIDATION_ERROR, str(exc)) from None
+
+
 # ---------------------------------------------------------------- health
 
 @app.get("/healthz")
@@ -57,6 +79,30 @@ async def healthz() -> dict:
     except Exception:  # module missing or healthcheck itself broken → report false
         db_ok = False
     return {"status": "ok", "db": db_ok}
+
+
+PHONE_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cloud AI OS</title><style>
+body{margin:0;background:#101827;color:#f8fafc;font:17px system-ui,sans-serif}main{max-width:680px;margin:auto;padding:24px}
+h1{font-size:1.5rem}textarea,select,button{box-sizing:border-box;width:100%;margin:8px 0;border-radius:10px;border:1px solid #475569;padding:12px;font:inherit}
+textarea{min-height:140px;background:#0f172a;color:#fff}select{background:#1e293b;color:#fff}button{background:#38bdf8;color:#082f49;font-weight:700;border:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#020617;padding:14px;border-radius:10px;min-height:72px}
+</style></head><body><main><h1>Cloud AI OS</h1><p>Private Tailscale task runner</p>
+<form id="task-form"><textarea id="task" placeholder="Describe a task for this HP 15"></textarea><select id="agent"><option value="auto">Auto (Claude)</option><option value="claude">Claude</option><option value="codex">Codex</option></select><button id="send" type="submit">Send</button></form><pre id="output">Ready.</pre>
+<script>(function(){var form=document.getElementById('task-form'),task=document.getElementById('task'),agent=document.getElementById('agent'),send=document.getElementById('send'),out=document.getElementById('output');function finish(){send.disabled=false;send.textContent='Send'}function error(message){out.textContent='Error: '+message;finish()}form.addEventListener('submit',function(event){event.preventDefault();var text=task.value.trim();if(!text){out.textContent='Enter a task.';return}out.textContent='Running...';send.disabled=true;send.textContent='Running...';var request=new XMLHttpRequest();request.open('POST','/v1/phone/task',true);request.setRequestHeader('Content-Type','application/json');request.timeout=900000;request.onload=function(){var data;try{data=JSON.parse(request.responseText||'{}')}catch(e){error('invalid response from Cloud AI OS');return}if(request.status>=200&&request.status<300){var result='Agent: '+(data.agent||agent.value)+'\\n\\n'+(data.output||'No response returned.');if(data.files_created&&data.files_created.length){result+='\\n\\nFiles: '+data.files_created.join(', ')}out.textContent=result;finish()}else{error((data.error&&data.error.message)||('HTTP '+request.status))}};request.onerror=function(){error('network request failed')};request.ontimeout=function(){error('request timed out after 15 minutes')};try{request.send(JSON.stringify({task:text,agent:agent.value}))}catch(e){error(e.message||'request could not be sent')}});}());</script>
+</main></body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def phone_page() -> str:
+    """Tiny UI, reachable remotely only through the loopback Tailscale proxy."""
+    return PHONE_PAGE
+
+
+@app.post("/v1/phone/task")
+def phone_task(body: PhoneTaskRequest) -> dict:
+    """Run one DB-free private task and return the CLI response directly."""
+    return execute_phone_task(body.task, body.agent)
 
 
 # ---------------------------------------------------------------- jobs
@@ -124,6 +170,69 @@ async def agent_invoke(body: InvokeRequest) -> dict:
     return result.to_dict()
 
 
+@app.post("/v1/employees/{role}/invoke", dependencies=[authed])
+async def employee_invoke(role: str, body: EmployeeInvokeRequest) -> dict:
+    try:
+        label = PrivacyLabel(body.privacy_label.strip().lower())
+    except ValueError:
+        raise CloudOSError(
+            ErrorCode.VALIDATION_ERROR,
+            "invalid privacy_label",
+            {"privacy_label": body.privacy_label[:64], "allowed": [p.value for p in PrivacyLabel]},
+        ) from None
+
+    try:
+        from cloudos.employees import invoke_employee
+
+        result, context_files = invoke_employee(
+            role,
+            body.message,
+            history=body.history,
+            privacy_label=label,
+            max_tokens=body.max_tokens,
+        )
+    except ValueError as exc:
+        raise CloudOSError(ErrorCode.VALIDATION_ERROR, str(exc)) from None
+    payload = result.to_dict()
+    payload["employee"] = role
+    payload["context_files"] = context_files
+    return payload
+
+
+@app.post("/v1/higgsfield/generate", dependencies=[authed])
+async def higgsfield_generate(body: HiggsfieldGenerateRequest) -> dict:
+    from cloudos.higgsfield import generate
+
+    return {"ok": True, "output": generate(body.kind, body.prompt, confirmed=body.confirmed)}
+
+
+@app.post("/v1/email/build", dependencies=[authed])
+async def email_build(body: EmailBuildRequest) -> dict:
+    """Extract the draft out of an employee reply and store it for review.
+
+    This never sends. It only produces the previewable draft plus the
+    fingerprint that a later send has to match exactly.
+    """
+    from cloudos.email_outbox import create_draft, extract_messages
+
+    messages = extract_messages(body.source_text)
+    return {"ok": True, **create_draft(body.draft_id, messages)}
+
+
+@app.post("/v1/email/preview", dependencies=[authed])
+async def email_preview(body: EmailDraftRequest) -> dict:
+    from cloudos.email_outbox import preview
+
+    return {"ok": True, **preview(body.draft_id)}
+
+
+@app.post("/v1/email/send", dependencies=[authed])
+async def email_send(body: EmailSendRequest) -> dict:
+    from cloudos.email_outbox import send
+
+    return {"ok": True, **send(body.draft_id, body.fingerprint)}
+
+
 # ---------------------------------------------------------------- observability
 
 @app.get("/v1/runs", dependencies=[authed])
@@ -133,17 +242,62 @@ async def list_runs(limit: int = Query(default=50, ge=1, le=200)) -> dict:
 
 @app.get("/v1/quota", dependencies=[authed])
 async def quota() -> dict:
-    """Daily usage + provider state. Keeps the {usage, budgets, fail_closed}
-    shape (n8n daily_ops reads it); budgets are now informational counters —
-    hard limits live with each subscription plan, not here."""
+    """Daily usage and provider state with compatibility-safe observability."""
+    settings = get_settings()
     usage = store.quota_today()
-    providers = store.provider_status_rows()
-    fail_closed = {
-        row.get("provider"): row.get("state")
-        in ("QUOTA_EXHAUSTED", "AUTH_REQUIRED", "BILLING_RISK")
-        for row in providers
+    budgets = {
+        "workers_ai": int(getattr(settings, "workers_ai_daily_budget", 9000)),
+        "gemini": int(getattr(settings, "gemini_daily_request_budget", 200)),
     }
-    return {"usage": usage, "budgets": {}, "fail_closed": fail_closed, "providers": providers}
+    by_provider = {row.get("provider"): row for row in usage}
+    fail_closed = {
+        "workers_ai": int(by_provider.get("workers_ai", {}).get("units", 0) or 0) >= budgets["workers_ai"],
+        "gemini": int(by_provider.get("gemini", {}).get("requests", 0) or 0) >= budgets["gemini"],
+    }
+    try:
+        providers = store.provider_status_rows()
+    except Exception:  # provider_status is newer than quota_usage; keep quota observable during migration
+        providers = []
+    for row in providers:
+        provider = row.get("provider")
+        if provider in fail_closed and row.get("state") in {"QUOTA_EXHAUSTED", "AUTH_REQUIRED", "BILLING_RISK"}:
+            fail_closed[provider] = True
+    return {"usage": usage, "budgets": budgets, "fail_closed": fail_closed, "providers": providers}
+
+
+# ---------------------------------------------------------------- BrightReach
+
+@app.post("/v1/brightreach/clients", status_code=201, dependencies=[authed])
+async def brightreach_create_client(body: ClientSetup) -> dict:
+    """Store a client's service, area, and plain qualification rules."""
+    return _brightreach(lambda: get_service().create_client(body))
+
+
+@app.post("/v1/brightreach/clients/{client_id}/leads", status_code=201, dependencies=[authed])
+async def brightreach_create_lead(client_id: str, body: LeadInput) -> dict:
+    """Capture a lead and immediately create the safe response to hand off."""
+    return _brightreach(lambda: get_service().create_lead(client_id, body))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/qualify", dependencies=[authed])
+async def brightreach_qualify(lead_id: str) -> dict:
+    return _brightreach(lambda: get_service().qualify(lead_id))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/follow-up", dependencies=[authed])
+async def brightreach_follow_up(lead_id: str) -> dict:
+    return _brightreach(lambda: get_service().follow_up(lead_id))
+
+
+@app.post("/v1/brightreach/leads/{lead_id}/booking", dependencies=[authed])
+async def brightreach_record_booking(lead_id: str, body: BookingInput) -> dict:
+    """Record an event only after the connected calendar returns its real ID."""
+    return _brightreach(lambda: get_service().record_booking(lead_id, body))
+
+
+@app.get("/v1/brightreach/clients/{client_id}/report", dependencies=[authed])
+async def brightreach_report(client_id: str) -> dict:
+    return _brightreach(lambda: get_service().report(client_id))
 
 
 @app.get("/v1/providers", dependencies=[authed])

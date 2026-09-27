@@ -212,6 +212,45 @@ def test_startup_runs_migrate(client, fake_db):
     assert fake_db.migrate_calls == 1
 
 
+# ------------------------------------------------------------------ phone task UI
+
+def test_phone_task_page_and_db_free_claude_execution(client, monkeypatch):
+    from cloudos.api import phone
+
+    monkeypatch.setattr(
+        phone,
+        "handle_task_run",
+        lambda payload: {
+            "output": "CLOUDOS_PHONE_OK",
+            "files_created": ["hello.txt"],
+            "duration_s": 0.1,
+        },
+    )
+
+    page = client.get("/")
+    assert page.status_code == 200
+    assert 'id="task"' in page.text
+    assert 'id="agent"' in page.text
+    assert 'id="task-form"' in page.text
+    assert "XMLHttpRequest" in page.text
+    assert "Running..." in page.text
+    # JavaScript single-quoted strings cannot contain literal line breaks.
+    assert "+'\n\n'+" not in page.text
+    assert r"+'\n\n'+" in page.text
+
+    response = client.post(
+        "/v1/phone/task",
+        json={"task": "Create a text file saying hello from Cloud AI OS", "agent": "claude"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "agent": "claude",
+        "output": "CLOUDOS_PHONE_OK",
+        "files_created": ["hello.txt"],
+        "duration_s": 0.1,
+    }
+
+
 # ------------------------------------------------------------------ auth
 
 @pytest.mark.parametrize(
