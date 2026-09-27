@@ -126,9 +126,11 @@ jobs:
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           EMAIL_OWNER_ALIASES: ${{ secrets.EMAIL_OWNER_ALIASES }}
-          # Two hours of headroom over the 2-hour cadence, so a late-starting
-          # run cannot leave a gap. The dedup file stops the overlap resending.
-          EMAIL_SINCE_HOURS: "4"
+          # GitHub routinely delays or drops scheduled runs: real gaps of 8.5h
+          # were observed (2026-09-26) against the 2-hour cadence, so a 4h
+          # window silently skipped mail. Look back a full day; the dedup file
+          # (kept 14 days) stops the overlap resending.
+          EMAIL_SINCE_HOURS: "26"
         run: |
           case "${{ github.event.inputs.mode }}" in
             self-test) python -m cloudos.email_alerts.main --self-test ;;

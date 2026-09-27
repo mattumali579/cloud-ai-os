@@ -126,7 +126,15 @@ def _classify_failure(rc: int, text: str, timed_out: bool) -> Exception:
     return ProviderUnavailable(f"claude CLI exit={rc}")
 
 
-def generate(prompt: str, max_tokens: int = 1024, timeout: int = 300) -> ProviderResponse:
+def generate(
+    prompt: str,
+    max_tokens: int = 1024,
+    timeout: int = 300,
+    *,
+    allowed_tools: str | None = None,
+    permission_mode: str | None = None,
+    cwd: str | None = None,
+) -> ProviderResponse:
     """Run one headless generation on the subscription. Raises ProviderError /
     ProviderUnavailable; never returns raw CLI errors that could carry secrets."""
     status = probe()
@@ -139,8 +147,12 @@ def generate(prompt: str, max_tokens: int = 1024, timeout: int = 300) -> Provide
     argv = [base.which(settings.claude_cli_bin) or settings.claude_cli_bin, "-p", "--output-format", "json"]
     if settings.claude_cli_model:
         argv += ["--model", settings.claude_cli_model]
+    if allowed_tools:
+        argv += ["--allowedTools", allowed_tools]
+    if permission_mode:
+        argv += ["--permission-mode", permission_mode]
 
-    res = base.RUNNER(argv, stdin_text=prompt, timeout=timeout)
+    res = base.RUNNER(argv, stdin_text=prompt, timeout=timeout, cwd=cwd)
     combined = (res.stdout or "") + "\n" + (res.stderr or "")
 
     if res.returncode != 0 or res.timed_out:

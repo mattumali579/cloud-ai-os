@@ -1,18 +1,20 @@
 """DB-independent task execution for the private Tailscale phone interface."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from cloudos.contracts import CloudOSError, ErrorCode
-from cloudos.router.providers import codex_cli
+from cloudos.router.providers import claude_cli, codex_cli
 from cloudos.router.providers import ProviderError, ProviderUnavailable
-from cloudos.worker.task_exec import handle_task_run
+
+PHONE_CLAUDE_TOOLS = "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
 
 
 def execute_phone_task(task: str, agent: str) -> dict:
     """Execute one private task without touching the Postgres job queue.
 
-    ``claude`` uses the existing host task executor, including its isolated
-    workspace and metered-credential scrubbing. ``codex`` uses the existing
-    subscription CLI provider. Auto prefers the execution-capable Claude path,
+    Both paths use the subscription CLI providers, whose subprocess runner
+    captures output and hides Windows console windows. Auto prefers Claude,
     then falls back to Codex if Claude is unavailable.
     """
     task = task.strip()
@@ -21,12 +23,19 @@ def execute_phone_task(task: str, agent: str) -> dict:
 
     if agent in ("auto", "claude"):
         try:
-            result = handle_task_run({"task": task})
+            result = claude_cli.generate(
+                task,
+                max_tokens=4096,
+                timeout=900,
+                allowed_tools=PHONE_CLAUDE_TOOLS,
+                permission_mode="acceptEdits",
+                cwd=str(Path.cwd()),
+            )
             return {
                 "agent": "claude",
-                "output": str(result.get("output") or ""),
-                "files_created": list(result.get("files_created") or []),
-                "duration_s": result.get("duration_s"),
+                "output": result.text,
+                "files_created": [],
+                "duration_s": None,
             }
         except CloudOSError:
             if agent == "claude":

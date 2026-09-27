@@ -218,13 +218,9 @@ def test_phone_task_page_and_db_free_claude_execution(client, monkeypatch):
     from cloudos.api import phone
 
     monkeypatch.setattr(
-        phone,
-        "handle_task_run",
-        lambda payload: {
-            "output": "CLOUDOS_PHONE_OK",
-            "files_created": ["hello.txt"],
-            "duration_s": 0.1,
-        },
+        phone.claude_cli,
+        "generate",
+        lambda task, **kwargs: type("Result", (), {"text": "CLOUDOS_PHONE_OK"})(),
     )
 
     page = client.get("/")
@@ -248,8 +244,8 @@ def test_phone_task_page_and_db_free_claude_execution(client, monkeypatch):
     assert response.json() == {
         "agent": "claude",
         "output": "CLOUDOS_PHONE_OK",
-        "files_created": ["hello.txt"],
-        "duration_s": 0.1,
+        "files_created": [],
+        "duration_s": None,
     }
 
 

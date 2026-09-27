@@ -48,6 +48,19 @@ def scrubbed_env(extra: Optional[dict] = None) -> dict:
     return env
 
 
+def _hidden_subprocess_kwargs() -> dict:
+    """Prevent CLI console windows when this service runs on Windows."""
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
 class CliResult:
     def __init__(self, returncode: int, stdout: str, stderr: str, timed_out: bool = False):
         self.returncode = returncode
@@ -78,6 +91,7 @@ def run_cli(
             timeout=timeout,
             env=scrubbed_env(extra_env),
             cwd=cwd,
+            **_hidden_subprocess_kwargs(),
         )
         return CliResult(proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired as exc:
