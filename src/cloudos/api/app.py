@@ -88,15 +88,22 @@ body{margin:0;background:#101827;color:#f8fafc;font:17px system-ui,sans-serif}ma
 h1{font-size:1.5rem}textarea,select,button{box-sizing:border-box;width:100%;margin:8px 0;border-radius:10px;border:1px solid #475569;padding:12px;font:inherit}
 textarea{min-height:140px;background:#0f172a;color:#fff}select{background:#1e293b;color:#fff}button{background:#38bdf8;color:#082f49;font-weight:700;border:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#020617;padding:14px;border-radius:10px;min-height:72px}
 </style></head><body><main><h1>Cloud AI OS</h1><p>Private Tailscale task runner</p>
-<form id="task-form"><textarea id="task" placeholder="Describe a task for this HP 15"></textarea><select id="agent"><option value="auto">Auto (Claude)</option><option value="claude">Claude</option><option value="codex">Codex</option></select><button id="send" type="submit">Send</button></form><pre id="output">Ready.</pre>
-<script>(function(){var form=document.getElementById('task-form'),task=document.getElementById('task'),agent=document.getElementById('agent'),send=document.getElementById('send'),out=document.getElementById('output');function finish(){send.disabled=false;send.textContent='Send'}function error(message){out.textContent='Error: '+message;finish()}form.addEventListener('submit',function(event){event.preventDefault();var text=task.value.trim();if(!text){out.textContent='Enter a task.';return}out.textContent='Running...';send.disabled=true;send.textContent='Running...';var request=new XMLHttpRequest();request.open('POST','/v1/phone/task',true);request.setRequestHeader('Content-Type','application/json');request.timeout=900000;request.onload=function(){var data;try{data=JSON.parse(request.responseText||'{}')}catch(e){error('invalid response from Cloud AI OS');return}if(request.status>=200&&request.status<300){var result='Agent: '+(data.agent||agent.value)+'\\n\\n'+(data.output||'No response returned.');if(data.files_created&&data.files_created.length){result+='\\n\\nFiles: '+data.files_created.join(', ')}out.textContent=result;finish()}else{error((data.error&&data.error.message)||('HTTP '+request.status))}};request.onerror=function(){error('network request failed')};request.ontimeout=function(){error('request timed out after 15 minutes')};try{request.send(JSON.stringify({task:text,agent:agent.value}))}catch(e){error(e.message||'request could not be sent')}});}());</script>
+<form id="task-form"><textarea id="task" placeholder="Describe a task for this HP 15"></textarea><select id="agent"><option value="auto">Auto (Claude)</option><option value="claude">Claude</option><option value="codex">Codex</option></select><button id="send" type="submit">Send</button></form><pre id="output">READY</pre>
+<script>(function(){var form=document.getElementById('task-form'),task=document.getElementById('task'),agent=document.getElementById('agent'),send=document.getElementById('send'),out=document.getElementById('output');function finish(){send.disabled=false;send.textContent='Send'}function error(message){out.textContent='ERROR: '+message;finish()}form.addEventListener('submit',function(event){event.preventDefault();var text=task.value.trim();if(!text){out.textContent='ERROR: Enter a task.';return}out.textContent='RUNNING...';send.disabled=true;send.textContent='RUNNING...';var request=new XMLHttpRequest();request.open('POST','/v1/phone/task',true);request.setRequestHeader('Content-Type','application/json');request.timeout=900000;request.onload=function(){var data;try{data=JSON.parse(request.responseText||'{}')}catch(e){error('invalid response from Cloud AI OS');return}if(request.status>=200&&request.status<300){var result='SUCCESS\\nAgent: '+(data.agent||agent.value)+'\\n\\n'+(data.output||'No response returned.');if(data.files_created&&data.files_created.length){result+='\\n\\nFiles: '+data.files_created.join(', ')}out.textContent=result;finish()}else{error((data.error&&data.error.message)||('HTTP '+request.status))}};request.onerror=function(){error('network request failed')};request.ontimeout=function(){error('request timed out after 15 minutes')};try{request.send(JSON.stringify({task:text,agent:agent.value}))}catch(e){error(e.message||'request could not be sent')}});}());</script>
 </main></body></html>"""
 
 
 @app.get("/", response_class=HTMLResponse)
-async def phone_page() -> str:
+async def phone_page() -> HTMLResponse:
     """Tiny UI, reachable remotely only through the loopback Tailscale proxy."""
-    return PHONE_PAGE
+    return HTMLResponse(
+        PHONE_PAGE,
+        headers={
+            "Cache-Control": "no-store, max-age=0, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.post("/v1/phone/task")

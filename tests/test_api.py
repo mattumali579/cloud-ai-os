@@ -229,11 +229,13 @@ def test_phone_task_page_and_db_free_claude_execution(client, monkeypatch):
 
     page = client.get("/")
     assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-store, max-age=0, must-revalidate"
     assert 'id="task"' in page.text
     assert 'id="agent"' in page.text
     assert 'id="task-form"' in page.text
     assert "XMLHttpRequest" in page.text
-    assert "Running..." in page.text
+    assert "RUNNING..." in page.text
+    assert "SUCCESS" in page.text
     # JavaScript single-quoted strings cannot contain literal line breaks.
     assert "+'\n\n'+" not in page.text
     assert r"+'\n\n'+" in page.text
