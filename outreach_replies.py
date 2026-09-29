@@ -40,6 +40,7 @@ def main(argv=None) -> int:
     p.add_argument("--no-repair", action="store_true")
     p.add_argument("--quiet", action="store_true", help="record everything but send no notifications")
     p.add_argument("--since", default="01-Sep-2026")
+    p.add_argument("--rescan", action="store_true", help="re-read from --since (already-stored mail is skipped)")
     c = sub.add_parser("check")
     c.add_argument("email")
     c.add_argument("kind")
@@ -75,7 +76,7 @@ def main(argv=None) -> int:
         if a.cmd == "poll":
             send = (lambda payload: (False, "quiet mode")) if a.quiet else None
             res = gmail_sync.sync(conn, since=a.since, send=send, push_drafts=not a.no_drafts and not a.quiet,
-                                  repair_emailed_at=not a.no_repair and not a.quiet)
+                                  repair_emailed_at=not a.no_repair and not a.quiet, rescan=a.rescan)
             print(json.dumps(res, indent=2, default=str))
             return 0
         if a.cmd == "check":

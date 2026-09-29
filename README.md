@@ -59,3 +59,16 @@ every 6 hours in GitHub Actions and only works when the ready pile is low.
 - RECOVERY: `python lead_engine.py reset-source <name>`; `python lead_engine.py import-history` is safe to re-run
 
 Details: [`docs/lead_engine/README.md`](docs/lead_engine/README.md).
+
+## BrightReach reply layer
+
+Reads the outreach Gmail every 10 minutes, remembers every send and reply per
+company, classifies replies against the whole thread, keeps one status per
+company, pings Discord once per important event, and puts ready replies in Gmail
+Drafts. Never emails a prospect by itself. Senders call
+`python outreach_replies.py check EMAIL KIND` before every send.
+
+- STATUS: `python outreach_status.py` (`--queue` for only what needs you)
+- STOP: `gh workflow disable outreach-replies.yml`
+
+Details: [`docs/outreach_replies/README.md`](docs/outreach_replies/README.md).

@@ -35,7 +35,16 @@ HEADER_FIELDS = ("FROM TO CC SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES X-LE
                  "X-LEADGEN-MACHINE AUTO-SUBMITTED X-AUTOREPLY X-AUTORESPOND PRECEDENCE CONTENT-TYPE")
 OUTREACH_KIND = {"office-agent-first": "cold", "revenue-recovery-first": "cold", "office-agent-followup": "followup",
                  "email-close-auto": "pricing"}
+# Gmail labels the lead pipelines put on outreach they draft for the owner to send by hand.
+# Those hand-sent emails carry no X-Leadgen header, so the label is the only marker.
+OUTREACH_LABELS = tuple(l.strip() for l in os.environ.get("OUTREACH_GMAIL_LABELS", "Leads,LG/Processed").split(",") if l.strip())
 BATCH = 100
+
+
+def _has_outreach_label(labels: str) -> bool:
+    found = re.findall(r'"([^"]*)"|(\S+)', labels or "")
+    names = {(a or b).replace("\\\\", "\\") for a, b in found}
+    return any(l in names for l in OUTREACH_LABELS)
 BODY_LIMIT = 20000
 
 
@@ -123,7 +132,7 @@ def _parse_fetch(data) -> list[dict]:
 
 def sync(conn, *, since: str = "01-Sep-2026", send: notify.Sender | None = None, push_drafts: bool = True,
          repair_emailed_at: bool = True, imap_factory=imaplib.IMAP4_SSL, host: str = "imap.gmail.com",
-         max_messages: int = 3000) -> dict:
+         max_messages: int = 3000, rescan: bool = False) -> dict:
     user, pw = credentials()
     if not (user and pw):
         raise RuntimeError("mailbox credentials missing (EMAIL_ADDRESS/EMAIL_APP_PASSWORD or SMTP_USER/SMTP_PASS)")
@@ -140,16 +149,18 @@ def sync(conn, *, since: str = "01-Sep-2026", send: notify.Sender | None = None,
             raise RuntimeError("cannot open All Mail")
         uidvalidity = int(re.search(rb"UIDVALIDITY (\d+)", imap.status(ALL_MAIL, "(UIDVALIDITY)")[1][0]).group(1))
         st = conn.execute("SELECT * FROM reply_poll_state WHERE mailbox = %s", (key,)).fetchone()
-        if st and st["uidvalidity"] == uidvalidity:
+        if st and st["uidvalidity"] == uidvalidity and not rescan:
             typ, data = imap.uid("SEARCH", None, f"UID {st['last_uid'] + 1}:*")
         else:
             res["first_run"] = True
             typ, data = imap.uid("SEARCH", None, "SINCE", since)
-        uids = sorted(int(u) for u in (data[0] or b"").split() if not st or int(u) > (st["last_uid"] if st and st["uidvalidity"] == uidvalidity else 0))
+        floor = st["last_uid"] if (st and st["uidvalidity"] == uidvalidity and not rescan) else 0
+        uids = sorted(int(u) for u in (data[0] or b"").split() if int(u) > floor)
         uids = uids[:max_messages]
         res["scanned"] = len(uids)
         known = Known(conn)
-        quiet_before = started - timedelta(hours=36) if res["first_run"] else None
+        # replies older than 36h found on a first run / re-read go into one digest, not one ping each
+        quiet_before = started - timedelta(hours=36) if (res["first_run"] or rescan) else None
         digest: list[str] = []
         repair: list[tuple[str, datetime]] = []
         last_uid = st["last_uid"] if st and st["uidvalidity"] == uidvalidity else 0
@@ -167,8 +178,8 @@ def sync(conn, *, since: str = "01-Sep-2026", send: notify.Sender | None = None,
                 to = addrs(", ".join(str(m.get(k, "")) for k in ("To", "Cc")))
                 refs = [msgid(m.get("In-Reply-To"))] + msgids(str(m.get("References", "")))
                 if frm in ours:
-                    rel = bool(m.get("X-Leadgen-Outreach")) or any(t in known.addresses or business_domain(t) in known.domains
-                                                                  for t in to if t not in ours)
+                    rel = bool(m.get("X-Leadgen-Outreach")) or _has_outreach_label(h["labels"]) or any(
+                        t in known.addresses or business_domain(t) in known.domains for t in to if t not in ours)
                     if str(m.get("X-Leadgen-Outreach", "")).strip().lower() == "ai-reply-draft":
                         rel = False
                     if rel:   # replies later in this same batch must already see it
@@ -181,7 +192,7 @@ def sync(conn, *, since: str = "01-Sep-2026", send: notify.Sender | None = None,
                 if rel:
                     wanted.append(h)
             if wanted:
-                typ, data = imap.uid("FETCH", ",".join(str(h["uid"]) for h in wanted), "(UID X-GM-THRID BODY.PEEK[])")
+                typ, data = imap.uid("FETCH", ",".join(str(h["uid"]) for h in wanted), "(UID X-GM-THRID X-GM-LABELS BODY.PEEK[])")
                 for full in _parse_fetch(data):
                     res["relevant"] += 1
                     m = email.message_from_bytes(full["raw"], policy=email.policy.default)
@@ -262,6 +273,27 @@ def _resolve_company(conn, m, rcpt: str) -> str | None:
     return None
 
 
+def _create_company_from_outreach(conn, m, rcpt: str) -> str:
+    """Outreach went to a company the database never heard of (hand-sent pipeline draft).
+    Register it, so its replies are matched and it can never be cold-emailed twice."""
+    from cloudos.leadgen.normalize import normalize_name
+    subject = str(m.get("Subject") or "")
+    sm_ = re.search(r"\b(?:at|about|for)\s+(.+?)\s*$", re.sub(r"^(re|fwd?):\s*", "", subject, flags=re.I))
+    display = email.utils.parseaddr(str(m.get("To") or ""))[0]
+    dom = business_domain(rcpt) or None
+    name = (sm_.group(1) if sm_ else "") or display or dom or rcpt
+    row = conn.execute(
+        "INSERT INTO companies (company_name, normalized_name, domain, normalized_domain, discovery_source, "
+        "qualification_status, qualification_reason, outreach_status) VALUES (%s,%s,%s,%s,'gmail_outreach','PENDING',"
+        "'registered from a sent outreach email not in the lead database','contacted') "
+        "ON CONFLICT (normalized_domain) WHERE normalized_domain IS NOT NULL DO UPDATE SET updated_at = now() "
+        "RETURNING company_id", (name[:200], normalize_name(name) or name.lower(), dom, dom)).fetchone()
+    cid = str(row["company_id"])
+    conn.execute("INSERT INTO contacts (company_id, email, email_status, source) VALUES (%s,%s,'unknown','gmail_outreach') "
+                 "ON CONFLICT DO NOTHING", (cid, rcpt))
+    return cid
+
+
 def _outbound(conn, m, full: dict, ours: set[str], known: Known):
     """Record one of our sent messages. Returns (message_id, repair_item) / False (already known) / None (no company)."""
     to = [t for t in addrs(", ".join(str(m.get(k, "")) for k in ("To", "Cc"))) if t not in ours]
@@ -275,6 +307,8 @@ def _outbound(conn, m, full: dict, ours: set[str], known: Known):
         known.add_outbound(pmid, full["thread"], rcpt)
         return False
     cid = _resolve_company(conn, m, rcpt)
+    if not cid and (m.get("X-Leadgen-Outreach") or _has_outreach_label(full.get("labels", ""))):
+        cid = _create_company_from_outreach(conn, m, rcpt)
     if not cid:
         return None
     body = _text(m)

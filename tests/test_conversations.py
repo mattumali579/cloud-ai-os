@@ -496,10 +496,11 @@ class FakeIMAP:
         uids = [int(x) for x in args[0].split(",")]
         out = []
         for u in uids:
-            thr, raw = self.store[u]
+            thr, raw, *lab = self.store[u]
+            labels = lab[0] if lab else ""
             if "HEADER.FIELDS" in args[1]:
                 raw = raw.split(b"\r\n\r\n", 1)[0] + b"\r\n\r\n"
-            out.append((f"{u} (UID {u} X-GM-THRID {thr} X-GM-LABELS () BODY[] {{{len(raw)}}}".encode(), raw))
+            out.append((f"{u} (UID {u} X-GM-THRID {thr} X-GM-LABELS ({labels}) BODY[] {{{len(raw)}}}".encode(), raw))
             out.append(b")")
         return "OK", out
 
@@ -555,3 +556,26 @@ def test_gmail_sync_end_to_end(conn, monkeypatch):
     assert conn.execute("SELECT state FROM outreach_drafts WHERE kind='pricing'").fetchone()["state"] == "sent"
     assert state(conn, cid)["current_price"] == "$1,500"
     assert len(out.sent) == 1          # one reply -> exactly one notification across three runs
+
+
+def test_hand_sent_pipeline_draft_is_tracked(conn, monkeypatch):
+    """Regression (2026-09-29, Price Busters): a hand-sent draft carries only the Gmail 'Leads' label,
+    goes to a freemail address, and the company is in no database. Its reply must still be caught."""
+    monkeypatch.setenv("EMAIL_ADDRESS", "matt@brightreach.test")
+    monkeypatch.setenv("EMAIL_APP_PASSWORD", "x")
+    from cloudos.conversations import gmail_sync
+    FakeIMAP.appended = []
+    FakeIMAP.store = {
+        10: ("777", _raw("Matt <matt@brightreach.test>", "pbhvac@gmail.com", "Missed calls at Price Busters Heating & Air",
+                         "Hi, quick note about missed calls. Worth a look?", "hand-1@brightreach.test"), '"\\Sent" LG/Processed Leads'),
+        11: ("777", _raw("PB <pbhvac@gmail.com>", "matt@brightreach.test", "Re: Missed calls at Price Busters Heating & Air",
+                         "What would this cost us?", "pb-reply-1@gmail.com", date="Sun, 28 Sep 2026 15:00:00 +0000",
+                         extra="In-Reply-To: <hand-1@brightreach.test>\r\n")),
+        12: ("778", _raw("Matt <matt@brightreach.test>", "friend@gmail.com", "lunch", "lunch friday?", "p-2@brightreach.test")),
+    }
+    res = gmail_sync.sync(conn, send=Outbox(), imap_factory=FakeIMAP, repair_emailed_at=False, push_drafts=False)
+    assert res["outbound_recorded"] == 1 and res["inbound"] == {"PRICE_QUESTION": 1}
+    c = conn.execute("SELECT * FROM companies WHERE discovery_source = 'gmail_outreach'").fetchone()
+    assert c["company_name"] == "Price Busters Heating & Air" and c["normalized_domain"] is None
+    assert "already_contacted" in guard.check(conn, "pbhvac@gmail.com", "cold")["reasons"]
+    assert conn.execute("SELECT count(*) n FROM outreach_messages WHERE recipient = 'friend@gmail.com'").fetchone()["n"] == 0

@@ -95,3 +95,22 @@ def test_status_machine():
         sm.check("do_not_contact", "interested")
     sm.check("do_not_contact", "interested", owner_override=True)
     assert not sm.cold_sequence_allowed("won")
+
+
+def test_lead_engine_feedback_only_reorders(monkeypatch):
+    from cloudos.conversations import reports
+    from cloudos.leadgen.store import order_by_feedback
+
+    class Conn:
+        def execute(self, *a, **k):
+            return None
+
+    cands = [{"query": q, "industry": i} for q, i in (("a", "gym"), ("b", "hvac"), ("c", "roofing"), ("d", ""))]
+    monkeypatch.setattr(reports, "feedback", lambda conn: {"lead_engine_priority": {"hvac": "increase_priority",
+                                                                                     "gym": "decrease_priority"}})
+    assert [c["query"] for c in order_by_feedback(Conn(), cands)] == ["b", "c", "d", "a"]
+
+    def boom(conn):
+        raise RuntimeError("reply tables missing")
+    monkeypatch.setattr(reports, "feedback", boom)
+    assert order_by_feedback(Conn(), cands) == cands

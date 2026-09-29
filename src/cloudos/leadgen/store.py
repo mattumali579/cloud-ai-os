@@ -134,9 +134,34 @@ def record_outreach(conn, company_id: str | None, email: str, campaign: str, sen
 
 # --- query rotation -------------------------------------------------------------
 
+FEEDBACK_RANK = {"increase_priority": 0, "hold": 1, "hold_many_replies_low_intent": 1, "insufficient_data": 1,
+                 "decrease_priority": 2}
+
+
+def order_by_feedback(conn, candidates: list[dict]) -> list[dict]:
+    """Reply-layer feedback (cloudos.conversations.reports.feedback) reorders industries only.
+
+    Stable sort: industries without enough evidence (the default) keep their
+    config order. Never changes how many companies are found. Any failure ->
+    original order, so discovery never depends on the reply layer.
+    """
+    try:
+        from cloudos.conversations.reports import feedback
+        conn.execute("SAVEPOINT lead_feedback")
+        prio = feedback(conn)["lead_engine_priority"]
+        conn.execute("RELEASE SAVEPOINT lead_feedback")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT lead_feedback")
+        except Exception:
+            pass
+        return candidates
+    return sorted(candidates, key=lambda c: FEEDBACK_RANK.get(prio.get(c.get("industry") or "", "insufficient_data"), 1))
+
 def next_queries(conn, source: str, candidates: list[dict], limit: int, repeat_after_days: int = 30) -> list[dict]:
     """Pick never-run combinations first (in priority order), then the stalest
     combos older than ``repeat_after_days`` that historically produced new companies."""
+    candidates = order_by_feedback(conn, candidates)
     rows = conn.execute("SELECT query, last_run_at, total_new, runs, last_error FROM lead_queries WHERE source = %s",
                         (source,)).fetchall()
     ran = {r["query"]: r for r in rows if not r["last_error"]}  # errored queries get retried
