@@ -14,6 +14,12 @@ import workerDefault, {
   formatChicagoTimestamp,
   hexToBytes,
   timingSafeEqualStr,
+  runWatchdog,
+  isDailyStatusTick,
+  describeAge,
+  STALE_AFTER_MS,
+  CRON_INTERVAL_MS,
+  WATCHER_ACTIONS_URL,
 } from "../src/index.js";
 
 const SECRET = "test-webhook-secret";
@@ -465,4 +471,187 @@ test("GET /notify is not a route (404)", async () => {
     mockFetch(),
   );
   assert.equal(resp.status, 404);
+});
+
+/* ----------------------------------------------------- email-watcher watchdog */
+
+const GH_API_PREFIX = "https://api.github.com/repos/mattumali579/cloud-ai-os/actions/workflows/email-alerts.yml/runs";
+const HOUR = 3_600_000;
+
+/** Mock: GitHub answers with a last-success time (or a status), Discord answers 200. */
+function watchdogFetch({ lastSuccess, ghStatus = 200, ghThrow = null, ghBody = null } = {}) {
+  return mockFetch((url) => {
+    if (String(url).startsWith(GH_API_PREFIX)) {
+      if (ghThrow) throw ghThrow;
+      if (ghStatus !== 200) return new Response('{"message":"API rate limit exceeded"}', { status: ghStatus });
+      const body = ghBody ?? JSON.stringify({
+        total_count: 1,
+        workflow_runs: [{ status: "completed", conclusion: "success", updated_at: lastSuccess }],
+      });
+      return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response('{"id":"discord-watchdog-1"}', { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+}
+const discordCalls = (fetch) => fetch.calls.filter((c) => String(c.url).startsWith(baseEnv.DISCORD_WEBHOOK_URL));
+
+// 2026-09-27T20:00Z = 3:00 PM CDT (not the daily tick).
+const AFTERNOON = Date.parse("2026-09-27T20:00:00Z");
+
+test("watchdog: healthy watcher, non-daily tick → silent, only GitHub is called", async () => {
+  const fetch = watchdogFetch({ lastSuccess: new Date(AFTERNOON - 3 * HOUR).toISOString() });
+  const r = await runWatchdog(baseEnv, fetch, AFTERNOON);
+  assert.equal(r.kind, null);
+  assert.equal(r.sent, false);
+  assert.equal(discordCalls(fetch).length, 0);
+  assert.equal(fetch.calls.length, 1);
+  assert.ok(fetch.calls[0].url.includes("status=success"));
+  assert.equal(fetch.calls[0].init.headers["User-Agent"], "cloudos-ingress-watchdog");
+});
+
+test("watchdog: staleness crossing the threshold → ONE plain-English alert with the Actions link", async () => {
+  const last = AFTERNOON - STALE_AFTER_MS - 10 * 60_000; // 10 min past the line
+  const fetch = watchdogFetch({ lastSuccess: new Date(last).toISOString() });
+  const r = await runWatchdog(baseEnv, fetch, AFTERNOON);
+  assert.equal(r.kind, "stopped");
+  assert.equal(r.sent, true);
+  const sent = discordCalls(fetch);
+  assert.equal(sent.length, 1);
+  const body = JSON.parse(sent[0].init.body);
+  assert.match(body.content, /email watcher has stopped/);
+  assert.ok(body.content.includes(WATCHER_ACTIONS_URL));
+  assert.deepEqual(body.allowed_mentions, { parse: [] });
+});
+
+test("watchdog dedup: across 3 days of a dead watcher, at most 2 messages per day", async () => {
+  const last = Date.parse("2026-09-10T08:43:00Z");
+  let sends = 0;
+  const perDay = new Map();
+  const first = last - (last % CRON_INTERVAL_MS) + CRON_INTERVAL_MS;
+  for (let t = first; t < last + 72 * HOUR; t += CRON_INTERVAL_MS) {
+    const r = await runWatchdog(baseEnv, watchdogFetch({ lastSuccess: new Date(last).toISOString() }), t);
+    if (r.sent) {
+      sends += 1;
+      const day = new Date(t).toISOString().slice(0, 10);
+      perDay.set(day, (perDay.get(day) || 0) + 1);
+    }
+  }
+  // 1 crossing alert + 1 daily message per day (3 days) — never an alert storm.
+  assert.ok(sends >= 3 && sends <= 5, `sends=${sends}`);
+  for (const [day, n] of perDay) assert.ok(n <= 2, `${day}: ${n}`);
+});
+
+test("watchdog: exactly one crossing alert among ticks around the threshold", async () => {
+  const last = Date.parse("2026-09-27T01:07:00Z");
+  let crossings = 0;
+  const start = last + STALE_AFTER_MS - 2 * HOUR;
+  for (let t = start - (start % CRON_INTERVAL_MS); t < last + STALE_AFTER_MS + 6 * HOUR; t += CRON_INTERVAL_MS) {
+    const r = await runWatchdog(baseEnv, watchdogFetch({ lastSuccess: new Date(last).toISOString() }), t);
+    if (r.kind === "stopped") crossings += 1;
+  }
+  assert.equal(crossings, 1);
+});
+
+test("watchdog: GitHub 403/429/5xx is 'unknown' — never an alert", async () => {
+  for (const status of [403, 429, 500, 502]) {
+    const fetch = watchdogFetch({ ghStatus: status });
+    const r = await runWatchdog(baseEnv, fetch, AFTERNOON);
+    assert.equal(r.github, "unknown", String(status));
+    assert.equal(r.github_status, status);
+    assert.equal(r.kind, null);
+    assert.equal(discordCalls(fetch).length, 0);
+  }
+});
+
+test("watchdog: network failure, timeout, bad JSON, empty list → unknown, silent", async () => {
+  const timeout = Object.assign(new Error("aborted"), { name: "TimeoutError" });
+  const cases = [
+    [{ ghThrow: new TypeError("fetch failed") }, "fetch_failed"],
+    [{ ghThrow: timeout }, "timeout"],
+    [{ ghBody: "not json" }, "bad_json"],
+    [{ ghBody: '{"total_count":0,"workflow_runs":[]}' }, "no_successful_run"],
+  ];
+  for (const [opts, reason] of cases) {
+    const fetch = watchdogFetch(opts);
+    const r = await runWatchdog(baseEnv, fetch, AFTERNOON);
+    assert.equal(r.github, "unknown");
+    assert.equal(r.github_reason, reason);
+    assert.equal(discordCalls(fetch).length, 0);
+  }
+});
+
+test("watchdog daily tick: 8:00 AM Chicago healthy → one 'all systems OK' message", async () => {
+  const eightAmCdt = Date.parse("2026-09-28T13:00:00Z"); // CDT = UTC-5
+  const fetch = watchdogFetch({ lastSuccess: new Date(eightAmCdt - 6 * HOUR).toISOString() });
+  const r = await runWatchdog(baseEnv, fetch, eightAmCdt);
+  assert.equal(r.kind, "daily_ok");
+  const sent = discordCalls(fetch);
+  assert.equal(sent.length, 1);
+  const body = JSON.parse(sent[0].init.body);
+  assert.match(body.content, /all systems OK/);
+  assert.match(body.content, /6 hours ago/);
+});
+
+test("watchdog daily tick: stale → 'still stopped'; GitHub unknown → honest 'could not confirm'", async () => {
+  const eightAmCdt = Date.parse("2026-09-28T13:00:00Z");
+  const stale = watchdogFetch({ lastSuccess: new Date(eightAmCdt - 50 * HOUR).toISOString() });
+  const r1 = await runWatchdog(baseEnv, stale, eightAmCdt);
+  assert.equal(r1.kind, "daily_stopped");
+  assert.match(JSON.parse(discordCalls(stale)[0].init.body).content, /still stopped[\s\S]*2 days ago/);
+
+  const unknown = watchdogFetch({ ghStatus: 403 });
+  const r2 = await runWatchdog(baseEnv, unknown, eightAmCdt);
+  assert.equal(r2.kind, "daily_unknown");
+  assert.equal(discordCalls(unknown).length, 1);
+});
+
+test("daily status tick follows Chicago time across DST (13:00Z summer, 14:00Z winter)", () => {
+  assert.equal(isDailyStatusTick(new Date("2026-09-28T13:00:00Z")), true);  // CDT 8:00
+  assert.equal(isDailyStatusTick(new Date("2026-09-28T13:30:00Z")), false); // CDT 8:30
+  assert.equal(isDailyStatusTick(new Date("2026-09-28T14:00:00Z")), false); // CDT 9:00
+  assert.equal(isDailyStatusTick(new Date("2026-12-15T14:00:00Z")), true);  // CST 8:00
+  assert.equal(isDailyStatusTick(new Date("2026-12-15T13:00:00Z")), false); // CST 7:00
+  // Exactly one daily tick per 24h, including the DST-change day (2026-11-01).
+  for (const day of ["2026-11-01", "2026-03-08", "2026-09-28"]) {
+    let n = 0;
+    const start = Date.parse(`${day}T06:00:00Z`);
+    for (let t = start; t < start + 24 * HOUR; t += CRON_INTERVAL_MS) {
+      if (isDailyStatusTick(new Date(t))) n += 1;
+    }
+    assert.equal(n, 1, day);
+  }
+});
+
+test("threshold sits above the worst healthy gap measured (12.2h) so normal skips never alarm", async () => {
+  assert.ok(STALE_AFTER_MS > 12.2 * HOUR);
+  const fetch = watchdogFetch({ lastSuccess: new Date(AFTERNOON - 12.5 * HOUR).toISOString() });
+  const r = await runWatchdog(baseEnv, fetch, AFTERNOON);
+  assert.equal(r.kind, null);
+  assert.equal(discordCalls(fetch).length, 0);
+});
+
+test("describeAge speaks plain English", () => {
+  assert.equal(describeAge(10 * 60_000), "less than an hour");
+  assert.equal(describeAge(HOUR), "1 hour");
+  assert.equal(describeAge(14.4 * HOUR), "14 hours");
+  assert.equal(describeAge(222 * HOUR), "9 days");
+});
+
+test("scheduled handler no longer posts the every-30-minute heartbeat", async () => {
+  const realFetch = globalThis.fetch;
+  const fetch = watchdogFetch({ lastSuccess: new Date(AFTERNOON - HOUR).toISOString() });
+  globalThis.fetch = fetch;
+  try {
+    const pending = [];
+    await workerDefault.scheduled(
+      { scheduledTime: AFTERNOON, cron: "*/30 * * * *" },
+      { ...baseEnv, ORIGIN_URL: "" },
+      { waitUntil: (p) => pending.push(p) },
+    );
+    await Promise.all(pending);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(discordCalls(fetch).length, 0);
+  assert.equal(fetch.calls.filter((c) => String(c.url).startsWith(GH_API_PREFIX)).length, 1);
 });

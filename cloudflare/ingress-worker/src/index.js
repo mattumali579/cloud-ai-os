@@ -14,8 +14,10 @@
  *                    else 404; method + body + query proxied to ORIGIN_URL.
  *   anything else  → 404
  *
- * Scheduled (cron every 30 min): send a timestamped Discord heartbeat directly, then
- * GET ORIGIN_URL/healthz with a 10s timeout. On non-200 or failure, POST a critical
+ * Scheduled (cron every 30 min): (1) email-watcher watchdog — ask GitHub when the
+ * email-alerts workflow last succeeded; post to Discord once when it goes stale,
+ * plus one 8:00 AM Chicago daily status; silent otherwise. (2) GET
+ * ORIGIN_URL/healthz with a 10s timeout. On non-200 or failure, POST a critical
  * DEPENDENCY_UNAVAILABLE notification to NOTIFY_WEBHOOK_URL (signed with WEBHOOK_SECRET
  * so it may point at this worker's own /hook/* route).
  *
@@ -491,6 +493,201 @@ export async function runScheduled(env, fetchImpl = globalThis.fetch, now = () =
   }
 }
 
+/* ------------------------------------------------- email-watcher watchdog */
+
+/**
+ * Dead-man watchdog for the GitHub Actions email watcher.
+ *
+ * Why: from 2026-09-10 to 2026-09-19 the watcher did not run at all and nothing
+ * said so — its own alarm only fires when a run FAILS, not when runs STOP.
+ *
+ * No KV on the free plan, so repeat alerts are deduplicated by time alone:
+ *   - "crossing" alert: fires only on the one cron tick whose staleness falls in
+ *     [STALE_AFTER_MS, STALE_AFTER_MS + CRON_INTERVAL_MS). Ticks land exactly on
+ *     :00/:30, so exactly one tick falls in that window per outage.
+ *   - daily 8:00 AM America/Chicago status: one message a day that says either
+ *     "all OK" or "still stopped" (DST handled by Intl, not by the UTC cron).
+ * So while broken: at most 2 messages a day. While healthy: exactly 1.
+ *
+ * GitHub errors / rate limits (403, 429, timeouts, bad JSON) are "unknown" and
+ * never raise the stopped alarm.
+ */
+export const WATCHER_REPO = "mattumali579/cloud-ai-os";
+export const WATCHER_WORKFLOW = "email-alerts.yml";
+export const WATCHER_ACTIONS_URL =
+  `https://github.com/${WATCHER_REPO}/actions/workflows/${WATCHER_WORKFLOW}`;
+const WATCHER_RUNS_API =
+  `https://api.github.com/repos/${WATCHER_REPO}/actions/workflows/${WATCHER_WORKFLOW}` +
+  "/runs?status=success&per_page=1";
+
+// The watcher is scheduled every 2h from 7 AM to 11 PM Chicago, but GitHub
+// drops many scheduled runs. Measured 2026-09-27 over the last 95 successful
+// runs: healthy gaps reached 9.3h, 9.7h and 12.2h. An 8h threshold would
+// false-alarm several times a week, so the line sits just above the worst
+// healthy gap seen. The 9-day outage is still caught the same day.
+export const STALE_AFTER_MS = 30 * 60 * 1000; // TEMP-FORCED-LIVE-TEST: revert to 14h
+export const CRON_INTERVAL_MS = 30 * 60 * 1000;
+export const DAILY_STATUS_HOUR_CHICAGO = 8;
+
+/** Chicago wall-clock hour + minute for an instant (DST-correct). */
+export function chicagoHourMinute(date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CHICAGO_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const v = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return { hour: Number(v.hour), minute: Number(v.minute) };
+}
+
+/** True only for the one 30-minute cron tick at 8:00 AM Chicago. */
+export function isDailyStatusTick(date) {
+  const { hour, minute } = chicagoHourMinute(date);
+  return hour === DAILY_STATUS_HOUR_CHICAGO && minute < CRON_INTERVAL_MS / 60000;
+}
+
+/** "3 hours", "1 hour", "2 days" — plain English age. */
+export function describeAge(ms) {
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1) return "less than an hour";
+  if (hours < 48) return hours === 1 ? "1 hour" : `${hours} hours`;
+  const days = Math.floor(hours / 24);
+  return `${days} days`;
+}
+
+/**
+ * Ask GitHub when the email watcher last succeeded. Never throws.
+ * → {state:"ok", lastSuccess:Date} | {state:"unknown", reason, status}
+ */
+export async function fetchLastWatcherSuccess(fetchImpl = globalThis.fetch) {
+  let resp;
+  try {
+    resp = await fetchImpl(WATCHER_RUNS_API, {
+      method: "GET",
+      headers: {
+        "User-Agent": "cloudos-ingress-watchdog",
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const reason = error && error.name === "TimeoutError" ? "timeout" : "fetch_failed";
+    return { state: "unknown", reason, status: null };
+  }
+  if (resp.status !== 200) {
+    // 403/429 = rate limited (shared Cloudflare egress IPs); 5xx = GitHub down.
+    return { state: "unknown", reason: "non_200", status: resp.status };
+  }
+  let data;
+  try {
+    data = await resp.json();
+  } catch {
+    return { state: "unknown", reason: "bad_json", status: resp.status };
+  }
+  const run = Array.isArray(data?.workflow_runs) ? data.workflow_runs[0] : null;
+  const when = new Date(run?.updated_at || run?.created_at || "");
+  if (!run || Number.isNaN(when.getTime())) {
+    return { state: "unknown", reason: "no_successful_run", status: resp.status };
+  }
+  return { state: "ok", lastSuccess: when };
+}
+
+/** Build the Discord message for a given watchdog decision (or null for silence). */
+export function watchdogMessage(kind, { ageMs, lastSuccess } = {}) {
+  const age = ageMs == null ? "" : describeAge(ageMs);
+  const at = lastSuccess ? formatChicagoTimestamp(lastSuccess) : "";
+  switch (kind) {
+    case "stopped":
+      return (
+        "**Your email watcher has stopped.** It last checked your inbox " +
+        `${age} ago (${at}). Important emails will not reach Discord until it runs again.\n` +
+        `See what happened: ${WATCHER_ACTIONS_URL}`
+      );
+    case "daily_ok":
+      return (
+        "Good morning. Daily check: all systems OK. Your email watcher last " +
+        `checked your inbox ${age} ago.`
+      );
+    case "daily_stopped":
+      return (
+        "Good morning. **Your email watcher is still stopped.** It last checked " +
+        `your inbox ${age} ago (${at}). Important emails are not reaching Discord.\n` +
+        `See what happened: ${WATCHER_ACTIONS_URL}`
+      );
+    case "daily_unknown":
+      return (
+        "Good morning. Daily check: the cloud checker is running, but GitHub " +
+        "did not answer, so I could not confirm your email watcher is working. " +
+        "I will keep checking and warn you here if it has stopped."
+      );
+    default:
+      return null;
+  }
+}
+
+/**
+ * One cron tick of the watchdog. `scheduledTime` is the tick's nominal time
+ * (event.scheduledTime), so the time windows are exact, not jittery.
+ * Returns what it decided (used by tests and logs). Never throws.
+ */
+export async function runWatchdog(
+  env,
+  fetchImpl = globalThis.fetch,
+  scheduledTime = Date.now(),
+  staleAfterMs = STALE_AFTER_MS,
+) {
+  const tickAt = new Date(scheduledTime);
+  const daily = isDailyStatusTick(tickAt);
+  const gh = await fetchLastWatcherSuccess(fetchImpl);
+
+  let kind = null;
+  let ageMs = null;
+  let lastSuccess = null;
+  if (gh.state === "ok") {
+    lastSuccess = gh.lastSuccess;
+    ageMs = tickAt.getTime() - lastSuccess.getTime();
+    const stale = ageMs >= staleAfterMs;
+    const crossing = stale && ageMs < staleAfterMs + CRON_INTERVAL_MS;
+    if (daily) kind = stale ? "daily_stopped" : "daily_ok";
+    else if (crossing) kind = "stopped";
+  } else if (daily) {
+    kind = "daily_unknown";
+  }
+
+  const summary = {
+    github: gh.state,
+    github_reason: gh.reason ?? null,
+    github_status: gh.status ?? null,
+    age_hours: ageMs == null ? null : Math.round(ageMs / 360_000) / 10,
+    daily,
+    kind,
+  };
+
+  if (!kind) {
+    console.log("watchdog quiet", JSON.stringify(summary));
+    return { ...summary, sent: false };
+  }
+
+  const content = watchdogMessage(kind, { ageMs, lastSuccess });
+  const result = await sendToDiscord(
+    env,
+    { content, allowed_mentions: { parse: [] } },
+    fetchImpl,
+  );
+  console.log(
+    result.sent ? "watchdog sent" : "watchdog send failed",
+    JSON.stringify({
+      ...summary,
+      discord_status: result.status,
+      discord_failure: result.failure ?? null,
+      discord_message_id: result.discord_message_id ?? null,
+    }),
+  );
+  return { ...summary, sent: result.sent, content, discord_message_id: result.discord_message_id ?? null };
+}
+
 /* ----------------------------------------------------------- worker exports */
 
 export default {
@@ -502,7 +699,14 @@ export default {
     }
   },
 
-  async scheduled(_event, env, ctx) {
-    ctx.waitUntil(Promise.all([runHeartbeat(env), runScheduled(env)]));
+  // Silent when healthy. The old every-30-minute "heartbeat OK" post (~48/day)
+  // was replaced by the watchdog's single 8 AM daily status. POST /heartbeat
+  // still sends an on-demand heartbeat.
+  async scheduled(event, env, ctx) {
+    const scheduledTime = event && event.scheduledTime ? event.scheduledTime : Date.now();
+    ctx.waitUntil(Promise.all([
+      runWatchdog(env, globalThis.fetch, scheduledTime),
+      runScheduled(env),
+    ]));
   },
 };

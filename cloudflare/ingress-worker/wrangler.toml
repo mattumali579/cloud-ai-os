@@ -7,7 +7,9 @@ name = "cloudos-ingress"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
 
-# Direct Discord heartbeat + origin health check every 30 minutes.
+# Every 30 minutes: email-watcher dead-man watchdog (GitHub REST API, silent when
+# healthy, one 8 AM Chicago daily status) + origin health check. No KV: alert
+# dedup is derived from time windows (see runWatchdog in src/index.js).
 # Cron Triggers are included on the Workers Free plan.
 [triggers]
 crons = ["*/30 * * * *"]
