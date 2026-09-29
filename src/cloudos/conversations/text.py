@@ -12,6 +12,22 @@ FREEMAIL = {
 }
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# Postgres text/jsonb refuse NUL, and psycopg refuses lone surrogates (what the email parser leaves
+# behind for undecodable header bytes). Other C0 control characters are noise, never content.
+_BAD_CHARS = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f\\ud800-\\udfff]")
+
+
+def clean(value):
+    """Make any value safe to store: drop NUL, control characters and lone surrogates (recurses)."""
+    if isinstance(value, str):
+        return _BAD_CHARS.sub("", value)
+    if isinstance(value, list):
+        return [clean(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(clean(v) for v in value)
+    if isinstance(value, dict):
+        return {(clean(k) if isinstance(k, str) else k): clean(v) for k, v in value.items()}
+    return value
 
 
 def addr(value: str) -> str:

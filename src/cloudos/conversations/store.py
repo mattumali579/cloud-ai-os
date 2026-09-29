@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from cloudos.conversations import status as sm
-from cloudos.conversations.text import addr
+from cloudos.conversations.text import addr, clean
 
 OUTREACH_TO_STATUS = {
     "new": "discovered", "not_ready": "discovered", "rejected": "discovered", "outreach_ready": "ready",
@@ -120,6 +120,7 @@ def update_state(conn, company_id: str, **fields) -> None:
 # ------------------------------------------------------------------ messages
 def insert_message(conn, m: dict) -> str | None:
     """Append a message. Returns its id, or None when this provider message id is already stored."""
+    m = clean(dict(m))           # a NUL byte in one email must never make the database refuse it
     row = conn.execute(
         "INSERT INTO outreach_messages (company_id, direction, kind, sender, recipient, subject, body, occurred_at, provider, "
         "provider_message_id, thread_id, in_reply_to, reference_ids, offer, copy_variant, cta, price_quoted, match_method, "
@@ -207,6 +208,7 @@ def record_confirmed_send(conn, *, company_id: str, recipient: str, sender: str,
 # ---------------------------------------------------------- facts & queue
 def add_fact(conn, company_id: str, fact_type: str, fact_text: str, value: dict | None = None,
              said_by: str = "prospect", source_message_id: str | None = None) -> None:
+    fact_text, value = clean(fact_text), clean(value)
     conn.execute("INSERT INTO sales_facts (company_id, fact_type, fact_text, value, said_by, source_message_id) "
                  "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                  (company_id, fact_type, fact_text[:500], _j(value or {}), said_by, source_message_id))
@@ -232,6 +234,7 @@ def suppress(conn, *, reason: str, email: str | None = None, company_id: str | N
 def queue_attention(conn, *, company_id: str | None, message_id: str | None, reason_code: str, reason: str,
                     urgency: str, status_snapshot: str | None = None, last_reply: str | None = None, summary: str = "",
                     recommended_action: str = "", record_link: str | None = None) -> bool:
+    reason, last_reply, summary, recommended_action = clean([reason, last_reply, summary, recommended_action])
     row = conn.execute(
         "INSERT INTO human_attention_queue (company_id, message_id, reason_code, reason_human_needed, urgency, "
         "status_snapshot, last_reply, summary, recommended_action, record_link) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
@@ -252,6 +255,7 @@ def resolve_attention(conn, company_id: str, resolution: str, reason_codes: Iter
 
 def add_draft(conn, *, company_id: str, kind: str, body: str, subject: str = "", to_email: str | None = None,
               based_on_message_id: str | None = None, content: dict | None = None) -> str | None:
+    body, subject, to_email, content = clean([body, subject, to_email, content])
     # a newer draft of the same kind replaces older pending ones for this company
     conn.execute("UPDATE outreach_drafts SET state = 'superseded', decided_at = now() WHERE company_id = %s AND kind = %s "
                  "AND state = 'awaiting_approval' AND based_on_message_id IS DISTINCT FROM %s",

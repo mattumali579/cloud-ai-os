@@ -5,7 +5,7 @@
         read the outreach mailbox, store sends + replies, notify, push drafts to Gmail
     python outreach_replies.py check EMAIL KIND [--company ID]
         what a sender MUST run right before sending. KIND: cold|followup|reply|pricing|audit|proposal
-        prints JSON; exit 0 = allowed, 3 = blocked
+        prints JSON; exit 0 = allowed, 3 = do not send (blocked OR the check itself failed)
     python outreach_replies.py confirm-send --company ID --to EMAIL --subject S --body-file F --message-id ID
                                             [--thread ID] [--kind cold] [--sent-at ISO]
         record a PROVIDER-CONFIRMED send, then stamp Airtable Emailed At
@@ -72,6 +72,8 @@ def main(argv=None) -> int:
     if a.cmd == "migrate":
         print(json.dumps({"applied": db.migrate()}))
         return 0
+    if a.cmd == "check":
+        return _check(a.email, a.kind, a.company)
     with db.get_conn() as conn:
         if a.cmd == "poll":
             send = (lambda payload: (False, "quiet mode")) if a.quiet else None
@@ -79,10 +81,6 @@ def main(argv=None) -> int:
                                   repair_emailed_at=not a.no_repair and not a.quiet, rescan=a.rescan)
             print(json.dumps(res, indent=2, default=str))
             return 0
-        if a.cmd == "check":
-            res = guard.check_and_alert(conn, a.email, a.kind, a.company)
-            print(json.dumps(res, default=str))
-            return 0 if res["allowed"] else 3
         if a.cmd == "confirm-send":
             sent_at = datetime.fromisoformat(a.sent_at.replace("Z", "+00:00")) if a.sent_at else datetime.now(timezone.utc)
             res = guard.confirm_send(conn, company_id=a.company, recipient=a.to, sender=a.sender, subject=a.subject,
@@ -106,6 +104,24 @@ def main(argv=None) -> int:
             print(json.dumps(res, indent=2, default=str))
             return 0
     return 2
+
+
+CHECK_BLOCKED = 3     # exit code for "do NOT send" - blocked, and also any error while checking
+
+
+def _check(email: str, kind: str, company: str | None, *, connect=None) -> int:
+    """Exit 0 ONLY for an explicit allowed=true. Blocked, database down, bad input, any crash: exit 3."""
+    try:
+        with (connect or db.get_conn)() as conn:
+            res = guard.check_and_alert(conn, email, kind, company)
+        allowed = isinstance(res, dict) and res.get("allowed") is True
+    except Exception as exc:  # noqa: BLE001 - a broken check must never read as permission
+        res, allowed = {"allowed": False, "reasons": ["guard_error"], "error": type(exc).__name__}, False
+    try:
+        print(json.dumps(res, default=str))
+    except Exception:  # noqa: BLE001
+        pass
+    return 0 if allowed else CHECK_BLOCKED
 
 
 if __name__ == "__main__":

@@ -69,6 +69,43 @@ def _fields(row: dict, cfg: dict) -> dict:
     }
 
 
+_SUPPRESSED = {"email_suppressed", "domain_suppressed", "company_suppressed", "do_not_contact", "bounced"}
+
+
+def _cleared_by_guard(conn, rows: list[dict], want: int, dry_run: bool) -> tuple[list[dict], dict]:
+    """Only rows the reply layer's send guard clears as a first touch go to the sender's tray.
+
+    A row for someone who unsubscribed, bounced, is suppressed, or was already emailed is held back and
+    its lead-engine status corrected so it stops coming back. Fail closed: if the guard itself errors,
+    NOTHING is handed off this run."""
+    from cloudos.conversations.guard import check_fail_closed
+
+    ok: list[dict] = []
+    refused: dict = {}
+    for row in rows:
+        if len(ok) >= want:
+            break
+        verdict = check_fail_closed(conn, row["email"] or "", "cold", row["company_id"])
+        if verdict.get("allowed") is True:
+            ok.append(row)
+            continue
+        reasons = set(verdict.get("reasons") or ["guard_error"])
+        if reasons & {"guard_error"}:
+            refused["guard_error"] = refused.get("guard_error", 0) + 1
+            return [], refused
+        key = "suppressed" if reasons & _SUPPRESSED else ("already_contacted" if "already_contacted" in reasons else "other")
+        refused[key] = refused.get(key, 0) + 1
+        if dry_run:
+            continue
+        new_status = {"suppressed": "do_not_contact", "already_contacted": "contacted"}.get(key)
+        if new_status:
+            conn.execute("UPDATE companies SET outreach_status = %s, updated_at = now() WHERE company_id = %s "
+                         "AND outreach_status = 'outreach_ready'", (new_status, row["company_id"]))
+    if not dry_run:
+        conn.commit()
+    return ok, refused
+
+
 def sync_and_handoff(conn, at: Airtable, cfg: dict, dry_run: bool = False) -> dict:
     records = at.all(["Status", "Emailed At", "Email", "Signal"])
     result = {"airtable_records": len(records), "synced_sent": 0, "synced_unsubscribed": 0, "handed_off": 0}
@@ -105,7 +142,11 @@ def sync_and_handoff(conn, at: Airtable, cfg: dict, dry_run: bool = False) -> di
     result.update(waiting_in_airtable=waiting, space=max(space, 0))
     if space <= 0:
         return result
-    rows = outreach_ready_rows(conn, space)
+    rows, refused = _cleared_by_guard(conn, outreach_ready_rows(conn, space * 3), space, dry_run)
+    result["blocked_by_guard"] = refused
+    if refused.get("guard_error"):
+        result["guard_error"] = "send guard unavailable - nothing handed off"
+        return result
     if dry_run:
         result["would_hand_off"] = len(rows)
         return result

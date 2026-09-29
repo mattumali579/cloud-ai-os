@@ -98,6 +98,8 @@ def test_full_send_works_over_starttls(monkeypatch, tmp_path):
             delivered.append(msg["To"])
 
     monkeypatch.setattr(email_outbox.smtplib, "SMTP", _SMTP)
+    # the outreach guard needs the leads database; here it clears the recipient (guard has its own tests)
+    monkeypatch.setattr(email_outbox, "_guard", lambda email, kind: {"allowed": True, "reasons": []})
     fingerprint = email_outbox.preview("st")["fingerprint"]
     result = email_outbox.send("st", fingerprint)
     assert result["sent_count"] == 1

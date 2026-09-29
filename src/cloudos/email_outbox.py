@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import smtplib
 import ssl
@@ -16,6 +17,11 @@ from cloudos.contracts import CloudOSError, ErrorCode
 
 MAX_EMAILS_PER_DRAFT = 10
 _DRAFT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+# What each email is, for the send guard. A prospect email defaults to "cold" (a first touch), the
+# strictest check: it is refused if the person or company unsubscribed, bounced, is suppressed, or
+# was already emailed. A draft row may say "followup"/"reply"/... to be checked as that instead.
+SEND_KINDS = ("cold", "followup", "reply", "pricing", "audit", "proposal")
+DEFAULT_KIND = "cold"
 
 
 @dataclass(frozen=True)
@@ -23,6 +29,7 @@ class OutboxMessage:
     to: str
     subject: str
     text: str
+    kind: str = DEFAULT_KIND
 
 
 def _draft_path(draft_id: str) -> Path:
@@ -59,9 +66,15 @@ def _load(draft_id: str) -> tuple[list[OutboxMessage], str]:
         text = str(row.get("text", "")).strip()
         if not subject or not text or any(ch in subject for ch in "\r\n"):
             raise CloudOSError(ErrorCode.VALIDATION_ERROR, "every email needs a safe subject and body")
-        messages.append(OutboxMessage(to=to, subject=subject[:200], text=text))
+        kind = str(row.get("kind") or DEFAULT_KIND).strip().lower()
+        if kind not in SEND_KINDS:
+            raise CloudOSError(ErrorCode.VALIDATION_ERROR, f"email kind must be one of {', '.join(SEND_KINDS)}")
+        messages.append(OutboxMessage(to=to, subject=subject[:200], text=text, kind=kind))
+    # the default kind is left out of the fingerprint so drafts written before kinds existed keep theirs
     canonical = json.dumps(
-        [message.__dict__ for message in messages], sort_keys=True, separators=(",", ":")
+        [{k: v for k, v in message.__dict__.items() if not (k == "kind" and v == DEFAULT_KIND)}
+         for message in messages],
+        sort_keys=True, separators=(",", ":"),
     )
     fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
     return messages, fingerprint
@@ -199,6 +212,30 @@ def preview(draft_id: str) -> dict:
     }
 
 
+def _owner_addresses(settings) -> set[str]:
+    """The owner's own mailboxes. Mail to these (alerts, tests to himself) is not outreach."""
+    vals = [settings.email_from_address, settings.hostinger_smtp_username, os.environ.get("EMAIL_ADDRESS", "")]
+    vals += (os.environ.get("EMAIL_OWNER_ALIASES", "") or "").split(",")
+    return {parseaddr(v)[1].strip().lower() for v in vals if v and v.strip() and "@" in v}
+
+
+def _guard(email: str, kind: str) -> dict:
+    """The reply layer's send guard, fail-closed: an unreachable database is a refusal."""
+    from cloudos.conversations.guard import outreach_allowed
+
+    return outreach_allowed(email, kind)
+
+
+def _refusal(blocked: list[dict]) -> CloudOSError:
+    reasons = sorted({r for b in blocked for r in b["reasons"]})
+    return CloudOSError(
+        ErrorCode.VALIDATION_ERROR,
+        f"send refused by the outreach guard for {len(blocked)} recipient(s): {', '.join(reasons)}; "
+        "nothing more was sent",
+        {"blocked": blocked},
+    )
+
+
 def send(draft_id: str, fingerprint: str) -> dict:
     settings = get_settings()
     messages, expected = _load(draft_id)
@@ -211,6 +248,20 @@ def send(draft_id: str, fingerprint: str) -> dict:
         )
     if not settings.hostinger_smtp_username or not settings.hostinger_smtp_password:
         raise CloudOSError(ErrorCode.AUTH_REQUIRED, "Hostinger SMTP credentials are not configured")
+
+    # Outreach guard, BEFORE anything is attempted: every prospect recipient must be cleared by the
+    # reply layer (unsubscribed / bounced / suppressed / already contacted / database down => refused).
+    # Only the owner's own addresses skip it. One refusal stops the whole draft - nothing is sent.
+    owner = _owner_addresses(settings)
+    blocked = []
+    for item in messages:
+        if item.to.lower() in owner:
+            continue
+        verdict = _guard(item.to, item.kind)
+        if verdict.get("allowed") is not True:
+            blocked.append({"to": item.to, "kind": item.kind, "reasons": list(verdict.get("reasons") or ["guard_error"])})
+    if blocked:
+        raise _refusal(blocked)
 
     receipt_path = Path(settings.email_outbox_path) / "sent" / f"{draft_id}.{expected}.json"
     if receipt_path.exists():
@@ -232,6 +283,14 @@ def send(draft_id: str, fingerprint: str) -> dict:
         with _connect(settings, context) as smtp:
             smtp.login(settings.hostinger_smtp_username, settings.hostinger_smtp_password)
             for item in messages:
+                if item.to.lower() not in owner:
+                    # re-check right before this one goes out: a reply may have landed mid-batch
+                    verdict = _guard(item.to, item.kind)
+                    if verdict.get("allowed") is not True:
+                        receipt["status"] = "stopped_by_guard"
+                        receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+                        raise _refusal([{"to": item.to, "kind": item.kind,
+                                         "reasons": list(verdict.get("reasons") or ["guard_error"])}])
                 email = EmailMessage()
                 sender = formataddr((settings.email_from_name, from_address))
                 email["From"] = sender

@@ -36,15 +36,32 @@ def _rule(label: str, conf: float, *patterns: str, flags: int = re.I) -> None:
 
 
 # Order inside a label doesn't matter; order across labels is PRIORITY below.
+_MAILWORD = r"(e-?mails?|messages?|mail|mailings?|communications?|contact|correspondence|outreach)"
 _rule("UNSUBSCRIBE", 0.97,
-      r"\bunsubscribe\b", r"\bremove (me|us|my email|our email|this email)\b", r"\btake (me|us) off\b",
-      r"\bstop (emailing|e-mailing|contacting|sending|messaging)\b", r"\bdo not (contact|email|e-mail) (me|us)\b",
-      r"\bdon'?t (contact|email|e-mail) (me|us)\b", r"\bopt(ed)?[- ]?out\b", r"\bno more emails?\b",
+      r"\bunsub(scribe)?\b", r"\bremove (me|us|this email|this address)\b",
+      r"\bremove (my|our) ([\w-]+ ){0,2}?(email|e-mail|address|info|information|details|contact|name|data|record)s?\b",
+      r"\bdelete (me|us)\b",
+      r"\bdelete (my|our) ([\w-]+ ){0,2}?(email|e-mail|address|info|information|details|contact|name|data|record)s?\b",
+      r"\btake (me|us) off\b",
+      r"\b(stop|quit|cease) (emailing|e-mailing|contacting|sending|messaging|writing|spamming|bothering)\b",
+      r"\bstop (getting|receiving) (these|this|your|any|emails?|messages?)\b",
+      r"\b(do not|don'?t|never) (contact|email|e-mail|message|write to) (me|us)\b",
+      r"\b(do not|don'?t|never|please do not|please don'?t) send (me |us )?(any |more |further |additional |other )*" + _MAILWORD,
+      r"\bno (more|further|additional) " + _MAILWORD + r"\b",
+      r"\b(do not|don'?t|no longer) (wish|want) to (receive|get|hear)\b",
+      r"\bcease (all )?(communication|contact|correspondence|e-?mails?)\b",
+      r"\bopt(ed)?[- ]?out\b", r"\bno more emails?\b",
       r"\bnever (contact|email) (me|us)\b", r"\blose (my|our) (email|address)\b",
       r"\b(this is|stop|reported (this |you )?as|you'?re) spam(ming)?\b", r"\bspammers?\b",
-      r"\bcease and desist\b", r"\bleave (me|us) alone\b")
+      r"\bcease and desist\b", r"\bleave (me|us) alone\b",
+      r"^\W*(please\s+|pls\s+|kindly\s+)?stop(\s+(it|this|now|please))?\W*$")   # the whole new text is just "Stop."
+# Negation in front of interest, generally: "not really interested", "no longer interested", "would not be
+# interested", "don't think we're interested", "not sure we're interested". Up to three words may sit between
+# the negation and the word, but never a clause break ("not sure, but interested" stays positive).
+_NEG = r"(?:\bnot|n't|\bno longer|\bnever|\bhardly)"
+_GAP = r"(?:\s+(?!but\b|though\b|however\b|yet\b|although\b|more\b)[\w']+){0,3}?"
 _rule("NOT_INTERESTED", 0.92,
-      r"\bnot interested\b", r"\bno,? thanks?\b", r"\bno thank you\b", r"\bnot (a fit|for us|for me)\b",
+      _NEG + _GAP + r"\s+(interested|keen|interest)\b", r"\bno,? thanks?\b", r"\bno thank you\b", r"\bnot (a fit|for us|for me)\b",
       r"\b(we'?re|we are|i'?m|i am) (all set|good|covered)\b", r"\bwe'?ll pass\b", r"\bgoing to pass\b",
       r"\bno need for (this|it|that|your)\b", r"\b(don'?t|do not) need (this|it|that|your|any)\b", r"\bnot looking\b",
       r"\bno interest\b")
@@ -99,7 +116,9 @@ _rule("NOT_NOW", 0.86,
       r"\b(too busy|swamped) (right now|at the moment)\b", r"\bdown the road\b", r"\bfollow up (in|next|after)\b")
 _rule("INTERESTED", 0.85,
       r"\b(sounds|looks) (interesting|good|great|useful|cool|helpful|promising)\b", r"\b(i'?m|we'?re|i am|we are) interested\b",
-      r"\binterested\b", r"\bopen to (it|this|that|hearing|learning|a)\b", r"\bi'?d (like|love) to\b", r"\bwe'?d (like|love) to\b",
+      r"\binterested\b", r"\bopen to (it|this|that|hearing|learning|a)\b",
+      r"\b(i|we)'?d (like|love) to\b(?!\s+(stop|not|no longer|be removed|be taken off|unsubscribe|opt)|\s{3,})",
+      # (\s{3,} = the opt-out phrase right after it was already blanked out: "I'd love to stop getting these")
       r"\b(could|can) use (this|that|something like this|help)\b", r"\bwe need (this|that|help)\b", r"\byes,? please\b",
       r"\bkeen\b",r"\bworth (a|a quick) (look|chat)\b.*\byes\b")
 
@@ -123,9 +142,21 @@ AUTO_BODY = _p(r"\b(i am|i'?m|i will be) (currently )?(out of (the )?office|away
                r"\bwill (respond|reply|get back to you) (when|upon) (i|my) return\b",
                r"\bthank you for (your email|contacting|reaching out)[^.]*\. (we|i) (will|'ll) (respond|get back|be in touch)\b",
                r"\bwe have received your (message|email|inquiry)\b")
-BOUNCE_SENDER = re.compile(r"^(mailer-daemon|postmaster|mail-daemon|bounce|bounces)@", re.I)
+BOUNCE_SENDER = re.compile(r"^(mailer-daemon|postmaster|mail-daemon|mailerdaemon|bounce|bounces)@", re.I)
 BOUNCE_SUBJECT = re.compile(r"(delivery status notification|undeliver(able|ed)|mail delivery (failed|subsystem)|"
                             r"returned mail|delivery (has )?failed|address not found|failure notice)", re.I)
+# A delivery report is a bounce ONLY when it is permanent. Gmail's "(Delay)" notice ("temporary problem ...
+# will retry ... you'll be notified if the delivery fails permanently") must never suppress anybody.
+DSN_HARD_STRONG = re.compile(r"\baction:\s*failed\b|\bstatus:\s*5\.\d|\b5\.\d{1,3}\.\d{1,3}\b|\b55[0-4]\b", re.I)
+DSN_SOFT = re.compile(r"\baction:\s*delayed\b|\bstatus:\s*4\.\d|\b4\.\d{1,3}\.\d{1,3}\b|\(delay\)|\bdelivery (incomplete|delayed)\b|"
+                      r"\btemporar(y|ily)\b|\bwill (retry|keep trying|continue (to )?try)|\bstill trying\b|\bdelayed\b", re.I)
+DSN_HARD_WEAK = _p(r"\baddress (not found|couldn'?t be found|could not be found)\b",
+                   r"\b(user|recipient|mailbox|address|account) (is )?(unknown|not found|does ?n[o']?t exist|unavailable|disabled)\b",
+                   r"\bno such (user|recipient|mailbox|address)\b", r"\bwasn'?t delivered\b", r"\bcould not be delivered\b",
+                   r"\bundeliverable\b", r"\bdelivery (has )?failed\b", r"\bpermanent (error|failure)\b",
+                   r"\brecipient address rejected\b")
+# Signals a person wrote this, which beat out-of-office phrasing ("I'm away next week but yes, how much?").
+HUMAN_INTENT = {"INTERESTED", "PRICE_QUESTION", "READY_TO_BUY", "MORE_INFORMATION", "UNSUBSCRIBE", "NOT_INTERESTED"}
 PRICE_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?(?:\s?(?:/|per)\s?(?:mo|month|yr|year|week))?", re.I)
 TIME_RE = re.compile(r"\b((?:mon|tues|wednes|thurs|fri|satur|sun)day|tomorrow|today|tonight|this (?:week|afternoon|morning|evening)|"
                      r"next (?:week|\w+day)|\d{1,2}(?::\d{2})?\s?(?:am|pm)|noon|morning|afternoon)\b", re.I)
@@ -182,13 +213,78 @@ def _sentence(text: str, phrase: str) -> str:
     return one_line(phrase, 220)
 
 
-def _is_auto(headers: dict, subject: str, text: str) -> bool:
-    h = {k.lower(): str(v).lower() for k, v in (headers or {}).items()}
-    if h.get("auto-submitted", "no") not in ("", "no"):
+def _headers(headers: dict) -> dict:
+    return {k.lower(): str(v).lower() for k, v in (headers or {}).items()}
+
+
+def _auto_by_headers(headers: dict) -> bool:
+    """A machine said so in the headers (RFC 3834 Auto-Submitted, X-Autoreply, Precedence: auto_reply)."""
+    h = _headers(headers)
+    if h.get("auto-submitted", "no").strip() not in ("", "no"):
         return True
-    if any(k in h for k in AUTO_HEADERS[1:]) or h.get("precedence", "") in ("auto_reply", "auto-reply"):
-        return True
+    return any(k in h for k in AUTO_HEADERS[1:]) or h.get("precedence", "").strip() in ("auto_reply", "auto-reply")
+
+
+def _auto_by_words(subject: str, text: str) -> bool:
+    """Out-of-office / receipt wording. Only a hint: a person's own words in the same email win."""
     return bool(AUTO_SUBJECT.search(subject or "")) or any(p.search(text) for p in AUTO_BODY)
+
+
+def _is_auto(headers: dict, subject: str, text: str) -> bool:
+    return _auto_by_headers(headers) or _auto_by_words(subject, text)
+
+
+def _is_dsn(sender: str, headers: dict) -> bool:
+    """A delivery report from a mail server - never a person, even if a person wrote 'Undelivered' in a subject."""
+    ctype = _headers(headers).get("content-type", "")
+    return bool(BOUNCE_SENDER.search(sender or "")) or ("multipart/report" in ctype and "delivery-status" in ctype)
+
+
+def _dsn_kind(subject: str, body: str) -> str:
+    """'hard' (permanent: Action failed / 5.x.x), 'soft' (delayed / 4.x.x / will retry) or 'unclear'."""
+    blob = f"{subject}\n{body}"
+    if DSN_HARD_STRONG.search(blob):
+        return "hard"
+    if DSN_SOFT.search(blob):
+        return "soft"
+    if any(p.search(blob) for p in DSN_HARD_WEAK) or re.search(r"\(failure\)", subject or "", re.I):
+        return "hard"
+    return "unclear"
+
+
+_IF_INTERESTED = re.compile(r"\bif (you'?re |you are |u r |ur )?interested\b", re.I)
+
+
+def _scan(text: str) -> dict[str, list[tuple[str, float]]]:
+    """Every label's matching phrases. Negative phrases are found first and blanked out, so "not interested"
+    can't also count as "interested", and "don't need this" can't count as "need this"."""
+    hits: dict[str, list[tuple[str, float]]] = {}
+    # "don't call me" is a preference, never a meeting request; "if you're interested" is not them being interested
+    masked = re.sub(r"(?i)\b(don'?t|do not|no need to|please don'?t) (call|phone|ring)( me| us)?\b",
+                    lambda m: " " * len(m.group(0)), text)
+    masked = _IF_INTERESTED.sub(lambda m: " " * len(m.group(0)), masked)
+    for label in ("UNSUBSCRIBE", "NOT_INTERESTED"):
+        h = _hits(label, masked)
+        if h:
+            hits[label] = h
+            masked = _mask(masked, [p for p, _ in h])
+    for label in PRIORITY:
+        if label in hits:
+            continue
+        h = _hits(label, masked)
+        if h:
+            hits[label] = h
+    return hits
+
+
+def _own_subject_part(subject: str, thread: list[dict]) -> str:
+    """The part of a subject the prospect typed themselves: drop 'Re: <our subject>' and anything after it."""
+    s = re.split(r"(?i)\b(?:re|fwd?|aw|sv)\s*:", subject or "", maxsplit=1)[0]
+    for m in thread:
+        ours = (m.get("subject") or "").strip()
+        if m.get("direction") == "outbound" and ours:
+            s = s.replace(ours, " ")
+    return s.strip()
 
 
 def _last_outbound(thread: list[dict]) -> dict | None:
@@ -227,10 +323,11 @@ def classify(inbound: dict, thread: list[dict], state: dict | None = None, facts
     """
     facts = facts or []
     our_addresses = {a.lower() for a in (our_addresses or set())}
-    subject = inbound.get("subject") or ""
+    subject = (inbound.get("subject") or "").replace("’", "'")
     sender = addr(inbound.get("sender") or "")
-    body = inbound.get("body") or ""
-    text = strip_quoted(body)
+    body = (inbound.get("body") or "").replace("’", "'")
+    headers = inbound.get("headers") or {}
+    text = strip_quoted(body)          # only what they newly wrote - our quoted pitch never counts
     summary = _summary(thread, state, facts)
     last_out = _last_outbound(thread)
 
@@ -241,37 +338,40 @@ def classify(inbound: dict, thread: list[dict], state: dict | None = None, facts
                               interpretation=interp, recommended_action=action, needs_review_reason=reason,
                               new_text=text, **kw)
 
-    # 1) machines first
-    if BOUNCE_SENDER.search(sender) or BOUNCE_SUBJECT.search(subject):
-        return result("DELIVERY_FAILURE", 0.97, [one_line(subject, 160)],
-                      "The email did not reach them (bounce).", "Stop emailing this address; find another contact if valuable.")
-    if _is_auto(inbound.get("headers") or {}, subject, text):
+    # 1) machines first: a delivery report from a mail server (a person is never a bounce)
+    if _is_dsn(sender, headers):
+        kind = _dsn_kind(subject, body)
+        if kind == "hard":
+            return result("DELIVERY_FAILURE", 0.97, [one_line(subject, 160)],
+                          "The email did not reach them (permanent bounce).",
+                          "Stop emailing this address; find another contact if valuable.")
+        if kind == "soft":
+            return result("AUTO_REPLY", 0.9, [one_line(subject, 160)],
+                          "Delivery is only delayed (temporary); the mail server is still trying. Nobody has answered.",
+                          "No action. Nothing is suppressed for a delay.")
+        return result("NEEDS_REVIEW", 0.3, [one_line(subject, 160)],
+                      "A mail-server delivery notice that doesn't clearly say the address is dead.",
+                      "Open it and check whether the email bounced. Nothing was suppressed.", reason="delivery_notice_unclear")
+    auto_note = ("No action. Keep the conversation as it was.", "Automatic out-of-office / receipt message; no human has answered yet.")
+    if _auto_by_headers(headers):
         back = MONTH_RE.search(text) or TIME_RE.search(text)
-        return result("AUTO_REPLY", 0.93, [one_line(subject, 120) or one_line(text, 120)],
-                      "Automatic out-of-office / receipt message; no human has answered yet.",
-                      "No action. Keep the conversation as it was." + (f" They mention being back: {back.group(0)}." if back else ""))
+        return result("AUTO_REPLY", 0.93, [one_line(subject, 120) or one_line(text, 120)], auto_note[1],
+                      auto_note[0] + (f" They mention being back: {back.group(0)}." if back else ""))
+    if _auto_by_words(subject, text):
+        # out-of-office wording is only a hint: a person who also wrote "yes, how much?" gets an answer
+        own = _own_subject_part(subject, thread)
+        if own and AUTO_SUBJECT.search(subject) and set(_scan(own)) & HUMAN_INTENT:
+            text = f"{own}\n{text}".strip()
+        if not set(_scan(text)) & HUMAN_INTENT:
+            back = MONTH_RE.search(text) or TIME_RE.search(text)
+            return result("AUTO_REPLY", 0.9, [one_line(subject, 120) or one_line(text, 120)], auto_note[1],
+                          auto_note[0] + (f" They mention being back: {back.group(0)}." if back else ""))
     if not text.strip():
         return result("NEEDS_REVIEW", 0.0, [], "The reply has no new text we could read (maybe only an attachment or image).",
                       "Open the email and read it yourself.", reason="empty_or_unreadable")
 
     legal = [m.group(0) for p in LEGAL_OR_ANGRY for m in [p.search(text)] if m]
-    hits: dict[str, list[tuple[str, float]]] = {}
-    # "don't call me" is a preference, never a meeting request
-    masked = re.sub(r"(?i)\b(don'?t|do not|no need to|please don'?t) (call|phone|ring)( me| us)?\b",
-                    lambda m: " " * len(m.group(0)), text)
-    # Negative phrases are found first and blanked out, so "not interested" can't
-    # also count as "interested", and "don't need this" can't count as "need this".
-    for label in ("UNSUBSCRIBE", "NOT_INTERESTED"):
-        h = _hits(label, masked)
-        if h:
-            hits[label] = h
-            masked = _mask(masked, [p for p, _ in h])
-    for label in PRIORITY:
-        if label in hits:
-            continue
-        h = _hits(label, masked)
-        if h:
-            hits[label] = h
+    hits = _scan(text)
 
     other_emails = sorted({e.lower() for e in EMAIL_RE.findall(text)} - {sender} - our_addresses)
     extracted = _extract_facts(text, hits, other_emails)

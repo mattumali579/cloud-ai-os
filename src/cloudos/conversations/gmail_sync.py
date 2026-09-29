@@ -24,10 +24,12 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import format_datetime, make_msgid, parsedate_to_datetime
 
+import psycopg
+
 from cloudos.conversations import guard, notify, store
 from cloudos.conversations.classify import PRICE_RE
 from cloudos.conversations.pipeline import process_inbound
-from cloudos.conversations.text import addr, addrs, business_domain, msgid, msgids, strip_quoted
+from cloudos.conversations.text import addr, addrs, business_domain, clean, msgid, msgids, strip_quoted
 
 ALL_MAIL = '"[Gmail]/All Mail"'
 DRAFTS = '"[Gmail]/Drafts"'
@@ -80,7 +82,7 @@ def _text(msg) -> str:
         html = re.sub(r"(?i)<blockquote.*", "", html, flags=re.S)       # quoted history in HTML mail
         plain = re.sub(r"<[^>]+>", " ", html)
         plain = re.sub(r"&nbsp;?", " ", plain).replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", '"')
-    return re.sub(r"[ \t]+", " ", plain).strip()[:BODY_LIMIT]
+    return clean(re.sub(r"[ \t]+", " ", plain)).strip()[:BODY_LIMIT]
 
 
 def _date(msg) -> datetime:
@@ -171,59 +173,21 @@ def sync(conn, *, since: str = "01-Sep-2026", send: notify.Sender | None = None,
             heads = _parse_fetch(data)
             wanted = []
             for h in heads:
-                m = email.message_from_bytes(h["raw"], policy=email.policy.default)
-                if "\\Draft" in h["labels"]:
-                    continue
-                frm = addr(str(m.get("From", "")))
-                to = addrs(", ".join(str(m.get(k, "")) for k in ("To", "Cc")))
-                refs = [msgid(m.get("In-Reply-To"))] + msgids(str(m.get("References", "")))
-                if frm in ours:
-                    rel = bool(m.get("X-Leadgen-Outreach")) or _has_outreach_label(h["labels"]) or any(
-                        t in known.addresses or business_domain(t) in known.domains for t in to if t not in ours)
-                    if str(m.get("X-Leadgen-Outreach", "")).strip().lower() == "ai-reply-draft":
-                        rel = False
-                    if rel:   # replies later in this same batch must already see it
-                        for t in [t for t in to if t not in ours][:1]:
-                            known.add_outbound(msgid(m.get("Message-ID")), h["thread"], t)
-                else:
-                    rel = (h["thread"] in known.threads or any(r and r in known.msgids for r in refs)
-                           or frm in known.addresses or business_domain(frm) in known.domains
-                           or bool(re.match(r"(mailer-daemon|postmaster)@", frm)) and h["thread"] in known.threads)
-                if rel:
-                    wanted.append(h)
+                try:
+                    if _relevant(h, ours, known):
+                        wanted.append(h)
+                except Exception as exc:  # noqa: BLE001 - unreadable headers: skip this one, keep going
+                    _quarantine(conn, h, exc, send, res)
             if wanted:
                 typ, data = imap.uid("FETCH", ",".join(str(h["uid"]) for h in wanted), "(UID X-GM-THRID X-GM-LABELS BODY.PEEK[])")
                 for full in _parse_fetch(data):
                     res["relevant"] += 1
-                    m = email.message_from_bytes(full["raw"], policy=email.policy.default)
-                    frm = addr(str(m.get("From", "")))
-                    if frm in ours:
-                        r = _outbound(conn, m, full, ours, known)
-                        if r is None:
-                            res["outbound_unresolved"] += 1
-                        elif r:
-                            res["outbound_recorded"] += 1
-                            if r[1] and repair_emailed_at:
-                                repair.append(r[1])
-                    else:
-                        when = _date(m)
-                        body = _text(m)
-                        quiet = bool(quiet_before and when < quiet_before)
-                        out = process_inbound(conn, {
-                            "provider_message_id": msgid(m.get("Message-ID")) or f"gmail-uid-{full['uid']}@{user}",
-                            "thread_id": full["thread"], "in_reply_to": str(m.get("In-Reply-To") or ""),
-                            "references": msgids(str(m.get("References", ""))), "sender": str(m.get("From", "")),
-                            "recipient": str(m.get("To", "")), "subject": str(m.get("Subject", "")), "body": body,
-                            "occurred_at": when, "provider": "gmail",
-                            "headers": {k: str(m.get(k)) for k in ("Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence") if m.get(k)},
-                            "source_ref": f"imap:{ALL_MAIL}:{full['uid']}"}, our_addresses=ours, send=send,
-                            notify_owner=not quiet)
-                        label = out.get("classification") or out["status"]
-                        res["inbound"][label] = res["inbound"].get(label, 0) + 1
-                        if (out.get("notification") or {}).get("created"):
-                            res["notifications"] += 1
-                        if quiet and out.get("status") in ("processed", "needs_review_unmatched") and label not in ("AUTO_REPLY", "DELIVERY_FAILURE"):
-                            digest.append(out.get("message_id"))
+                    try:
+                        _one(conn, full, ours, known, user, quiet_before, send, repair_emailed_at, res, repair, digest)
+                    except psycopg.OperationalError:
+                        raise        # the database itself is unreachable: stop, and do NOT move past these messages
+                    except Exception as exc:  # noqa: BLE001 - one bad email must never block every later poll
+                        _quarantine(conn, full, exc, send, res)
             last_uid = max([last_uid, *chunk])
             conn.execute("INSERT INTO reply_poll_state (mailbox, last_uid, uidvalidity, last_run_at, last_result) "
                          "VALUES (%s,%s,%s,now(),%s) ON CONFLICT (mailbox) DO UPDATE SET last_uid = EXCLUDED.last_uid, "
@@ -246,6 +210,86 @@ def sync(conn, *, since: str = "01-Sep-2026", send: notify.Sender | None = None,
     conn.execute("UPDATE reply_poll_state SET last_run_at = now(), last_result = %s WHERE mailbox = %s", (store._j(res), key))
     conn.commit()
     return res
+
+
+def _relevant(h: dict, ours: set[str], known: Known) -> bool:
+    """Decide from headers alone whether a message belongs to outreach (personal mail is never stored)."""
+    if "\\Draft" in h["labels"]:
+        return False
+    m = email.message_from_bytes(h["raw"], policy=email.policy.default)
+    frm = addr(str(m.get("From", "")))
+    to = addrs(", ".join(str(m.get(k, "")) for k in ("To", "Cc")))
+    refs = [msgid(m.get("In-Reply-To"))] + msgids(str(m.get("References", "")))
+    if frm in ours:
+        rel = bool(m.get("X-Leadgen-Outreach")) or _has_outreach_label(h["labels"]) or any(
+            t in known.addresses or business_domain(t) in known.domains for t in to if t not in ours)
+        if str(m.get("X-Leadgen-Outreach", "")).strip().lower() == "ai-reply-draft":
+            rel = False
+        if rel:   # replies later in this same batch must already see it
+            for t in [t for t in to if t not in ours][:1]:
+                known.add_outbound(msgid(m.get("Message-ID")), h["thread"], t)
+        return rel
+    return (h["thread"] in known.threads or any(r and r in known.msgids for r in refs)
+            or frm in known.addresses or business_domain(frm) in known.domains
+            or bool(re.match(r"(mailer-daemon|postmaster)@", frm)) and h["thread"] in known.threads)
+
+
+def _one(conn, full: dict, ours: set[str], known: Known, user: str, quiet_before, send, repair_emailed_at: bool,
+         res: dict, repair: list, digest: list) -> None:
+    """Handle one fetched message. Raises on failure; the caller quarantines it and moves on."""
+    m = email.message_from_bytes(full["raw"], policy=email.policy.default)
+    frm = addr(clean(str(m.get("From", ""))))
+    if frm in ours:
+        r = _outbound(conn, m, full, ours, known)
+        if r is None:
+            res["outbound_unresolved"] += 1
+        elif r:
+            res["outbound_recorded"] += 1
+            if r[1] and repair_emailed_at:
+                repair.append(r[1])
+        return
+    when = _date(m)
+    body = _text(m)
+    quiet = bool(quiet_before and when < quiet_before)
+    out = process_inbound(conn, {
+        "provider_message_id": msgid(m.get("Message-ID")) or f"gmail-uid-{full['uid']}@{user}",
+        "thread_id": full["thread"], "in_reply_to": str(m.get("In-Reply-To") or ""),
+        "references": msgids(str(m.get("References", ""))), "sender": str(m.get("From", "")),
+        "recipient": str(m.get("To", "")), "subject": str(m.get("Subject", "")), "body": body,
+        "occurred_at": when, "provider": "gmail",
+        "headers": {k: str(m.get(k)) for k in ("Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence",
+                                              "Content-Type") if m.get(k)},
+        "source_ref": f"imap:{ALL_MAIL}:{full['uid']}"}, our_addresses=ours, send=send,
+        notify_owner=not quiet)
+    label = out.get("classification") or out["status"]
+    res["inbound"][label] = res["inbound"].get(label, 0) + 1
+    if (out.get("notification") or {}).get("created"):
+        res["notifications"] += 1
+    if quiet and out.get("status") in ("processed", "needs_review_unmatched") and label not in ("AUTO_REPLY", "DELIVERY_FAILURE"):
+        digest.append(out.get("message_id"))
+
+
+def _quarantine(conn, full: dict, exc: Exception, send, res: dict) -> None:
+    """One message could not be processed: roll back its half-work, record the skip, tell the owner once.
+    Only the mailbox number and the error type are recorded - never names, addresses or message text."""
+    try:
+        conn.rollback()
+    except Exception:  # noqa: BLE001
+        pass
+    res.setdefault("quarantined", []).append({"uid": full.get("uid"), "error": type(exc).__name__})
+    try:
+        notify.notify_once(
+            conn, dedupe_key=f"br:quarantine:{ALL_MAIL}:{full.get('uid')}", code="reply.quarantined", severity="normal",
+            send=send, text=("**BRIGHTREACH - ONE EMAIL SKIPPED**\n\nOne email in the outreach mailbox could not be read "
+                             f"(mailbox number {full.get('uid')}, problem: {type(exc).__name__}). It was skipped so every "
+                             "other email keeps flowing.\n**Action needed from you:** glance at the newest replies in the "
+                             "outreach mailbox yourself."))
+        conn.commit()
+    except Exception:  # noqa: BLE001 - the skip itself must still happen
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _resolve_company(conn, m, rcpt: str) -> str | None:
@@ -277,9 +321,9 @@ def _create_company_from_outreach(conn, m, rcpt: str) -> str:
     """Outreach went to a company the database never heard of (hand-sent pipeline draft).
     Register it, so its replies are matched and it can never be cold-emailed twice."""
     from cloudos.leadgen.normalize import normalize_name
-    subject = str(m.get("Subject") or "")
+    subject = clean(str(m.get("Subject") or ""))
     sm_ = re.search(r"\b(?:at|about|for)\s+(.+?)\s*$", re.sub(r"^(re|fwd?):\s*", "", subject, flags=re.I))
-    display = email.utils.parseaddr(str(m.get("To") or ""))[0]
+    display = clean(email.utils.parseaddr(str(m.get("To") or ""))[0])
     dom = business_domain(rcpt) or None
     name = (sm_.group(1) if sm_ else "") or display or dom or rcpt
     row = conn.execute(
@@ -388,7 +432,8 @@ def push_pending_drafts(conn, *, imap_factory=imaplib.IMAP4_SSL, host: str = "im
     rows = conn.execute(
         "SELECT d.*, c.company_name FROM outreach_drafts d JOIN companies c USING (company_id) "
         "WHERE d.state = 'awaiting_approval' AND NOT (d.content ? 'gmail_draft_at') ORDER BY d.created_at LIMIT 25").fetchall()
-    rows = [r for r in rows if store.send_check(conn, r["to_email"] or "", "reply", str(r["company_id"]))["allowed"]]
+    rows = [r for r in rows if store.send_check(conn, r["to_email"] or "", "reply", str(r["company_id"]))["allowed"] is True]
+    conn.commit()
     if not rows:
         return 0
     user, pw = credentials()
@@ -397,6 +442,12 @@ def push_pending_drafts(conn, *, imap_factory=imaplib.IMAP4_SSL, host: str = "im
     try:
         imap.login(user, pw)
         for r in rows:
+            # claim the draft: a second poller running at the same moment skips it instead of making a duplicate
+            claimed = conn.execute("SELECT 1 FROM outreach_drafts WHERE draft_id = %s AND state = 'awaiting_approval' "
+                                   "AND NOT (content ? 'gmail_draft_at') FOR UPDATE SKIP LOCKED", (r["draft_id"],)).fetchone()
+            if not claimed:
+                conn.rollback()
+                continue
             msg = EmailMessage()
             msg["From"] = os.environ.get("SMTP_FROM_EMAIL") or user
             msg["To"] = r["to_email"]
@@ -416,6 +467,11 @@ def push_pending_drafts(conn, *, imap_factory=imaplib.IMAP4_SSL, host: str = "im
                              "WHERE draft_id = %s", (r["draft_id"],))
                 conn.commit()
                 n += 1
+            else:
+                conn.rollback()       # release the claim so the next run retries it
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         try:
             imap.logout()

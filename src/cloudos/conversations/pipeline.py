@@ -19,7 +19,7 @@ from cloudos.conversations import actions, notify, store
 from cloudos.conversations import status as sm
 from cloudos.conversations.classify import VERSION, Classification, classify
 from cloudos.conversations.match import MatchResult, match_inbound
-from cloudos.conversations.text import EMAIL_RE, addr, one_line, strip_quoted
+from cloudos.conversations.text import EMAIL_RE, addr, clean, one_line, strip_quoted
 
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
           "november", "december"]
@@ -36,6 +36,7 @@ REVIEW_WHY = {
     "legal_or_angry": "The reply is angry or mentions legal/privacy",
     "referral_unclear": "They seem to point to someone else, but it's unclear who",
     "empty_or_unreadable": "The reply has no readable text",
+    "delivery_notice_unclear": "A mail-server notice that doesn't clearly say whether the email bounced",
 }
 BOUNCE_RCPT = [re.compile(p, re.I) for p in (
     r"Final-Recipient:\s*rfc822;\s*([^\s;<>]+@[^\s;<>]+)", r"wasn'?t delivered to\s+<?([^\s<>]+@[^\s<>]+)",
@@ -71,6 +72,7 @@ def process_inbound(conn, msg: dict, *, our_addresses: set[str], send: notify.Se
                     notify_owner: bool = True, today: date | None = None) -> dict:
     """msg: provider_message_id, thread_id, in_reply_to, references, sender, recipient, subject, body,
     occurred_at, headers, provider, source_ref"""
+    msg = clean(dict(msg))       # NUL / control characters in one email must never make the database refuse it
     pmid = msg.get("provider_message_id")
     if pmid and store.message_by_provider_id(conn, pmid):
         return {"status": "duplicate", "provider_message_id": pmid}
@@ -92,7 +94,7 @@ def process_inbound(conn, msg: dict, *, our_addresses: set[str], send: notify.Se
     if m.confidence == "none" and m.method == "own_address":
         return {"status": "ignored_own_message"}
     if not m.safe:
-        return _unmatched(conn, msg, m, pre, send, notify_owner)
+        return _unmatched(conn, msg, m, pre, send, notify_owner, our=our, failed_rcpt=failed_rcpt)
 
     cid = m.company_id
     st = store.ensure_state(conn, cid)
@@ -277,8 +279,12 @@ def _card(c: Classification, st: dict, company: dict, msg: dict, prev: str, link
         next_step=c.recommended_action, offer=offer, price=price, action_needed=needed, link=link, title=title)
 
 
-def _unmatched(conn, msg: dict, m: MatchResult, pre: Classification, send, notify_owner: bool) -> dict:
-    """Couldn't tie this to one company with confidence: keep it, flag it, never act on it."""
+def _unmatched(conn, msg: dict, m: MatchResult, pre: Classification, send, notify_owner: bool,
+               our: set[str] | None = None, failed_rcpt: str | None = None) -> dict:
+    """Couldn't tie this to one company with confidence: keep it, flag it, never act on its sales meaning.
+
+    Opt-outs and dead addresses are the exception: those are acted on even without a company, because
+    the cost of emailing someone who said stop is far higher than the cost of blocking an address."""
     mid = store.insert_message(conn, dict(
         company_id=None, direction="inbound", kind={"AUTO_REPLY": "auto_reply", "DELIVERY_FAILURE": "bounce"}.get(pre.label, "inbound"),
         sender=addr(msg.get("sender", "")), recipient=addr(msg.get("recipient", "")), subject=msg.get("subject", ""),
@@ -291,22 +297,51 @@ def _unmatched(conn, msg: dict, m: MatchResult, pre: Classification, send, notif
     if pre.label in ("AUTO_REPLY",):
         conn.commit()
         return {"status": "unmatched_auto_reply", "message_id": mid}
+    suppressed = _suppress_unmatched(conn, msg, m, pre, mid, our or set(), failed_rcpt)
     names = [r["company_name"] for r in conn.execute("SELECT company_name FROM companies WHERE company_id = ANY(%s::uuid[])",
                                                      (m.candidates,)).fetchall()] if m.candidates else []
+    blocked = {"address": " Their address is blocked from all email.",
+               "company": " Their address and the company whose website matches it are blocked from all email.",
+               "bounce": " The address that bounced is blocked."}.get(suppressed, "")
     store.queue_attention(conn, company_id=None, message_id=mid, reason_code="match_uncertain",
-                          reason=f"Can't tell which company this is from: {m.reason}.", urgency="high",
+                          reason=f"Can't tell which company this is from: {m.reason}.{blocked}", urgency="high",
                           last_reply=one_line(strip_quoted(msg.get("body", "")), 400),
                           summary="Possible companies: " + (", ".join(names) or "none"),
                           recommended_action="Tell me which company it belongs to; nothing was updated or sent.")
     conn.commit()
-    out = {"status": "needs_review_unmatched", "message_id": mid, "match": m.method, "confidence": m.confidence}
+    out = {"status": "needs_review_unmatched", "message_id": mid, "match": m.method, "confidence": m.confidence,
+           "suppressed": suppressed}
     if notify_owner:
         text = notify.reply_card(
             company="UNKNOWN - " + (", ".join(names) if names else "no match"), contact=addr(msg.get("sender", "")),
             prev_status="?", new_status="needs_review", label=pre.label, said=strip_quoted(msg.get("body", "")) or msg.get("subject", ""),
             context=f"Subject: {msg.get('subject', '')}", interpretation=f"Not matched safely ({m.reason}).",
-            next_step="Decide which company this belongs to. No status was changed and nothing was sent.",
+            next_step="Decide which company this belongs to. No status was changed and nothing was sent." + blocked,
             offer=None, price=None, action_needed="Review", link=None, title="BRIGHTREACH - UNMATCHED REPLY")
         out["notification"] = notify.notify_once(conn, dedupe_key=f"br:unmatched:{mid}", code="reply.unmatched",
                                                  severity="high", text=text, meta={"message_id": mid}, send=send)
     return out
+
+
+def _suppress_unmatched(conn, msg: dict, m: MatchResult, pre: Classification, mid: str, our: set[str],
+                        failed_rcpt: str | None) -> str | None:
+    """Opt-out from a sender we couldn't tie to one company for certain: block the address itself, and when
+    only their website domain matched exactly one company (someone else at that business), block the company
+    too and drop its pending drafts. A permanent bounce blocks the dead address."""
+    if pre.label == "DELIVERY_FAILURE" and failed_rcpt:
+        store.suppress(conn, reason="hard_bounce", email=failed_rcpt, source_message_id=mid)
+        return "bounce"
+    if pre.label != "UNSUBSCRIBE":
+        return None
+    sender = addr(msg.get("sender", ""))
+    if not sender or sender in our:
+        return None
+    reason = "legal" if pre.legal_or_angry else "unsubscribe"
+    store.suppress(conn, reason=reason, email=sender, source_message_id=mid)
+    if m.method == "domain" and m.confidence == "medium" and len(m.candidates) == 1:
+        cid = m.candidates[0]
+        store.suppress(conn, reason=reason, company_id=cid, source_message_id=mid)
+        conn.execute("UPDATE outreach_drafts SET state = 'discarded', decided_at = now() WHERE company_id = %s "
+                     "AND state IN ('awaiting_approval','approved')", (cid,))
+        return "company"
+    return "address"

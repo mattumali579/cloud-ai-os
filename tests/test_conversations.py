@@ -40,7 +40,7 @@ def schema():
         c.execute("INSERT INTO schema_migrations (version) VALUES ('004_school_system')")
     with psycopg.connect(URL, row_factory=dict_row) as c:
         applied = db._migrate(c)            # the real runner, exactly as production applies them
-    assert applied[-1].startswith("007")
+    assert applied[-1].startswith("008")
     yield
 
 
@@ -579,3 +579,258 @@ def test_hand_sent_pipeline_draft_is_tracked(conn, monkeypatch):
     assert c["company_name"] == "Price Busters Heating & Air" and c["normalized_domain"] is None
     assert "already_contacted" in guard.check(conn, "pbhvac@gmail.com", "cold")["reasons"]
     assert conn.execute("SELECT count(*) n FROM outreach_messages WHERE recipient = 'friend@gmail.com'").fetchone()["n"] == 0
+
+
+# ============================== regressions from the 2026-09-29 adversarial review ==============================
+def _connect():
+    return psycopg.connect(URL, row_factory=dict_row)
+
+
+# 1) the send guard is wired into the real senders and fails closed
+def test_real_senders_consult_the_guard(conn):
+    cid = make_company(conn)
+    cold_send(conn, cid)
+    reply(conn, "Remove me from your list.")
+    for kind in ("cold", "followup", "reply"):
+        assert guard.outreach_allowed("john@abcroofing.com", kind, connect=_connect)["allowed"] is False
+    fresh = make_company(conn, "Fresh Plumbing", "freshplumb.com", "amy@freshplumb.com", rec="recFRESH0000001")
+    assert guard.outreach_allowed("amy@freshplumb.com", "cold", connect=_connect)["allowed"] is True
+    assert fresh
+
+
+def test_check_command_exit_codes(conn, capsys):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("outreach_replies_cli", MIGRATIONS.parents[1] / "outreach_replies.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    cid = make_company(conn)
+    assert cli._check("john@abcroofing.com", "cold", None, connect=_connect) == 0
+    cold_send(conn, cid)
+    reply(conn, "Please stop.")
+    assert cli._check("john@abcroofing.com", "cold", None, connect=_connect) == 3        # blocked
+    assert cli._check("john@abcroofing.com", "reply", "not-a-uuid", connect=_connect) == 3  # bad input -> error
+
+    def down():
+        raise OSError("database unreachable")
+    assert cli._check("new@nowhere.test", "cold", None, connect=down) == 3            # error is never "go"
+    assert '"guard_error"' in capsys.readouterr().out
+
+
+def test_guard_matches_plus_addresses_and_gmail_dots(conn):
+    store.suppress(conn, reason="unsubscribe", email="John.Smith+promo@googlemail.com")
+    store.suppress(conn, reason="unsubscribe", email="owner+x@acme-roof.test")
+    conn.commit()
+    for variant in ("johnsmith@gmail.com", "john.smith@gmail.com", "JOHN.SMITH+other@gmail.com", "j.o.h.n.smith@googlemail.com"):
+        assert "email_suppressed" in guard.check(conn, variant, "cold")["reasons"], variant
+    assert "email_suppressed" in guard.check(conn, "Owner@Acme-Roof.test", "cold")["reasons"]
+    assert "email_suppressed" not in guard.check(conn, "o.wner@acme-roof.test", "cold")["reasons"]  # dots only fold for Gmail
+    assert guard.check(conn, "janesmith@gmail.com", "cold")["allowed"] is True
+
+
+def test_lead_engine_handoff_holds_back_suppressed_and_fails_closed(conn):
+    from cloudos.leadgen import handoff
+    ok = make_company(conn, "Good Roofing", "goodroof.test", "ann@goodroof.test", rec="recGOOD00000001")
+    bad = make_company(conn, "Gone Roofing", "goneroof.test", "bob@goneroof.test", rec="recGONE00000001")
+    conn.execute("UPDATE companies SET outreach_status = 'outreach_ready', handoff_ref = NULL")
+    store.suppress(conn, reason="hard_bounce", email="bob@goneroof.test")
+    conn.commit()
+
+    class FakeAirtable:
+        def __init__(self):
+            self.created = []
+
+        def all(self, fields):
+            return []
+
+        def create(self, rows):
+            self.created += rows
+            return [{"id": f"recNEW{i:09d}"} for i, _ in enumerate(rows)]
+
+    cfg = {"handoff": {"offer": "x", "status": "Ready", "airtable_ready_window": 10, "airtable_record_ceiling": 900}}
+    at = FakeAirtable()
+    res = handoff.sync_and_handoff(conn, at, cfg)
+    assert [r["Email"] for r in at.created] == ["ann@goodroof.test"] and res["blocked_by_guard"] == {"suppressed": 1}
+    status = {str(r["company_id"]): r["outreach_status"] for r in conn.execute("SELECT company_id, outreach_status FROM companies")}
+    assert status[ok] == "handed_off" and status[bad] == "do_not_contact"
+
+    # guard broken (function missing) -> nothing at all is handed off
+    conn.execute("UPDATE companies SET outreach_status = 'outreach_ready' WHERE company_id = %s", (ok,))
+    conn.execute("ALTER FUNCTION outreach_send_check(text, text, uuid) RENAME TO outreach_send_check_off")
+    conn.commit()
+    try:
+        at2 = FakeAirtable()
+        res2 = handoff.sync_and_handoff(conn, at2, cfg)
+        assert at2.created == [] and res2.get("guard_error")
+    finally:
+        conn.rollback()
+        conn.execute("ALTER FUNCTION outreach_send_check_off(text, text, uuid) RENAME TO outreach_send_check")
+        conn.commit()
+
+
+# 2 + 7) negated interest and plain opt-outs, end to end
+def test_negated_interest_is_lost_not_interested(conn):
+    cid = make_company(conn)
+    cold_send(conn, cid)
+    out = Outbox()
+    r = reply(conn, "I'm not really interested", outbox=out)
+    assert r["classification"] == "NOT_INTERESTED" and state(conn, cid)["current_status"] == "lost"
+    assert conn.execute("SELECT count(*) n FROM outreach_drafts").fetchone()["n"] == 0 and out.sent == []
+
+
+@pytest.mark.parametrize("body", ["Please stop.", "unsub", "Kindly remove my address from your records",
+                                  "not interested and do not want to hear from you again"])
+def test_plain_opt_out_suppresses(conn, body):
+    cid = make_company(conn)
+    cold_send(conn, cid)
+    r = reply(conn, body)
+    assert r["classification"] == "UNSUBSCRIBE" and state(conn, cid)["do_not_contact"]
+    assert conn.execute("SELECT count(*) n FROM email_suppressions WHERE email = 'john@abcroofing.com'").fetchone()["n"] == 1
+
+
+# 4) an out-of-office opener doesn't swallow a buying signal
+def test_out_of_office_with_buying_intent_notifies(conn):
+    cid = make_company(conn)
+    cold_send(conn, cid)
+    out = Outbox()
+    r = reply(conn, "I'm out of the office next week but yes interested, how much?", outbox=out)
+    assert r["classification"] == "PRICE_QUESTION" and len(out.sent) == 1
+    assert state(conn, cid)["current_status"] == "interested"
+
+
+# 5) only permanent bounces suppress
+def test_delay_notice_and_human_undelivered_do_not_suppress(conn):
+    cid = make_company(conn)
+    cold_send(conn, cid)
+    r = reply(conn, "Delivery incomplete\nThere was a temporary problem delivering your message to john@abcroofing.com. "
+                    "Gmail will retry for 47 more hours. You'll be notified if the delivery fails permanently.\n"
+                    "Final-Recipient: rfc822; john@abcroofing.com\nAction: delayed\nStatus: 4.4.1",
+              sender="Mail Delivery Subsystem <mailer-daemon@googlemail.com>", subject="Delivery Status Notification (Delay)")
+    assert r["classification"] == "AUTO_REPLY"
+    s = state(conn, cid)
+    assert not s["bounced"] and s["current_status"] == "emailed"
+    r = reply(conn, "Undelivered to our office manager, forwarding it. We're interested, how much?",
+              subject="Undelivered: quick question about ABC Roofing")
+    assert r["classification"] == "PRICE_QUESTION"
+    assert conn.execute("SELECT count(*) n FROM email_suppressions").fetchone()["n"] == 0
+    assert not state(conn, cid)["bounced"]
+
+
+# 6) an opt-out we can't tie to one company for certain still suppresses
+def test_unsubscribe_matched_only_by_domain_suppresses_sender_and_company(conn):
+    cid = make_company(conn, email="info@abcroofing.com")
+    cold_send(conn, cid, to="info@abcroofing.com")
+    out = Outbox()
+    r = reply(conn, "Please remove us from your list.", sender="owner@abcroofing.com", thread=None, in_reply_to=None,
+              outbox=out)
+    assert r["status"] == "needs_review_unmatched" and r["suppressed"] == "company"
+    assert "email_suppressed" in guard.check(conn, "owner@abcroofing.com", "cold")["reasons"]
+    assert "company_suppressed" in guard.check(conn, "info@abcroofing.com", "followup")["reasons"]
+    assert len(out.sent) == 1                        # the owner still hears about it, to confirm the company
+
+
+def test_unsubscribe_from_unknown_sender_suppresses_the_address(conn):
+    r = reply(conn, "unsubscribe", sender="stranger@elsewhere.test", thread=None, in_reply_to=None)
+    assert r["status"] == "needs_review_unmatched" and r["suppressed"] == "address"
+    assert "email_suppressed" in guard.check(conn, "stranger@elsewhere.test", "cold")["reasons"]
+
+
+def test_unmatched_permanent_bounce_suppresses_the_dead_address(conn):
+    r = reply(conn, "Address not found\nYour message wasn't delivered to ghost@nowhere.test because the address "
+                    "couldn't be found.", sender="mailer-daemon@googlemail.com", thread=None, in_reply_to=None,
+              subject="Delivery Status Notification (Failure)")
+    assert r["suppressed"] == "bounce"
+    assert "email_suppressed" in guard.check(conn, "ghost@nowhere.test", "cold")["reasons"]
+
+
+# 3) one poisoned email never blocks the mailbox
+def test_nul_byte_in_reply_is_stored_clean(conn):
+    cid = make_company(conn)
+    cold_send(conn, cid)
+    r = reply(conn, "How much\x00 is it?", subject="Re: quick\x00 question")
+    assert r["classification"] == "PRICE_QUESTION"
+    m = conn.execute("SELECT body, subject FROM outreach_messages WHERE direction = 'inbound'").fetchone()
+    assert m["body"] == "How much is it?" and "\x00" not in m["subject"]
+
+
+def test_poison_message_is_quarantined_and_later_mail_still_flows(conn, monkeypatch):
+    monkeypatch.setenv("EMAIL_ADDRESS", "matt@brightreach.test")
+    monkeypatch.setenv("EMAIL_APP_PASSWORD", "x")
+    from cloudos.conversations import gmail_sync
+    make_company(conn)
+    FakeIMAP.appended = []
+    FakeIMAP.store = {
+        1: ("900", _raw("Matt <matt@brightreach.test>", "john@abcroofing.com", "quick question about ABC Roofing",
+                        "Worth a quick look?", "cold-p@brightreach.test",
+                        extra="X-Leadgen-Outreach: office-agent-first\r\nX-Leadgen-Record-ID: recABC0000000001\r\n")),
+        2: ("900", _raw("John <john@abcroofing.com>", "matt@brightreach.test", "Re: quick question about ABC Roofing",
+                        "Sounds \x00interesting\x00", "poison-1@abcroofing.com", date="Sun, 28 Sep 2026 15:00:00 +0000",
+                        extra="In-Reply-To: <cold-p@brightreach.test>\r\n")),
+        3: ("900", _raw("John <john@abcroofing.com>", "matt@brightreach.test", "Re: quick question about ABC Roofing",
+                        "How much?", "good-1@abcroofing.com", date="Sun, 28 Sep 2026 16:00:00 +0000",
+                        extra="In-Reply-To: <cold-p@brightreach.test>\r\n")),
+    }
+    # the NUL alone is now harmless; also force a hard failure on message 2 to prove isolation
+    real = gmail_sync.process_inbound
+
+    def flaky(conn_, msg, **kw):
+        if msg["provider_message_id"] == "poison-1@abcroofing.com":
+            conn_.execute("SELECT 1/0")            # a real database error mid-message
+        return real(conn_, msg, **kw)
+    monkeypatch.setattr(gmail_sync, "process_inbound", flaky)
+    out = Outbox()
+    res = gmail_sync.sync(conn, send=out, imap_factory=FakeIMAP, repair_emailed_at=False, push_drafts=False)
+    assert res["quarantined"] == [{"uid": 2, "error": "DivisionByZero"}]
+    assert res["inbound"] == {"PRICE_QUESTION": 1}                                  # message 3 still processed
+    assert conn.execute("SELECT last_uid FROM reply_poll_state").fetchone()["last_uid"] == 3   # moved past it
+    assert any("ONE EMAIL SKIPPED" in t for t in out.texts)
+    assert not any("Sounds" in t for t in out.texts)                                 # no message text in the notice
+    res2 = gmail_sync.sync(conn, send=out, imap_factory=FakeIMAP, repair_emailed_at=False, push_drafts=False)
+    assert res2["scanned"] == 0                                                      # never retried forever
+
+    # and without the forced failure, the NUL message itself goes through cleanly
+    monkeypatch.setattr(gmail_sync, "process_inbound", real)
+    FakeIMAP.store[4] = ("900", _raw("John <john@abcroofing.com>", "matt@brightreach.test", "Re: quick",
+                                     "Also\x00 can you call me Friday?", "nul-2@abcroofing.com",
+                                     date="Sun, 28 Sep 2026 17:00:00 +0000", extra="In-Reply-To: <cold-p@brightreach.test>\r\n"))
+    res3 = gmail_sync.sync(conn, send=out, imap_factory=FakeIMAP, repair_emailed_at=False, push_drafts=False)
+    assert "quarantined" not in res3 and res3["inbound"] == {"MEETING_REQUEST": 1}
+
+
+def test_database_outage_does_not_skip_mail(conn, monkeypatch):
+    monkeypatch.setenv("EMAIL_ADDRESS", "matt@brightreach.test")
+    monkeypatch.setenv("EMAIL_APP_PASSWORD", "x")
+    from cloudos.conversations import gmail_sync
+    make_company(conn)
+    cold_send(conn, make_company(conn, "Other Co", "other.test", "x@other.test", rec="recOTHER000001"), to="x@other.test",
+              mid="<o-1@brightreach.test>", thread="901")
+    FakeIMAP.store = {5: ("901", _raw("X <x@other.test>", "matt@brightreach.test", "Re: hi", "How much?", "o-r@other.test",
+                                      extra="In-Reply-To: <o-1@brightreach.test>\r\n"))}
+
+    def down(*a, **k):
+        raise psycopg.OperationalError("server closed the connection")
+    monkeypatch.setattr(gmail_sync, "process_inbound", down)
+    with pytest.raises(psycopg.OperationalError):
+        gmail_sync.sync(conn, send=Outbox(), imap_factory=FakeIMAP, repair_emailed_at=False, push_drafts=False)
+    conn.rollback()
+    assert conn.execute("SELECT count(*) n FROM reply_poll_state").fetchone()["n"] == 0   # position not advanced
+
+
+# cheap extra: two pollers at once never push the same draft twice
+def test_draft_push_skips_a_draft_another_poller_holds(conn, monkeypatch):
+    monkeypatch.setenv("EMAIL_ADDRESS", "matt@brightreach.test")
+    monkeypatch.setenv("EMAIL_APP_PASSWORD", "x")
+    from cloudos.conversations import gmail_sync
+    cid = make_company(conn)
+    cold_send(conn, cid)
+    reply(conn, "How much?")
+    FakeIMAP.appended = []
+    conn.execute("SET lock_timeout = '3s'")     # a regression must fail fast, not hang waiting on the lock
+    conn.commit()
+    with _connect() as other:
+        other.execute("SELECT 1 FROM outreach_drafts FOR UPDATE")         # the other poller is mid-push
+        assert gmail_sync.push_pending_drafts(conn, imap_factory=FakeIMAP) == 0
+        other.rollback()
+    assert FakeIMAP.appended == []
+    assert gmail_sync.push_pending_drafts(conn, imap_factory=FakeIMAP) == 1
+    assert gmail_sync.push_pending_drafts(conn, imap_factory=FakeIMAP) == 0
+    assert len(FakeIMAP.appended) == 1

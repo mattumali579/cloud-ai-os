@@ -33,14 +33,24 @@ python outreach_replies.py lost <company_id> "went with someone else"
 Right before sending ANY email to a prospect:
 
 ```
-python outreach_replies.py check john@abc.com followup     # exit 0 = allowed, 3 = blocked
+python outreach_replies.py check john@abc.com followup     # exit 0 = allowed, 3 = do NOT send
 ```
+
+Exit 3 means "do not send" for every reason, including the check itself failing
+(database down, bad input). Only an explicit exit 0 is permission.
 
 or straight from SQL: `SELECT outreach_send_check('john@abc.com', 'followup');`
 
 It blocks: unsubscribed / do-not-contact, bounced addresses, anyone who has replied
 (for generic follow-ups), anyone waiting for your review, closed deals, and a second
-first-touch to a company we already emailed.
+first-touch to a company we already emailed. Addresses match however they are written
+(`John.Smith+promo@googlemail.com` = `johnsmith@gmail.com`).
+
+Built in, fail-closed (no database = no send):
+- the SMTP outbox (`/v1/email/send`) checks every prospect recipient before connecting and
+  again right before each email; the owner's own addresses are exempt;
+- the lead engine only hands a company to the sender's Airtable tray if the guard clears
+  it as a first touch.
 
 Right after a send the provider confirmed (Gmail accepted it and gave a Message-ID):
 

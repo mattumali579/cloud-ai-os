@@ -23,6 +23,38 @@ def check(conn, email: str, kind: str, company_id: str | None = None) -> dict:
     return store.send_check(conn, email, kind, company_id)
 
 
+def check_fail_closed(conn, email: str, kind: str, company_id: str | None = None) -> dict:
+    """The guard for code that is about to send. Never raises: any error, or any answer that is not a
+    literal allowed=True, comes back as a refusal. A broken guard must stop email, not wave it through."""
+    try:
+        r = store.send_check(conn, email, kind, company_id)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"allowed": False, "reasons": ["guard_error"], "error": type(exc).__name__}
+    if not isinstance(r, dict):
+        return {"allowed": False, "reasons": ["guard_error"], "error": "unexpected guard answer"}
+    if r.get("allowed") is not True:
+        r = {**r, "allowed": False}
+        r.setdefault("reasons", ["guard_error"])
+    return r
+
+
+def outreach_allowed(email: str, kind: str, company_id: str | None = None, *, connect=None) -> dict:
+    """check_fail_closed() on its own database connection, for senders outside the reply layer.
+    An unreachable or unconfigured database is a refusal."""
+    try:
+        if connect is None:
+            from cloudos import db
+            connect = db.get_conn
+        with connect() as conn:
+            return check_fail_closed(conn, email, kind, company_id)
+    except Exception as exc:  # noqa: BLE001
+        return {"allowed": False, "reasons": ["guard_unreachable"], "error": type(exc).__name__}
+
+
 def check_and_alert(conn, email: str, kind: str, company_id: str | None = None, send: notify.Sender | None = None) -> dict:
     r = check(conn, email, kind, company_id)
     if not r["allowed"] and "already_contacted" in r["reasons"]:

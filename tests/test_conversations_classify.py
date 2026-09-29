@@ -114,3 +114,110 @@ def test_lead_engine_feedback_only_reorders(monkeypatch):
         raise RuntimeError("reply tables missing")
     monkeypatch.setattr(reports, "feedback", boom)
     assert order_by_feedback(Conn(), cands) == cands
+
+
+# --------------------------------------------- regressions from the 2026-09-29 adversarial review
+@pytest.mark.parametrize("body", [
+    "I'm not really interested", "Not currently interested", "We're not that interested", "Not very interested",
+    "I'm no longer interested", "Would not be interested", "I don't think we're interested", "Not sure we're interested",
+    "I’m not really interested, thanks", "We are not at all interested.", "Honestly never been less keen",
+])
+def test_negated_interest_is_a_no(body):
+    r = c(body)
+    assert r.label == "NOT_INTERESTED", (body, r.label)
+
+
+@pytest.mark.parametrize("body,label", [
+    ("Not sure yet, but interested. How much?", "PRICE_QUESTION"),    # a clause break keeps the interest
+    ("Couldn't be more interested!", "INTERESTED"),
+])
+def test_negation_does_not_cross_a_clause(body, label):
+    assert c(body).label == label
+
+
+@pytest.mark.parametrize("body", [
+    "I'd love to stop getting these", "Please stop.", "Stop", "STOP", "quit emailing me", "Please don't send more emails",
+    "No further emails please", "I do not wish to receive further emails", "Please do not send me any more messages",
+    "Cease all communication", "Kindly remove my address from your records", "please delete my info", "unsub",
+    "not interested and do not want to hear from you again",
+])
+def test_clear_opt_outs_are_unsubscribe(body):
+    r = c(body)
+    assert r.label == "UNSUBSCRIBE", (body, r.label, r.needs_review_reason)
+
+
+def test_our_quoted_opt_out_footer_never_counts():
+    pitch = dict(COLD, body="Worth a quick look? Reply STOP and I'll remove you from my list.")
+    body = ("Sounds interesting, how much?\n\nOn Sat, Sep 20, 2026 at 9:00 AM Matt <matt@brightreach.test> wrote:\n"
+            "> Worth a quick look? Reply STOP and I'll remove you from my list.")
+    assert c(body, thread=(pitch,)).label == "PRICE_QUESTION"
+    assert c("> Reply STOP and I'll remove you\n", thread=(pitch,)).label == "NEEDS_REVIEW"   # nothing new written
+
+
+@pytest.mark.parametrize("subject,body,label", [
+    ("Re: x", "I'm out of the office next week but yes interested, how much?", "PRICE_QUESTION"),
+    ("Re: x", "We have received your email and I'm interested. how much?", "PRICE_QUESTION"),
+    ("Away from desk but interested", "", "INTERESTED"),
+    ("Away from desk but interested", "Sent from my iPhone", "INTERESTED"),
+])
+def test_human_intent_beats_out_of_office_wording(subject, body, label):
+    assert c(body, subject=subject).label == label
+
+
+@pytest.mark.parametrize("subject,body,headers", [
+    ("Automatic reply: quick question", "I am out of the office until Oct 3.", {}),
+    ("Out of Office: Re: Interested in more booked jobs?", "I am out of the office until Monday.", {}),  # our subject
+    ("Re: x", "I am away. For urgent matters call my cell or contact Mike at mike@example.com.", {}),
+    ("Re: x", "Thanks, interested? We'll get back to you.", {"Auto-Submitted": "auto-replied"}),
+    ("Re: x", "Got it", {"Precedence": "auto_reply"}),
+])
+def test_real_auto_replies_stay_auto(subject, body, headers):
+    assert c(body, subject=subject, headers=headers).label == "AUTO_REPLY"
+
+
+DAEMON = "Mail Delivery Subsystem <mailer-daemon@googlemail.com>"
+
+
+@pytest.mark.parametrize("subject,body", [
+    ("Delivery Status Notification (Delay)",
+     "Delivery incomplete\nThere was a temporary problem delivering your message to someone@example.com. Gmail will "
+     "retry for 47 more hours. You'll be notified if the delivery fails permanently."),
+    ("Delivery Status Notification (Delay)", "Reporting-MTA: dns; googlemail.com\nAction: delayed\nStatus: 4.4.1"),
+    ("Undelivered Mail Returned to Sender", "Action: delayed\nStatus: 4.7.0 greylisted, try again later"),
+])
+def test_delayed_delivery_is_not_a_bounce(subject, body):
+    r = c(body, subject=subject, sender=DAEMON)
+    assert r.label == "AUTO_REPLY" and "temporary" in r.interpretation
+
+
+@pytest.mark.parametrize("subject,body", [
+    ("Delivery Status Notification (Failure)", "Address not found\nYour message wasn't delivered to someone@example.com."),
+    ("Undelivered Mail Returned to Sender", "Action: failed\nStatus: 5.1.1\nDiagnostic-Code: smtp; 550 5.1.1 user unknown"),
+    ("Delivery Status Notification (Delay)", "Action: failed\nStatus: 5.4.7 (delivery time expired)"),
+])
+def test_permanent_failure_is_a_bounce(subject, body):
+    assert c(body, subject=subject, sender=DAEMON).label == "DELIVERY_FAILURE"
+
+
+def test_person_writing_undelivered_is_never_a_bounce():
+    r = c("Your first email was undelivered to my partner, but I'm interested. How much?",
+          subject="Undelivered: your email", sender="john@abcroofing.com")
+    assert r.label == "PRICE_QUESTION"
+    # a real delivery report carries multipart/report even from an unusual sender
+    r = c("Action: failed\nStatus: 5.1.1", subject="Undeliverable: hello", sender="notices@mx.example.com",
+          headers={"Content-Type": 'multipart/report; report-type="delivery-status"; boundary="x"'})
+    assert r.label == "DELIVERY_FAILURE"
+
+
+def test_unclear_mail_server_notice_goes_to_review_not_suppression():
+    r = c("Something happened with your message.", subject="Mail delivery subsystem", sender=DAEMON)
+    assert r.label == "NEEDS_REVIEW" and r.needs_review_reason == "delivery_notice_unclear"
+
+
+def test_nul_and_control_characters_are_removed():
+    from cloudos.conversations.text import clean
+    assert clean("How\x00 much?\x07") == "How much?"
+    assert clean({"a": ["x\x00y", ("\x00",)], "n": 1}) == {"a": ["xy", ("",)], "n": 1}
+    assert clean("tab\tand\nnewline stay") == "tab\tand\nnewline stay"
+    assert clean("bad \ud800 surrogate") == "bad  surrogate"
+    assert c("How much?\x00").label == "PRICE_QUESTION"
