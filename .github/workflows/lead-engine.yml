@@ -1,0 +1,87 @@
+name: Lead Engine
+
+# Fresh lead generator. Runs in the cloud (laptop can be off).
+# Every run checks inventory first: if ready+handed-off NEW companies >= low
+# watermark (config/lead_engine.yaml), it exits in about a minute. Otherwise it
+# discovers until the target is met or the time budget ends, then tops up the
+# sender's Airtable tray. PUBLIC repo: the engine logs counts only - never names
+# or emails. All lead data lives in the private Supabase database.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'cycle (refill if low), force (refill now), status'
+        required: true
+        default: cycle
+        type: choice
+        options: [cycle, force, status]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lead-engine
+  cancel-in-progress: false
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    env:
+      DATABASE_URL: ${{ secrets.LEADS_DATABASE_URL }}
+      AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+      GMAPS_SCRAPER_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: pip install -q -e .[dev] dnspython
+      - name: Check settings
+        shell: bash
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "BLOCKED: missing secret LEADS_DATABASE_URL"; exit 1; }
+          for n in AIRTABLE_API_KEY AIRTABLE_BASE_ID AIRTABLE_TABLE_NAME; do [ -n "${!n}" ] || echo "note: $n missing - handoff will be skipped"; done
+      - name: Unit tests
+        run: python -m pytest -q tests/test_leadgen_unit.py
+      - name: Inventory check
+        id: gate
+        shell: bash
+        run: |
+          python lead_engine.py status > status.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, yaml
+          s = json.load(open("status.json")); c = yaml.safe_load(open("config/lead_engine.yaml"))
+          low = s["available_inventory"] < c["inventory"]["low_watermark"]
+          print(f"refill={'true' if low else 'false'}")
+          PY
+          python -c "import json;s=json.load(open('status.json'));print({k:s[k] for k in ('available_inventory','qualified_new','goal','total_companies')})"
+      - name: Start Google Maps scraper
+        if: steps.gate.outputs.refill == 'true' || inputs.mode == 'force'
+        continue-on-error: true   # engine keeps going on the other sources if this fails
+        shell: bash
+        run: |
+          docker run -d --name gmaps -p 8080:8080 gosom/google-maps-scraper -data-folder /tmp/gmapsdata
+          for i in $(seq 1 45); do curl -fsS http://127.0.0.1:8080/api/v1/jobs >/dev/null 2>&1 && exit 0; sleep 2; done
+          exit 1
+      - name: Run cycle
+        if: inputs.mode != 'status'
+        shell: bash
+        run: |
+          if [ "${{ inputs.mode }}" = "force" ]; then python lead_engine.py cycle --force --max-minutes 150;
+          else python lead_engine.py cycle --max-minutes 150; fi
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          python lead_engine.py reports >/dev/null 2>&1 || true
+          cat docs/lead_engine/lead_engine_status.md docs/lead_engine/lead_source_performance.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - name: Stop scraper
+        if: always()
+        run: docker rm -f gmaps >/dev/null 2>&1 || true

@@ -22,3 +22,7 @@ email_outbox/
 # Local tool debris (Playwright MCP runs, wave fingerprint cache)
 .playwright-mcp/
 wave.fp
+
+# Lead engine: company/contact data never goes into this PUBLIC repo
+data/lead_history/
+state/lead_engine/

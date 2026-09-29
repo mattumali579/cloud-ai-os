@@ -155,6 +155,29 @@ def handle_job_agent_run(payload: dict) -> dict:
         return JobAgent(conn).run(dry_run=dry_run)
 
 
+def handle_lead_engine_cycle(payload: dict) -> dict:
+    """Refill the fresh-lead inventory if it is below the low watermark, then hand off."""
+    import cloudos.db as db
+    from cloudos.leadgen.engine import LeadEngine
+
+    max_minutes = payload.get("max_minutes")
+    result = LeadEngine(db.get_conn).cycle(
+        float(max_minutes) if isinstance(max_minutes, (int, float)) else None, force=bool(payload.get("force"))
+    )
+    if payload.get("handoff", True):
+        from cloudos.leadgen.handoff import Airtable, sync_and_handoff
+        from cloudos.leadgen.engine import load_config
+        from cloudos.leadgen.history_import import airtable_env
+
+        env = airtable_env()
+        if all(env.values()):
+            with db.get_conn() as conn:
+                result["handoff"] = sync_and_handoff(
+                    conn, Airtable(env["AIRTABLE_API_KEY"], env["AIRTABLE_BASE_ID"], env["AIRTABLE_TABLE_NAME"]), load_config()
+                )
+    return result
+
+
 HANDLERS: dict[str, Callable[[dict], dict]] = {
     "noop": handle_noop,
     "task.run": handle_task_run,
@@ -163,6 +186,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "retention.prune": handle_retention_prune,
     "notify.flush": handle_notify_flush,
     "job.agent.run": handle_job_agent_run,
+    "lead.engine.cycle": handle_lead_engine_cycle,
 }
 
 
