@@ -214,8 +214,16 @@ class LeadEngine:
         try:
             with self.conn_factory() as conn:
                 if "history_recovery" in active:
-                    self.recover_history(conn, stats, fetcher, int(self.cfg["sources"]["history_recovery"].get("batch", 40)))
                     exhausted.add("history_recovery")
+                    try:
+                        self.recover_history(conn, stats, fetcher, int(self.cfg["sources"]["history_recovery"].get("batch", 40)))
+                        store.source_success(conn, "history_recovery")
+                    except Exception as exc:  # noqa: BLE001 - one broken source never stops the others
+                        conn.rollback()
+                        store.source_failure(conn, "history_recovery", f"{type(exc).__name__}: {exc}", policy)
+                        conn.commit()
+                        stats.source_errors["history_recovery"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                        log.warning("source history_recovery failed: %s", type(exc).__name__)
                 while time.time() < deadline and stats.new_outreach_ready < target_new_ready:
                     progressed = False
                     for name in active:
@@ -249,7 +257,12 @@ class LeadEngine:
                                 continue
                             store.source_success(conn, name)
                             before = stats.new_companies
-                            self.process_candidates(conn, cands, stats, fetcher, deadline)
+                            try:
+                                self.process_candidates(conn, cands, stats, fetcher, deadline)
+                            except Exception as exc:  # noqa: BLE001 - skip this batch, keep the run alive
+                                conn.rollback()
+                                stats.source_errors[f"{name}:batch"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                                log.warning("batch from %s failed, continuing: %s", name, type(exc).__name__)
                             store.mark_query(conn, name, q, len(cands), stats.new_companies - before)
                             conn.commit()
                             stats.queries_run += 1

@@ -111,16 +111,20 @@ class Importer:
     def import_airtable(self, records: list[dict]) -> None:
         for rec in records:
             f = rec.get("fields") or {}
+            if "lead_engine_company_id=" in str(f.get("Signal") or ""):
+                self._count("airtable", "skipped_engine_handoff_rows")  # our own handoffs, synced by handoff.py
+                continue
             status = str(f.get("Status") or "").strip().lower()
             emailed_at = _parse_dt(f.get("Emailed At"))
-            if emailed_at or status in CONTACTED_AIRTABLE:
+            if status == "unsubscribed":
+                ostatus, level, reason = STATUS_MAP["unsubscribed"]
+                contacted_at = emailed_at or _parse_dt(rec.get("createdTime"))
+            elif emailed_at or status in CONTACTED_AIRTABLE:
                 ostatus, level, reason = "contacted", "REJECT", f"historical: already contacted ({f.get('Status')})"
                 contacted_at = emailed_at or _parse_dt(rec.get("createdTime"))
             else:
                 ostatus, level, reason = STATUS_MAP.get(status, ("not_ready", "LOW", f"historical: status {f.get('Status')!r}"))
                 contacted_at = None
-            if status == "unsubscribed":
-                contacted_at = emailed_at or _parse_dt(rec.get("createdTime"))
             website = f.get("Website") or (f"http://{f['Domain']}" if f.get("Domain") and "." in str(f.get("Domain")) else "")
             cand = Candidate(name=str(f.get("Company") or f.get("Domain") or "unknown").strip(), website=website,
                              industry=str(f.get("Category") or "").strip().lower(), phone=str(f.get("Phone") or ""),
