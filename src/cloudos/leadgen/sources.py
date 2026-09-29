@@ -177,10 +177,12 @@ class GoogleMapsSource(Source):
             except httpx.HTTPError:
                 pass
         if resp.status_code >= 400:
-            if status == "failed":
-                raise SourceError("scraper job failed")
-            return []  # finished with no results file = zero listings for this query
-        return list(self._rows_to_candidates(resp.text, q))
+            raise SourceError(f"no results file (job status {status or 'unknown'})")
+        rows = list(self._rows_to_candidates(resp.text, q))
+        if not rows:
+            # Maps always has listings for "<trade> in <metro>"; empty usually means we were blocked.
+            raise SourceError(f"0 listings returned (job status {status or 'unknown'}) - possibly blocked")
+        return rows
 
     def _rows_to_candidates(self, text: str, q: dict) -> Iterable[Candidate]:
         for row in csv.DictReader(io.StringIO(text)):
