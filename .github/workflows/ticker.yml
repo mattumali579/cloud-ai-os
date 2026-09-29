@@ -1,0 +1,49 @@
+name: Ticker
+
+# Reliable clock for the other workflows. GitHub's `schedule:` trigger misses
+# most firings on this repo (lead-engine never fired, email-alerts fires 3-4 of
+# 9 times a day). This job runs ~50 minutes, starting outreach-replies every
+# 10 min, email-alerts and lead-engine on their normal times, then starts the
+# next Ticker run before it exits - an unbroken chain in the cloud.
+#
+# Uses only the built-in GITHUB_TOKEN: workflow_dispatch made with it always
+# creates a run (GitHub docs, "GITHUB_TOKEN" page). Public repo = free minutes.
+#
+# Chain safety: concurrency keeps at most one Ticker running + one waiting; the
+# end-of-run hand-off replaces any waiting duplicate, so parallel chains
+# collapse back into one. The cron below only restarts a broken chain.
+# To stop the chain: cancel the running Ticker (a cancelled run does not hand
+# off) or disable this workflow.
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: ticker
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/actions_ticker.py
+          sparse-checkout-cone-mode: false
+      - name: Tick
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TICKER_REF: master
+        run: python3 scripts/actions_ticker.py --minutes 50
+      - name: Hand off to next Ticker
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run ticker.yml --repo "$GITHUB_REPOSITORY" --ref master
