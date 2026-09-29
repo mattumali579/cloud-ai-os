@@ -1,12 +1,14 @@
 # Fresh lead generator settings. Every number here is a knob, not a promise.
 inventory:
+  daily_new_target: 300     # NEW never-contacted, qualified companies to find every day (America/Chicago day)
+  timezone: America/Chicago
   target_ready: 500          # refill until at least this many outreach-ready NEW companies exist
   low_watermark: 300         # start a refill when ready inventory drops below this
   total_goal: 4000           # long-run goal: unique qualified companies
 
 run:
   max_minutes: 150           # time budget for one automatic cycle
-  enrich_workers: 8          # websites checked in parallel (one request at a time per site)
+  enrich_workers: 16         # websites checked in parallel (one request at a time per site)
   http_timeout: 12
   max_pages_per_site: 4
 

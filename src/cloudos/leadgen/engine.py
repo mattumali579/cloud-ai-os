@@ -68,6 +68,9 @@ class LeadEngine:
         with self.conn_factory() as conn:
             inv = store.inventory(conn)
         inv["goal"] = self.cfg["inventory"]["total_goal"]
+        with self.conn_factory() as conn:
+            inv["found_today"] = store.found_today(conn, self.cfg["inventory"].get("timezone", "America/Chicago"))
+        inv["daily_new_target"] = self.cfg["inventory"].get("daily_new_target")
         inv["progress_pct"] = round(100 * inv["qualified_new"] / inv["goal"], 1) if inv["goal"] else 0
         return inv
 
@@ -277,14 +280,22 @@ class LeadEngine:
         return stats
 
     def cycle(self, max_minutes: float | None = None, force: bool = False) -> dict:
-        """One automatic replenishment cycle (what the scheduler calls)."""
+        """One automatic cycle (what the scheduler calls): make sure today's quota of
+        NEW qualified companies is met; also refill if ready inventory is low."""
+        inv = self.cfg["inventory"]
+        tz = inv.get("timezone", "America/Chicago")
+        with self.conn_factory() as conn:
+            today = store.found_today(conn, tz)
         refill, ready = self.needs_refill(force)
-        result: dict = {"ready_before": ready, "low_watermark": self.cfg["inventory"]["low_watermark"],
-                        "target_ready": self.cfg["inventory"]["target_ready"], "refilled": False}
-        if refill:
-            want = self.cfg["inventory"]["target_ready"] - ready
-            stats = self.discover(max(want, 1), max_minutes or float(self.cfg["run"]["max_minutes"]))
+        daily_gap = max(int(inv.get("daily_new_target", 0)) - today, 0)
+        want = max(daily_gap, (inv["target_ready"] - ready) if refill else 0, 1 if force else 0)
+        result: dict = {"found_today_before": today, "daily_new_target": inv.get("daily_new_target"),
+                        "ready_before": ready, "refilled": False}
+        if want > 0:
+            stats = self.discover(want, max_minutes or float(self.cfg["run"]["max_minutes"]))
             result.update(refilled=True, stats={k: v for k, v in stats.__dict__.items() if k != "samples"})
+        with self.conn_factory() as conn:
+            result["found_today_after"] = store.found_today(conn, tz)
         with self.conn_factory() as conn:
             result["ready_after"] = store.inventory(conn)["available_inventory"]
         return result

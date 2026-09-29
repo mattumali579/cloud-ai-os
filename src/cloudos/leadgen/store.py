@@ -238,3 +238,10 @@ def inventory(conn) -> dict[str, Any]:
     out["domains_indexed"] = conn.execute(
         "SELECT count(*) AS n FROM companies WHERE normalized_domain IS NOT NULL").fetchone()["n"]
     return out
+
+
+def found_today(conn, tz: str = "America/Chicago") -> int:
+    """NEW (never in history) qualified companies discovered since local midnight."""
+    return conn.execute(
+        "SELECT count(*) AS n FROM companies WHERE NOT is_historical AND qualification_status IN ('HIGH','MEDIUM') "
+        "AND discovered_at >= (date_trunc('day', now() AT TIME ZONE %s) AT TIME ZONE %s)", (tz, tz)).fetchone()["n"]

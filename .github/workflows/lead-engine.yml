@@ -9,7 +9,7 @@ name: Lead Engine
 
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '17 */3 * * *'   # every 3h; each run stops once today's 300 are found
   workflow_dispatch:
     inputs:
       mode:
@@ -59,9 +59,10 @@ jobs:
           import json, yaml
           s = json.load(open("status.json")); c = yaml.safe_load(open("config/lead_engine.yaml"))
           low = s["available_inventory"] < c["inventory"]["low_watermark"]
-          print(f"refill={'true' if low else 'false'}")
+          short = s["found_today"] < c["inventory"].get("daily_new_target", 0)
+          print(f"refill={'true' if (low or short) else 'false'}")
           PY
-          python -c "import json;s=json.load(open('status.json'));print({k:s[k] for k in ('available_inventory','qualified_new','goal','total_companies')})"
+          python -c "import json;s=json.load(open('status.json'));print({k:s[k] for k in ('found_today','available_inventory','qualified_new','goal','total_companies')})"
       - name: Start Google Maps scraper
         if: steps.gate.outputs.refill == 'true' || inputs.mode == 'force'
         continue-on-error: true   # engine keeps going on the other sources if this fails
@@ -75,7 +76,8 @@ jobs:
         shell: bash
         run: |
           if [ "${{ inputs.mode }}" = "force" ]; then python lead_engine.py cycle --force --max-minutes 150;
-          else python lead_engine.py cycle --max-minutes 150; fi
+          elif [ "${{ steps.gate.outputs.refill }}" = "true" ]; then python lead_engine.py cycle --max-minutes 150;
+          else echo "today's quota met - only syncing the sender tray"; python lead_engine.py handoff; fi
       - name: Summary
         if: always()
         shell: bash
