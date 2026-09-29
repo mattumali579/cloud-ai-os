@@ -223,7 +223,7 @@ def sync(conn, *, since: str = "01-Sep-2026", send: notify.Sender | None = None,
                         if (out.get("notification") or {}).get("created"):
                             res["notifications"] += 1
                         if quiet and out.get("status") in ("processed", "needs_review_unmatched") and label not in ("AUTO_REPLY", "DELIVERY_FAILURE"):
-                            digest.append(label)
+                            digest.append(out.get("message_id"))
             last_uid = max([last_uid, *chunk])
             conn.execute("INSERT INTO reply_poll_state (mailbox, last_uid, uidvalidity, last_run_at, last_result) "
                          "VALUES (%s,%s,%s,now(),%s) ON CONFLICT (mailbox) DO UPDATE SET last_uid = EXCLUDED.last_uid, "
@@ -358,14 +358,27 @@ def _repair_emailed_at(conn, items: list[tuple[str, datetime]], send) -> int:
     return fixed
 
 
-def _digest(conn, labels: list[str], send, res: dict) -> None:
-    counts: dict[str, int] = {}
-    for l in labels:
-        counts[l] = counts.get(l, 0) + 1
-    lines = ["**BRIGHTREACH - EARLIER REPLIES LOADED**", "",
-             "I read the replies that arrived before this system existed and saved them to memory.",
-             "", *[f"- {k.replace('_', ' ').lower()}: {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])], "",
-             "Everything that needs you is in the attention list (python outreach_status.py --queue)."]
+def _digest(conn, message_ids: list[str], send, res: dict) -> None:
+    """One summary for older replies found when catching up - who, what they said, what it means, what to do."""
+    from cloudos.conversations.text import one_line
+    rows = conn.execute(
+        "SELECT coalesce(c.company_name, 'Unknown sender') company, m.body, ra.classification, ra.interpretation, "
+        "ra.recommended_action, s.current_status FROM outreach_messages m LEFT JOIN companies c USING (company_id) "
+        "LEFT JOIN LATERAL (SELECT * FROM reply_analyses r WHERE r.message_id = m.message_id ORDER BY analysis_id DESC LIMIT 1) ra ON true "
+        "LEFT JOIN company_conversation_state s ON s.company_id = m.company_id WHERE m.message_id = ANY(%s::uuid[]) "
+        "ORDER BY m.occurred_at", ([m for m in message_ids if m],)).fetchall()
+    if not rows:
+        return
+    lines = ["**BRIGHTREACH - OLDER REPLIES CAUGHT UP**", "",
+             f"I read {len(rows)} earlier repl{'y' if len(rows) == 1 else 'ies'} and saved them to memory:", ""]
+    for r in rows[:10]:
+        lines += [f"**{r['company']}** - {(r['classification'] or 'needs review').replace('_', ' ').lower()} "
+                  f"(status now: {r['current_status'] or 'needs review'})",
+                  f"They said: “{one_line(strip_quoted(r['body'] or ''), 200)}”",
+                  f"Meaning: {r['interpretation'] or 'unclear'}",
+                  f"Next: {r['recommended_action'] or 'read it'}", ""]
+    if len(rows) > 10:
+        lines.append(f"...and {len(rows) - 10} more.")
     notify.notify_once(conn, dedupe_key=f"br:backfill:{datetime.now(timezone.utc).date()}", code="reply.backfill",
                        severity="normal", text="\n".join(lines), send=send)
 
