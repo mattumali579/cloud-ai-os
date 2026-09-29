@@ -1,0 +1,52 @@
+# BrightReach offer catalog used by pricing replies, audits and proposals.
+# Source of truth: AI-Second-Brain/leadgen-pipeline/close-kit/OFFER_ONE_PAGER.md
+# (the same $1,500 / $400 figures the live Gmail reply engine is limited to).
+# Nothing outside this file may be quoted to a prospect. Change prices HERE.
+
+default_offer: recovery_build
+
+offers:
+  recovery_build:
+    name: Missed-Call Revenue Recovery Build
+    setup_usd: 1500
+    monthly_usd: null
+    price_text: "$1,500 one-time"
+    deliverables:
+      - Instant text-back on every missed call
+      - Self-serve booking straight into your calendar
+      - Same-day automated quote follow-ups
+      - Runs 24/7; you own it
+    timeline: null            # not in the offer sheet - proposals say "to confirm"
+    guarantee: "If it's not texting back missed calls and booking jobs within 30 days of go-live, I keep working free until it does, or you get your money back."
+    client_responsibilities:   # needed to install it; proposals mark these "confirm on kickoff"
+      - Business phone number/provider access so missed calls can be forwarded
+      - Calendar access (Google or Outlook) for booking
+      - One kickoff conversation to confirm services, hours and service area
+  hosted:
+    name: Hosted + Maintained
+    setup_usd: null
+    monthly_usd: 400
+    price_text: "$400/month, month to month"
+    deliverables:
+      - Hosting and monitoring
+      - Tweaks and changes as needed
+      - Monthly report (calls caught, texts sent, jobs booked)
+    timeline: "Starts after the build is live"
+    guarantee: "Month to month. No contract. Cancel anytime and you keep the agent."
+    client_responsibilities: []
+  lead_pack:
+    name: Lead Pack
+    setup_usd: null
+    monthly_usd: null
+    price_text: "$150-200 one-time for 25 exclusive leads"
+    deliverables:
+      - 25 exclusive trade leads, never resold
+    timeline: null
+    guarantee: "If the first batch doesn't turn into booked jobs, the next batch is free."
+    client_responsibilities: []
+
+out_of_scope:
+  - Website redesigns
+  - Ad management
+  - Promised lead counts on the agent tiers
+  - Answering phones live
