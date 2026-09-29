@@ -525,7 +525,7 @@ const WATCHER_RUNS_API =
 // runs: healthy gaps reached 9.3h, 9.7h and 12.2h. An 8h threshold would
 // false-alarm several times a week, so the line sits just above the worst
 // healthy gap seen. The 9-day outage is still caught the same day.
-export const STALE_AFTER_MS = 30 * 60 * 1000; // TEMP-FORCED-LIVE-TEST: revert to 14h
+export const STALE_AFTER_MS = 14 * 60 * 60 * 1000;
 export const CRON_INTERVAL_MS = 30 * 60 * 1000;
 export const DAILY_STATUS_HOUR_CHICAGO = 8;
 
