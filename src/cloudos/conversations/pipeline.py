@@ -26,6 +26,17 @@ MONTHS = ["january", "february", "march", "april", "may", "june", "july", "augus
 HUMAN_URGENCY = {"READY_TO_BUY": "urgent", "MEETING_REQUEST": "high", "PRICE_QUESTION": "high",
                  "NEEDS_REVIEW": "high", "INTERESTED": "normal", "MORE_INFORMATION": "normal", "OBJECTION": "normal",
                  "REFERRAL": "normal", "OTHER": "normal"}
+POSITIVE_LABELS = {"INTERESTED", "PRICE_QUESTION", "MORE_INFORMATION", "MEETING_REQUEST", "READY_TO_BUY"}
+REVIEW_WHY = {
+    "affirmation_ambiguous": "They said yes, but it's not clear to what",
+    "affirmation_without_context": "They said yes, but we have no email of ours on record to tie it to",
+    "no_recognised_intent": "The reply doesn't clearly say what they want",
+    "conflict_negative_and_positive": "The reply says no and sounds interested at the same time",
+    "conflict_unsubscribe_and_positive": "They asked to be removed but also sounded interested",
+    "legal_or_angry": "The reply is angry or mentions legal/privacy",
+    "referral_unclear": "They seem to point to someone else, but it's unclear who",
+    "empty_or_unreadable": "The reply has no readable text",
+}
 BOUNCE_RCPT = [re.compile(p, re.I) for p in (
     r"Final-Recipient:\s*rfc822;\s*([^\s;<>]+@[^\s;<>]+)", r"wasn'?t delivered to\s+<?([^\s<>]+@[^\s<>]+)",
     r"delivery to the following recipient[s]? failed[^\n]*\n\s*<?([^\s<>]+@[^\s<>]+)>?",
@@ -211,8 +222,10 @@ def _attention(conn, c, st, company, cid, mid, prev, link) -> bool:
         return False
     if c.label == "UNSUBSCRIBE" and not c.legal_or_angry:
         return False
+    if prev == "do_not_contact" and c.label not in POSITIVE_LABELS and not c.legal_or_angry:
+        return False     # already blocked and not asking to reopen - nothing for the owner to do
     reason = {
-        "NEEDS_REVIEW": f"Meaning unclear ({c.needs_review_reason}) - automation will not reply.",
+        "NEEDS_REVIEW": f"{REVIEW_WHY.get(c.needs_review_reason, 'The meaning is unclear')} - nothing will be sent automatically.",
         "MEETING_REQUEST": "They asked for a call/meeting - only you can set the time.",
         "READY_TO_BUY": "They want to buy - approve the proposal and collect payment.",
         "PRICE_QUESTION": "Pricing reply is prepared and needs your approval before it goes out.",
