@@ -465,3 +465,93 @@ def test_feedback_waits_for_real_samples(conn):
     roof = fb["by_industry"]["roofing"]
     assert roof["sent"] == 1 and roof["positive_replies"] == 1
     assert roof["recommendation"] == "insufficient_data"            # one send is not a signal
+
+
+# ------------------------------------------------------- gmail sync (fake IMAP)
+class FakeIMAP:
+    """Just enough Gmail IMAP: All Mail with UIDs + X-GM-THRID, and Drafts APPEND."""
+    store: dict = {}
+    appended: list = []
+
+    def __init__(self, host, port):
+        pass
+
+    def login(self, u, p):
+        return "OK", [b""]
+
+    def select(self, box, readonly=False):
+        return "OK", [b"1"]
+
+    def status(self, box, what):
+        return "OK", [b'"[Gmail]/All Mail" (UIDVALIDITY 777)']
+
+    def uid(self, cmd, *args):
+        if cmd == "SEARCH":
+            if args[1].startswith("UID"):
+                lo = int(args[1].split()[1].split(":")[0])
+                ids = [u for u in self.store if u >= lo] or [max(self.store)]
+            else:
+                ids = list(self.store)
+            return "OK", [" ".join(map(str, sorted(ids))).encode()]
+        uids = [int(x) for x in args[0].split(",")]
+        out = []
+        for u in uids:
+            thr, raw = self.store[u]
+            if "HEADER.FIELDS" in args[1]:
+                raw = raw.split(b"\r\n\r\n", 1)[0] + b"\r\n\r\n"
+            out.append((f"{u} (UID {u} X-GM-THRID {thr} X-GM-LABELS () BODY[] {{{len(raw)}}}".encode(), raw))
+            out.append(b")")
+        return "OK", out
+
+    def append(self, box, flags, when, data):
+        FakeIMAP.appended.append((box, data))
+        return "OK", [b""]
+
+    def logout(self):
+        return "BYE", [b""]
+
+
+def _raw(frm, to, subject, body, mid, date="Sat, 20 Sep 2026 15:00:00 +0000", extra=""):
+    return (f"From: {frm}\r\nTo: {to}\r\nSubject: {subject}\r\nDate: {date}\r\nMessage-ID: <{mid}>\r\n{extra}"
+            f"Content-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n").encode()
+
+
+def test_gmail_sync_end_to_end(conn, monkeypatch):
+    monkeypatch.setenv("EMAIL_ADDRESS", "matt@brightreach.test")
+    monkeypatch.setenv("EMAIL_APP_PASSWORD", "x")
+    from cloudos.conversations import gmail_sync
+    cid = make_company(conn)
+    FakeIMAP.appended = []
+    FakeIMAP.store = {
+        1: ("900", _raw("Matt <matt@brightreach.test>", "john@abcroofing.com", "quick question about ABC Roofing",
+                        "Hi,\nNo quote form on your site. Worth a quick look?", "cold-9@brightreach.test",
+                        extra="X-Leadgen-Outreach: office-agent-first\r\nX-Leadgen-Record-ID: recABC0000000001\r\n")),
+        2: ("555", _raw("Mom <mom@family.test>", "matt@brightreach.test", "dinner?", "call me about dinner, how much was the cake?",
+                        "personal-1@family.test")),
+        3: ("900", _raw("John <john@abcroofing.com>", "matt@brightreach.test", "Re: quick question about ABC Roofing",
+                        "This sounds interesting. How much?\n\nOn Sat, Sep 20, 2026 Matt wrote:\n> Worth a quick look?",
+                        "reply-9@abcroofing.com", date="Sun, 28 Sep 2026 15:00:00 +0000",
+                        extra="In-Reply-To: <cold-9@brightreach.test>\r\nReferences: <cold-9@brightreach.test>\r\n")),
+    }
+    out = Outbox()
+    res = gmail_sync.sync(conn, send=out, imap_factory=FakeIMAP, repair_emailed_at=False)
+    assert res["scanned"] == 3 and res["relevant"] == 2 and res["outbound_recorded"] == 1
+    assert res["inbound"] == {"PRICE_QUESTION": 1}
+    assert conn.execute("SELECT count(*) n FROM outreach_messages WHERE sender LIKE '%%family%%'").fetchone()["n"] == 0
+    m = conn.execute("SELECT * FROM outreach_messages WHERE direction='outbound'").fetchone()
+    assert m["thread_id"] == "900" and m["kind"] == "cold" and "No quote form" in m["body"] and str(m["company_id"]) == cid
+    assert state(conn, cid)["current_status"] == "interested"
+    assert len(FakeIMAP.appended) == 1
+    draft = FakeIMAP.appended[0][1]
+    assert b"$1,500" in draft and b"In-Reply-To: <reply-9@abcroofing.com>" in draft
+    # second run: nothing new, nothing repeated
+    res2 = gmail_sync.sync(conn, send=out, imap_factory=FakeIMAP, repair_emailed_at=False)
+    assert res2["scanned"] == 0 and len(FakeIMAP.appended) == 1
+    # Matt sends the draft from Gmail -> recorded as the pricing send, draft closes
+    FakeIMAP.store[4] = ("900", _raw("Matt <matt@brightreach.test>", "john@abcroofing.com", "Re: pricing for ABC Roofing",
+                                     "It's $1,500 one-time.", "sent-draft-1@brightreach.test",
+                                     date="Sun, 28 Sep 2026 17:00:00 +0000"))
+    gmail_sync.sync(conn, send=out, imap_factory=FakeIMAP, repair_emailed_at=False)
+    assert conn.execute("SELECT state FROM outreach_drafts WHERE kind='pricing'").fetchone()["state"] == "sent"
+    assert state(conn, cid)["current_price"] == "$1,500"
+    assert len(out.sent) == 1          # one reply -> exactly one notification across three runs

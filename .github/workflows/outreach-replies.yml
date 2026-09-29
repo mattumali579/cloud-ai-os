@@ -1,0 +1,79 @@
+name: Outreach Replies
+
+# BrightReach reply layer. Reads the outreach Gmail (read-only), stores every
+# confirmed send and reply in Supabase, classifies replies against the whole
+# thread, updates company status, notifies the owner on Discord once per
+# important event, and places prepared replies in Gmail Drafts for the owner
+# to send. It never emails a prospect by itself.
+# PUBLIC repo: logs are counts only - never names, emails or message text.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'poll (normal), quiet (record only, no pings/drafts), status'
+        required: true
+        default: poll
+        type: choice
+        options: [poll, quiet, status]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: outreach-replies
+  cancel-in-progress: false
+
+jobs:
+  replies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.LEADS_DATABASE_URL }}
+      EMAIL_ADDRESS: ${{ secrets.OUTREACH_EMAIL_ADDRESS }}
+      EMAIL_APP_PASSWORD: ${{ secrets.OUTREACH_EMAIL_APP_PASSWORD }}
+      SMTP_FROM_EMAIL: ${{ secrets.OUTREACH_FROM_EMAIL }}
+      CLOUDOS_NOTIFY_URL: ${{ secrets.CLOUDOS_NOTIFY_URL }}
+      CLOUDOS_NOTIFY_TOKEN: ${{ secrets.CLOUDOS_NOTIFY_TOKEN }}
+      AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: pip install -q -e .[dev]
+      - name: Check settings
+        shell: bash
+        run: |
+          missing=0
+          for n in DATABASE_URL EMAIL_ADDRESS EMAIL_APP_PASSWORD CLOUDOS_NOTIFY_URL CLOUDOS_NOTIFY_TOKEN; do
+            [ -n "${!n}" ] || { echo "BLOCKED: missing secret for $n"; missing=1; }
+          done
+          exit $missing
+      - name: Classifier tests
+        run: python -m pytest -q tests/test_conversations_classify.py
+      - name: Database schema up to date
+        run: python outreach_replies.py migrate
+      - name: Read mailbox
+        if: inputs.mode != 'status'
+        run: |
+          if [ "${{ inputs.mode }}" = "quiet" ]; then python outreach_replies.py poll --quiet; else python outreach_replies.py poll; fi
+      - name: Summary (counts only)
+        if: always()
+        shell: bash
+        run: |
+          python outreach_status.py --json > status.json 2>/dev/null || exit 0
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          s = json.load(open("status.json"))
+          print(f"### BrightReach {s['day']}")
+          for k, v in s["today"].items():
+              print(f"- {k}: {v}")
+          print(f"- needs you (open): {len(s['attention'])}")
+          PY
