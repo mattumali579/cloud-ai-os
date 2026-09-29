@@ -44,3 +44,18 @@ Higgsfield generation is available only through an explicit credit-spend
 confirmation command.
 
 See [`docs/DISCORD_CODEX_EMPLOYEES.md`](docs/DISCORD_CODEX_EMPLOYEES.md).
+
+## Fresh lead generator
+
+Finds small/medium businesses you have never contacted, checks their public
+website for a published email, grades them HIGH/MEDIUM/LOW/REJECT, dedupes
+against every past lead, and hands the good ones to the existing sender. Runs
+every 6 hours in GitHub Actions and only works when the ready pile is low.
+
+- START: `gh workflow run lead-engine.yml -f mode=force` (or `python lead_engine.py cycle --force`)
+- STOP: `gh workflow disable lead-engine.yml`
+- STATUS: `python lead_engine.py status`
+- TEST: `python lead_engine.py test`
+- RECOVERY: `python lead_engine.py reset-source <name>`; `python lead_engine.py import-history` is safe to re-run
+
+Details: [`docs/lead_engine/README.md`](docs/lead_engine/README.md).

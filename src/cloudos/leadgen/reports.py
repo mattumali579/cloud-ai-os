@@ -67,7 +67,8 @@ def performance_markdown(conn) -> str:
         if r["disabled_until"] and r["disabled_until"] > datetime.now(timezone.utc):
             health = f"benched until {r['disabled_until']:%m-%d %H:%M} UTC"
         new = r["new_companies"]
-        lines.append(f"| {r['source']} | {r['queries_run']} | {r['results']} | {_pct(r['duplicates'], r['results'])} | {new} | "
+        label = "history_recovery (old never-contacted companies re-checked, not new)" if r["source"] == "history_recovery" else r["source"]
+        lines.append(f"| {label} | {r['queries_run']} | {r['results']} | {_pct(r['duplicates'], r['results'])} | {new} | "
                      f"{r['with_email']} | {r['qualified']} | {_pct(r['qualified'], new)} | {r['invalid_email']} | "
                      f"{r['contacted']} | {r['replied']} | {health} |")
     lines += ["", "Reply rate needs the sender to write replies back; until it does, Replies stays 0 and says nothing about lead quality."]
@@ -105,6 +106,9 @@ def status_markdown(conn, cfg: dict) -> str:
         s = r["stats"] or {}
         st = s.get("stats", s)
         mins = f"{(r['finished_at'] - r['started_at']).total_seconds() / 60:.0f}" if r["finished_at"] else "running"
+        if s.get("error"):
+            lines.append(f"| {r['mode']} | {r['started_at']:%m-%d %H:%M} | {mins} | failed: {s['error'][:60]} | - | - | - |")
+            continue
         lines.append(f"| {r['mode']} | {r['started_at']:%m-%d %H:%M} | {mins} | {st.get('new_companies', '-')} | "
                      f"{st.get('new_outreach_ready', '-')} | {st.get('duplicates', '-')} | {len(st.get('source_errors') or {})} |")
     return "\n".join(lines) + "\n"

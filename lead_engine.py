@@ -35,7 +35,13 @@ DOCS = ROOT / "docs" / "lead_engine"
 def _record_run(mode: str, fn):
     with db.get_conn() as conn:
         run_id = conn.execute("INSERT INTO lead_runs (mode) VALUES (%s) RETURNING run_id", (mode,)).fetchone()["run_id"]
-    result = fn()
+    try:
+        result = fn()
+    except BaseException as exc:
+        with db.get_conn() as conn:
+            conn.execute("UPDATE lead_runs SET finished_at = now(), stats = %s::jsonb WHERE run_id = %s",
+                         (json.dumps({"error": f"{type(exc).__name__}: {str(exc)[:300]}"}), run_id))
+        raise
     with db.get_conn() as conn:
         conn.execute("UPDATE lead_runs SET finished_at = now(), stats = %s::jsonb WHERE run_id = %s",
                      (json.dumps(result, default=str), run_id))
