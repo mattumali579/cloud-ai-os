@@ -168,7 +168,12 @@ def qa(e: Email, *, postal_address: str, company_name: str = "") -> list[str]:
     if len(e.body.strip()) < 120:
         problems.append("body too short")
     text = f"{e.subject}\n{e.body}"
-    hit = BANNED.search(text)
+    words = text
+    for n in sorted({company_name.strip(), display_name(company_name)} - {"", "your team"}, key=len, reverse=True):
+        words = words.replace(n, " ")
+    if postal_address.strip():
+        words = words.replace(postal_address.strip(), " ")
+    hit = BANNED.search(words)
     if hit:
         problems.append(f"mentions the technology ('{hit.group(0)}')")
     if PLACEHOLDER.search(text):

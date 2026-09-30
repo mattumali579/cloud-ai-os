@@ -24,12 +24,30 @@ from datetime import datetime, timezone
 @dataclass
 class SendResult:
     ok: bool
-    kind: str               # sent | auth | permanent | transient (nothing delivered) | unknown (maybe delivered)
+    kind: str               # sent | auth | permanent | transient (nothing delivered) | throttled | unknown (maybe delivered)
     detail: str = ""
 
 
 class AuthError(RuntimeError):
     pass
+
+
+# The server's OWN limits / policy - never the recipient's fault, so never a bounce.
+_THROTTLE = re.compile(r"(?i)quota|limit|rate|too many|exceeded|try (again )?later|spam|policy|blocked|blacklist|"
+                       r"reputation|sender address rejected|not allowed to send|5\.7\.|4\.7\.|5\.4\.5")
+# The address itself does not exist - the only thing that is a hard bounce.
+_NO_SUCH_USER = re.compile(r"(?i)5\.1\.[0-3]\b|5\.1\.10\b|user unknown|unknown user|no such (user|mailbox|recipient)|"
+                           r"(mailbox|recipient|user|address)[^.]{0,30}(does not exist|not found|unavailable|invalid)|"
+                           r"invalid (recipient|mailbox|address)|recipient address rejected: user unknown")
+
+
+def classify_reject(code: int, text: str) -> str:
+    """permanent (the address is dead) / throttled (the server's own limit or policy) / transient."""
+    if _THROTTLE.search(text or "") and not re.search(r"(?i)5\.1\.1\b|user unknown", text or ""):
+        return "throttled"
+    if 500 <= int(code) < 600 and _NO_SUCH_USER.search(text or ""):
+        return "permanent"
+    return "transient"
 
 
 def new_message_id(from_email: str) -> str:
@@ -96,25 +114,32 @@ class Mailbox:
         server may have taken it, so the answer is 'unknown' and the caller must never
         simply resend."""
         rcpt = str(msg["To"])
-        try:
-            s = self._connect()
-        except AuthError as exc:
-            return SendResult(False, "auth", str(exc))
-        except (smtplib.SMTPException, OSError, socket.timeout) as exc:
-            self._drop()
-            return SendResult(False, "transient", f"connect: {type(exc).__name__}")
+        for attempt in (1, 2):
+            try:
+                s = self._connect()
+            except AuthError as exc:
+                return SendResult(False, "auth", str(exc))
+            except (smtplib.SMTPException, OSError, socket.timeout) as exc:
+                self._drop()
+                return SendResult(False, "transient", f"connect: {type(exc).__name__}")
+            try:
+                s.noop()                       # is the reused connection still alive?
+                break
+            except (smtplib.SMTPException, OSError, socket.timeout):
+                self._drop()                   # idle connection closed by the server: open a fresh one
+                if attempt == 2:
+                    return SendResult(False, "transient", "connection kept closing")
         try:
             s.ehlo_or_helo_if_needed()
             code, resp = s.mail(self.user)
             if code != 250:
                 s.rset()
-                return SendResult(False, "transient", f"sender refused {code} {_t(resp)}")
+                kind = "throttled" if classify_reject(code, _t(resp)) == "throttled" or code >= 500 else "transient"
+                return SendResult(False, kind, f"sender refused {code} {_t(resp)}")
             code, resp = s.rcpt(rcpt)
             if code not in (250, 251):
                 s.rset()
-                kind = "permanent" if 500 <= code < 600 and re.search(r"(?i)user|mailbox|recipient|address|exist|unknown",
-                                                                         _t(resp)) else "transient"
-                return SendResult(False, kind, f"{code} {_t(resp)}")
+                return SendResult(False, classify_reject(code, _t(resp)), f"{code} {_t(resp)}")
         except (smtplib.SMTPException, OSError, socket.timeout) as exc:
             self._drop()
             return SendResult(False, "transient", f"before data: {type(exc).__name__}")
@@ -126,10 +151,7 @@ class Mailbox:
         if code == 250:
             return SendResult(True, "sent", f"250 {_t(resp)[:80]}")
         self._drop()
-        if 500 <= code < 600:
-            kind = "permanent" if re.search(r"(?i)user|mailbox|recipient|address", _t(resp)) else "transient"
-            return SendResult(False, kind, f"{code} {_t(resp)}")
-        return SendResult(False, "transient", f"{code} {_t(resp)}")
+        return SendResult(False, classify_reject(code, _t(resp)), f"{code} {_t(resp)}")
 
     def _drop(self):
         try:

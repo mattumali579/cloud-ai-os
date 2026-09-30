@@ -121,13 +121,27 @@ def _candidates(conn, limit: int) -> list[dict]:
         """, (limit,)).fetchall()
 
 
-def _duplicate_in_queue(conn, email: str) -> bool:
-    """Another company already queued/sent under this address or this business domain = same business."""
+def _duplicate_in_queue(conn, email: str, company_id: str, exclude_queue_id: int | None = None) -> bool:
+    """The same business under another record: this address, or another address at the same business
+    email domain, is already queued/sent here, was emailed by any earlier sender, or belongs to a company
+    that was already contacted. Free-mail domains (gmail.com...) are never treated as a business."""
     dom = business_domain(email)
     row = conn.execute(
-        "SELECT 1 FROM outreach_queue WHERE state NOT IN ('cancelled','failed') AND "
+        "SELECT 1 FROM outreach_queue WHERE state NOT IN ('cancelled','failed') AND queue_id IS DISTINCT FROM %s AND "
         "(outreach_norm_email(recipient) = outreach_norm_email(%s) OR (%s <> '' AND split_part(lower(recipient),'@',2) = %s)) "
-        "LIMIT 1", (email, dom, dom)).fetchone()
+        "AND company_id <> %s::uuid LIMIT 1", (exclude_queue_id, email, dom, dom, company_id)).fetchone()
+    if row or not dom:
+        return row is not None
+    row = conn.execute(
+        """
+        SELECT 1 WHERE EXISTS (SELECT 1 FROM outreach_history WHERE status = 'sent' AND split_part(lower(email),'@',2) = %(d)s)
+           OR EXISTS (SELECT 1 FROM outreach_messages WHERE direction = 'outbound' AND split_part(lower(recipient),'@',2) = %(d)s)
+           OR EXISTS (SELECT 1 FROM contacts ct JOIN companies c USING (company_id)
+                      WHERE split_part(lower(ct.email),'@',2) = %(d)s AND c.company_id <> %(c)s::uuid
+                        AND (c.first_contacted_at IS NOT NULL OR c.outreach_status IN
+                             ('contacted','replied','bounced','unsubscribed','do_not_contact')))
+           OR EXISTS (SELECT 1 FROM email_suppressions WHERE domain = %(d)s)
+        """, {"d": dom, "c": company_id}).fetchone()
     return row is not None
 
 
@@ -141,6 +155,10 @@ def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
         return out
     addr = postal_address()
     name = sender_name(cfg)
+    if not addr:
+        # a missing setting is not the lead's fault: prepare nothing, cancel nothing
+        out["stopped"] = "SENDER_POSTAL_ADDRESS is not set - nothing prepared"
+        return out
     for row in _candidates(conn, space * 2):
         if out["queued"] >= space:
             break
@@ -161,10 +179,10 @@ def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
                              "AND outreach_status IN ('outreach_ready','handed_off')", (new, row["company_id"]))
             conn.commit()
             continue
-        if _duplicate_in_queue(conn, email):
+        if _duplicate_in_queue(conn, email, row["company_id"]):
             out["blocked"]["duplicate_business"] = out["blocked"].get("duplicate_business", 0) + 1
             conn.execute("UPDATE companies SET outreach_status = 'rejected', qualification_reason = "
-                         "'duplicate of a company already in the send queue', updated_at = now() WHERE company_id = %s",
+                         "'same business as a company already emailed or queued', updated_at = now() WHERE company_id = %s",
                          (row["company_id"],))
             conn.commit()
             continue
@@ -183,15 +201,16 @@ def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
 
 
 # ------------------------------------------------------------------ sending
-def claim(conn, who: str) -> dict | None:
+def claim(conn, who: str, *, followups: bool = True) -> dict | None:
     row = conn.execute(
         """
         UPDATE outreach_queue SET state = 'claimed', claimed_by = %s, claimed_at = now(), attempts = attempts + 1,
                updated_at = now()
         WHERE queue_id = (SELECT queue_id FROM outreach_queue WHERE state = 'queued' AND due_at <= now()
+                          AND (%s OR step = 0)
                           ORDER BY step DESC, due_at, queue_id LIMIT 1 FOR UPDATE SKIP LOCKED)
         RETURNING *
-        """, (who,)).fetchone()
+        """, (who, followups)).fetchone()
     conn.commit()
     return row
 
@@ -207,6 +226,15 @@ def _release(conn, item: dict, *, delay: timedelta | None = None, undo_attempt: 
 def _finish(conn, item: dict, state: str, reason: str) -> None:
     conn.execute("UPDATE outreach_queue SET state = %s, stop_reason = %s, updated_at = now() WHERE queue_id = %s",
                  (state, reason[:300], item["queue_id"]))
+    if state == "ambiguous":
+        # it may have been delivered: every sender's guard must now treat this company as contacted
+        when = item.get("claimed_at") or datetime.now(timezone.utc)
+        conn.execute("UPDATE companies SET first_contacted_at = coalesce(first_contacted_at, %s), "
+                     "outreach_status = CASE WHEN outreach_status IN ('outreach_ready','handed_off') THEN 'contacted' "
+                     "ELSE outreach_status END, updated_at = now() WHERE company_id = %s", (when, item["company_id"]))
+        conn.execute("INSERT INTO outreach_history (company_id, email, campaign, sent_at, status, provider, dedupe_key) "
+                     "VALUES (%s,%s,'ambiguous',%s,'sent','hostinger',%s) ON CONFLICT (dedupe_key) DO NOTHING",
+                     (item["company_id"], item["recipient"], when, f"ambiguous:{item['queue_id']}"))
     conn.commit()
 
 
@@ -256,6 +284,9 @@ def send_item(conn, item: dict, mailbox: Mailbox, cfg: dict, *, from_email: str)
             return "retry"
         _finish(conn, item, "cancelled", "guard: " + ", ".join(reasons))
         return "cancelled"
+    if item["step"] == 0 and _duplicate_in_queue(conn, item["recipient"], str(item["company_id"]), item["queue_id"]):
+        _finish(conn, item, "cancelled", "same business as a company already emailed or queued")
+        return "cancelled"
     problems = copywriter.qa(copywriter.Email(item["subject"], item["body"], item["copy_variant"] or ""),
                              postal_address=postal_address(),
                              company_name=(store.company(conn, str(item["company_id"])) or {}).get("company_name", ""))
@@ -288,6 +319,9 @@ def send_item(conn, item: dict, mailbox: Mailbox, cfg: dict, *, from_email: str)
     if res.kind == "auth":
         _release(conn, item, undo_attempt=True)
         return "auth"
+    if res.kind == "throttled":
+        _release(conn, item, delay=timedelta(minutes=60), undo_attempt=True)
+        return "throttled"
     if res.kind == "permanent":
         _finish(conn, item, "failed", f"rejected: {res.detail}")
         store.suppress(conn, reason="hard_bounce", email=item["recipient"])
@@ -356,12 +390,13 @@ def sweep(conn, cfg: dict) -> dict:
     return {"cancelled": len(rows), "rows": [dict(r) for r in rows]}
 
 
-def run(conn, mailbox: Mailbox, cfg: dict, *, from_email: str, minutes: float,
+def run(conn, mailbox: Mailbox, cfg: dict, *, from_email: str, minutes: float, followups: bool = True,
         sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> dict:
     who = worker_id()
+    bad_run = 0
     deadline = clock() + minutes * 60
-    stats = {"sent": 0, "cancelled": 0, "failed": 0, "retry": 0, "ambiguous": 0, "auth_failed": False, "cap": daily_cap(conn, cfg),
+    stats = {"sent": 0, "cancelled": 0, "failed": 0, "retry": 0, "ambiguous": 0, "throttled": 0, "auth_failed": False, "cap": daily_cap(conn, cfg),
              "sent_24h_before": sent_last_24h(conn), "in_window": in_window(cfg, now())}
     if not stats["in_window"]:
         return stats
@@ -372,7 +407,7 @@ def run(conn, mailbox: Mailbox, cfg: dict, *, from_email: str, minutes: float,
         if not in_window(cfg, now()):
             stats["stopped"] = "send window closed"
             break
-        item = claim(conn, who)
+        item = claim(conn, who, followups=followups)
         if not item:
             stats["stopped"] = "nothing due"
             break
@@ -381,6 +416,14 @@ def run(conn, mailbox: Mailbox, cfg: dict, *, from_email: str, minutes: float,
             stats["auth_failed"] = True
             break
         stats[outcome] += 1
+        if outcome == "throttled":
+            stats["stopped"] = "mail server says a sending limit was reached"
+            break
+        bad_run = bad_run + 1 if outcome in ("failed", "retry") else 0
+        if bad_run >= 3:
+            # three failures in a row is the server, not the addresses: stop before it hurts more leads
+            stats["stopped"] = "3 failures in a row - paused until the next run"
+            break
         if outcome == "sent":
             gap = random.uniform(float(cfg["pacing"]["min_gap_seconds"]), float(cfg["pacing"]["max_gap_seconds"]))
             left = deadline - clock()

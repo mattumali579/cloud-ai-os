@@ -20,6 +20,8 @@ class Handler:
         self.drop_data = False
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
+        if address.startswith("quota@"):
+            return "550 5.4.5 Daily user sending quota exceeded"
         if address.startswith("nobody@"):
             return "550 5.1.1 <nobody@x.test>: Recipient address rejected: User unknown"
         envelope.rcpt_tos.append(address)
@@ -95,3 +97,17 @@ def test_server_down_before_anything_is_transient():
         port = s.getsockname()[1]
     r = _box(port).send(_msg("owner@acme.test")[0])
     assert not r.ok and r.kind == "transient"
+
+
+def test_sending_limit_is_throttled_not_a_bounce(smtp):
+    h, port = smtp
+    r = _box(port).send(_msg("quota@acme.test")[0])
+    assert not r.ok and r.kind == "throttled"
+
+
+def test_reconnects_when_an_idle_connection_was_closed(smtp):
+    h, port = smtp
+    box = _box(port)
+    assert box.send(_msg("owner@acme.test")[0]).ok
+    box._smtp.sock.close()                     # the server dropped the idle connection between sends
+    assert box.send(_msg("owner@acme.test")[0]).ok and len(h.got) == 2

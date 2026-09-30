@@ -95,8 +95,9 @@ def cycle(minutes: float) -> dict:
                 res[name] = {"auth_error": str(exc)}
             except Exception as exc:  # noqa: BLE001 - one broken step must not stop the others
                 conn.rollback()
-                res[name] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-                traceback.print_exc(limit=3)
+                # PUBLIC log: the error type and the code line only - never the message (it can hold a row)
+                tb = traceback.extract_tb(exc.__traceback__)[-1:] if exc.__traceback__ else []
+                res[name] = {"error": type(exc).__name__, "at": [f"{Path(f.filename).name}:{f.lineno}" for f in tb]}
 
         step("sweep", lambda: {k: v for k, v in sender.sweep(conn, cfg).items() if k != "rows"})
         step("plan", lambda: sender.plan(conn, cfg))
@@ -130,13 +131,24 @@ def cycle(minutes: float) -> dict:
             step("recover", lambda: sender.recover(conn, mailbox, cfg, from_email=from_email))
             step("replies", lambda: replies.poll(conn, user=from_email, password=mailbox.password,
                                                  host=cfg["sender"]["imap_host"], port=int(cfg["sender"]["imap_port"])))
+            replies_ok = "error" not in (res.get("replies") or {}) and "auth_error" not in (res.get("replies") or {})
+            skipped = (res.get("replies") or {}).get("skipped_errors", 0)
+            if skipped:
+                step("skipped_reply_notice", lambda: agentmail.notify(
+                    conn, cfg, role="followup", severity="high", discord=_discord,
+                    dedupe_key=f"reply-skipped:{run_id}", subject=f"{skipped} reply email(s) could not be read",
+                    text="Some replies in the outreach inbox could not be processed automatically. Please glance at "
+                         "the newest replies in matt@fitnesshubb.com - if anyone asked to stop, their follow-ups "
+                         "may still be scheduled.")["created"])
             step("sweep_after_replies", lambda: {k: v for k, v in sender.sweep(conn, cfg).items() if k != "rows"})
             st = _state(conn, "selftest")
             if not (st and st["value"].get("ok")):
                 step("selftest", lambda: selftest(conn, cfg, mailbox, from_email))
                 st = _state(conn, "selftest")
             if st and st["value"].get("ok"):
-                step("send", lambda: sender.run(conn, mailbox, cfg, from_email=from_email, minutes=minutes))
+                # follow-ups only go out when this run managed to read the replies first
+                step("send", lambda: sender.run(conn, mailbox, cfg, from_email=from_email, minutes=minutes,
+                                                followups=replies_ok))
                 if (res.get("send") or {}).get("auth_failed"):
                     step("auth_notice", lambda: agentmail.notify(
                         conn, cfg, role="manager", severity="urgent", discord=_discord,

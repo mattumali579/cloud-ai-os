@@ -187,11 +187,31 @@ def test_same_business_under_two_records_is_queued_once(conn, cfg):
     assert conn.execute("SELECT count(*) n FROM outreach_queue").fetchone()["n"] == 1
 
 
-def test_qa_failure_is_never_queued_for_sending(conn, cfg, monkeypatch):
+def test_missing_postal_address_prepares_nothing_and_burns_no_leads(conn, cfg, monkeypatch):
     monkeypatch.setenv("SENDER_POSTAL_ADDRESS", "")
     cid = company(conn)
     out = sender.plan(conn, cfg)
-    assert out["qa_failed"] == 1 and q(conn, cid)["state"] == "cancelled" and "postal" in q(conn, cid)["stop_reason"]
+    assert out["queued"] == 0 and out["qa_failed"] == 0 and q(conn, cid) is None
+    monkeypatch.setenv("SENDER_POSTAL_ADDRESS", ADDR)
+    assert sender.plan(conn, cfg)["queued"] == 1           # fixed setting -> the lead is still there
+
+
+def test_business_name_with_a_banned_word_is_not_blocked(conn, cfg):
+    cid = company(conn, "Automation Plumbing Agents", "autoplumb.com", "a@autoplumb.com")
+    assert sender.plan(conn, cfg)["queued"] == 1 and q(conn, cid)["state"] == "queued"
+
+
+def test_other_record_at_an_already_emailed_domain_is_skipped(conn, cfg):
+    a = company(conn, "ABC Roofing", "abcroofing.com", "sales@abcroofing.com", status_="contacted")
+    conn.execute("INSERT INTO outreach_history (company_id, email, campaign, sent_at, status, provider, dedupe_key) "
+                 "VALUES (%s,'sales@abcroofing.com','old',now() - interval '9 days','sent','gmail','old-abc')", (a,))
+    conn.commit()
+    b = company(conn, "ABC Restoration", "abcrestoration.com", "info@abcroofing.com")
+    out = sender.plan(conn, cfg)
+    assert out["queued"] == 0 and out["blocked"].get("duplicate_business") == 1 and q(conn, b) is None
+    free = company(conn, "Joe Handyman", "joehandy.com", "joe.handy@gmail.com")
+    company(conn, "Other Gmail Biz", "othergm.com", "someone.else@gmail.com", status_="contacted")
+    assert sender.plan(conn, cfg)["queued"] == 1 and q(conn, free)["state"] == "queued"   # gmail.com is not a business
 
 
 # -------------------------------------------------------------------- send
@@ -304,6 +324,47 @@ def test_transient_failure_retries_same_row_then_gives_up(conn, cfg):
     row = q(conn, cid)
     assert row["state"] == "failed" and row["attempts"] == 3
     assert conn.execute("SELECT count(*) n FROM outreach_queue").fetchone()["n"] == 1
+
+
+def test_provider_limit_is_not_a_bounce_and_stops_the_run(conn, cfg):
+    for i in range(4):
+        company(conn, f"Co {i}", f"co{i}.com", f"a@co{i}.com")
+    sender.plan(conn, cfg)
+    mb = FakeMailbox([SendResult(False, "throttled", "550 5.4.5 Daily user sending quota exceeded")])
+    st = run(conn, cfg, mb)
+    assert st["throttled"] == 1 and "limit" in st["stopped"]
+    assert conn.execute("SELECT count(*) n FROM email_suppressions").fetchone()["n"] == 0
+    assert conn.execute("SELECT count(*) n FROM outreach_queue WHERE state = 'queued' AND attempts = 0").fetchone()["n"] == 4
+
+
+def test_three_failures_in_a_row_pause_the_run(conn, cfg):
+    for i in range(6):
+        company(conn, f"Co {i}", f"co{i}.com", f"a@co{i}.com")
+    sender.plan(conn, cfg)
+    st = run(conn, cfg, FakeMailbox([SendResult(False, "permanent", "550 5.1.1 user unknown")] * 6))
+    assert st["failed"] == 3 and "in a row" in st["stopped"]
+    assert conn.execute("SELECT count(*) n FROM outreach_queue WHERE state = 'queued'").fetchone()["n"] == 3
+
+
+def test_ambiguous_send_counts_as_contacted_for_every_sender(conn, cfg):
+    cid = company(conn)
+    sender.plan(conn, cfg)
+    run(conn, cfg, FakeMailbox([SendResult(False, "unknown", "during data: timeout")]))
+    assert conn.execute("SELECT first_contacted_at FROM companies WHERE company_id = %s", (cid,)).fetchone()["first_contacted_at"]
+    assert guard.check(conn, "john@abcroofing.com", "cold", cid)["allowed"] is False
+
+
+def test_no_followups_when_replies_could_not_be_read(conn, cfg):
+    a, b = company(conn, "A", "a.com", "x@a.com"), company(conn, "B", "b.com", "x@b.com")
+    sender.plan(conn, cfg, limit=1)
+    mb = FakeMailbox()
+    run(conn, cfg, mb)
+    sender.plan(conn, cfg)
+    conn.execute("UPDATE outreach_queue SET due_at = now() - interval '1 minute' WHERE step = 1")
+    conn.commit()
+    st = sender.run(conn, mb, cfg, from_email=FROM, minutes=5, sleep=lambda s: None, followups=False)
+    assert st["sent"] == 1 and all(str(m["X-Leadgen-Outreach"]) == "hostinger-first" for m in mb.sent)
+    assert conn.execute("SELECT state FROM outreach_queue WHERE step = 1").fetchone()["state"] == "queued"
 
 
 def test_rejected_address_is_suppressed_for_good(conn, cfg):

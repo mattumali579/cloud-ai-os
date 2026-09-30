@@ -188,14 +188,14 @@ def refresh_record_count(conn, *, client: httpx.Client | None = None) -> int | N
         params = [("pageSize", "100"), ("fields[]", "Company")] + ([("offset", offset)] if offset else [])
         r = c.get(url, params=params)
         calls += 1
+        _count_call(conn, datetime.now(timezone.utc))
+        conn.commit()
         r.raise_for_status()
         data = r.json()
         n += len(data.get("records", []))
         offset = data.get("offset", "")
         if not offset:
             break
-    now = datetime.now(timezone.utc)
-    _count_call(conn, now, calls)
     conn.execute("INSERT INTO airtable_state (key, value) VALUES ('record_count', to_jsonb(%s::int)) "
                  "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()", (n,))
     conn.commit()
