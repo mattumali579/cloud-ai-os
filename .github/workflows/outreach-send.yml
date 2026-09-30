@@ -70,7 +70,7 @@ jobs:
           case "${{ inputs.mode || 'cycle' }}" in
             status) python outreach_sender.py status ;;
             selftest) python outreach_sender.py selftest ;;
-            *) python outreach_sender.py cycle --minutes 8 > cycle.json; python - <<'PY'
+            *) python outreach_sender.py cycle --minutes 8 --out cycle.json > /dev/null; python - <<'PY'
           import json
           r = json.load(open("cycle.json"))
           keys = ("sender", "sweep", "plan", "recover", "replies", "selftest", "send", "events", "airtable", "blocking")

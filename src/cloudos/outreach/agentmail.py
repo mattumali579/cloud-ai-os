@@ -66,9 +66,10 @@ def _deliver(conn, cfg, nid, inbox, subject, text, severity, post, discord) -> d
         ok, receipt = False, "no AGENTMAIL_API_KEY yet"
         if discord and severity in ("high", "urgent"):
             try:
-                discord({"embeds": [{"description": f"**{subject}**\n\n{text}"[:4000]}]})
-            except Exception:  # noqa: BLE001
-                pass
+                d_ok, d_receipt = discord({"embeds": [{"description": f"**{subject}**\n\n{text}"[:4000]}]})
+                receipt += f"; discord {'delivered' if d_ok else 'failed'} ({d_receipt})"
+            except Exception as exc:  # noqa: BLE001
+                receipt += f"; discord failed ({type(exc).__name__})"
     else:
         ok, receipt = post(inbox, {"to": [_to(cfg)], "subject": subject, "text": text,
                                    "labels": ["brightreach", severity]})
@@ -83,8 +84,10 @@ def flush(conn, cfg: dict, post: Poster | None = None, max_attempts: int = 8) ->
     if post is None:
         return {"retried": 0, "delivered": 0, "waiting": conn.execute(
             "SELECT count(*) n FROM notifications WHERE NOT delivered AND dedupe_key LIKE 'am:%%'").fetchone()["n"]}
+    # older than a day = stale news (e.g. "can't send yet" after it was fixed): the daily digest covers it
     rows = conn.execute("SELECT id, severity, message, meta FROM notifications WHERE NOT delivered AND dedupe_key LIKE 'am:%%' "
-                        "AND attempts < %s ORDER BY ts LIMIT 40", (max_attempts,)).fetchall()
+                        "AND attempts < %s AND ts > now() - interval '1 day' ORDER BY ts LIMIT 40",
+                        (max_attempts,)).fetchall()
     out = {"retried": 0, "delivered": 0}
     for r in rows:
         meta = r["meta"] if isinstance(r["meta"], dict) else json.loads(r["meta"] or "{}")

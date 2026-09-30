@@ -190,6 +190,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("cycle")
     c.add_argument("--minutes", type=float, default=8)
+    c.add_argument("--out", help="also write the result (counts only) to this file")
     s = sub.add_parser("status")
     s.add_argument("--json", action="store_true")
     sub.add_parser("plan")
@@ -198,7 +199,10 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     cfg = sender.load_config()
     if a.cmd == "cycle":
-        print(public(cycle(a.minutes)))
+        text = public(cycle(a.minutes))
+        if a.out:
+            Path(a.out).write_text(text, encoding="utf-8")
+        print(text)
         return 0
     with db.get_conn() as conn:
         if a.cmd == "status":
