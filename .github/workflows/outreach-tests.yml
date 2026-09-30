@@ -1,0 +1,45 @@
+name: Outreach Tests
+
+# The reply layer and the Hostinger sender against a real throwaway Postgres,
+# on every change to their code. Nothing here touches the live database or mail.
+
+on:
+  push:
+    paths:
+      - 'src/cloudos/outreach/**'
+      - 'src/cloudos/conversations/**'
+      - 'src/cloudos/leadgen/**'
+      - 'db/migrations/**'
+      - 'tests/test_outreach_*.py'
+      - 'tests/test_conversations*.py'
+      - 'outreach_sender.py'
+      - '.github/workflows/outreach-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: brtest
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      CONVERSATIONS_TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/brtest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -q -e .[dev] aiosmtpd
+      - name: Sender + reply layer + lead engine tests
+        run: python -m pytest -q tests/test_outreach_sender.py tests/test_outreach_transport.py tests/test_conversations.py tests/test_conversations_classify.py tests/test_leadgen_unit.py

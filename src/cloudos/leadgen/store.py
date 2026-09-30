@@ -266,7 +266,9 @@ def inventory(conn) -> dict[str, Any]:
 
 
 def found_today(conn, tz: str = "America/Chicago") -> int:
-    """NEW (never in history) qualified companies discovered since local midnight."""
+    """Companies that became READY since local midnight: qualified, a usable (mail-server-checked) email,
+    never contacted, not a duplicate. This - not "discovered" - is what the daily 300 target counts.
+    `ready_at` is stamped by the database the moment outreach_status first becomes outreach_ready (009)."""
     return conn.execute(
-        "SELECT count(*) AS n FROM companies WHERE NOT is_historical AND qualification_status IN ('HIGH','MEDIUM') "
-        "AND discovered_at >= (date_trunc('day', now() AT TIME ZONE %s) AT TIME ZONE %s)", (tz, tz)).fetchone()["n"]
+        "SELECT count(*) AS n FROM companies WHERE qualification_status IN ('HIGH','MEDIUM') "
+        "AND ready_at >= (date_trunc('day', now() AT TIME ZONE %s) AT TIME ZONE %s)", (tz, tz)).fetchone()["n"]

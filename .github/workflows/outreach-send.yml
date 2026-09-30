@@ -1,0 +1,85 @@
+name: Outreach Send
+
+# BrightReach Hostinger sender. Every 10 minutes (started by the Ticker chain):
+# stop follow-ups for anyone who replied, prepare first emails for Ready leads,
+# read Hostinger replies, send what is due - paced, capped, only 8:00-17:30
+# Central on weekdays - then AgentMail notices and the Airtable update.
+# Without the Hostinger password it still prepares everything and sends nothing.
+# PUBLIC repo: logs are counts only - never names, emails or message text.
+
+on:
+  schedule:
+    - cron: '3,33 * * * *'    # fallback only; the Ticker starts it every 10 min
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'cycle (normal), status, selftest'
+        required: true
+        default: cycle
+        type: choice
+        options: [cycle, status, selftest]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: outreach-send
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.LEADS_DATABASE_URL }}
+      HOSTINGER_EMAIL: ${{ secrets.HOSTINGER_EMAIL }}
+      HOSTINGER_EMAIL_PASSWORD: ${{ secrets.HOSTINGER_EMAIL_PASSWORD }}
+      HOSTINGER_DAILY_LIMIT: ${{ secrets.HOSTINGER_DAILY_LIMIT }}
+      SENDER_POSTAL_ADDRESS: ${{ secrets.SENDER_POSTAL_ADDRESS }}
+      SENDER_NAME: ${{ secrets.SENDER_NAME }}
+      AGENTMAIL_API_KEY: ${{ secrets.AGENTMAIL_API_KEY }}
+      OWNER_NOTIFY_EMAIL: ${{ secrets.OWNER_NOTIFY_EMAIL }}
+      AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+      AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+      AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+      CLOUDOS_NOTIFY_URL: ${{ secrets.CLOUDOS_NOTIFY_URL }}
+      CLOUDOS_NOTIFY_TOKEN: ${{ secrets.CLOUDOS_NOTIFY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: pip install -q -e .[dev] aiosmtpd
+      - name: Check settings
+        shell: bash
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "BLOCKED: missing secret LEADS_DATABASE_URL"; exit 1; }
+          [ -n "$SENDER_POSTAL_ADDRESS" ] || echo "note: SENDER_POSTAL_ADDRESS missing - every email fails QA, nothing is sent"
+          if [ -n "$HOSTINGER_EMAIL" ] && [ -n "$HOSTINGER_EMAIL_PASSWORD" ]; then echo "sender: Hostinger login present";
+          else echo "sender: WAITING - HOSTINGER_EMAIL / HOSTINGER_EMAIL_PASSWORD not set (emails are prepared, none sent)"; fi
+          [ -n "$AGENTMAIL_API_KEY" ] && echo "agentmail: key present" || echo "agentmail: WAITING - AGENTMAIL_API_KEY not set (urgent notices go to Discord)"
+      - name: Sender tests (no network, no database)
+        run: python -m pytest -q tests/test_outreach_transport.py tests/test_outreach_sender.py
+      - name: Database schema up to date
+        run: python outreach_replies.py migrate
+      - name: Run
+        shell: bash
+        run: |
+          case "${{ inputs.mode || 'cycle' }}" in
+            status) python outreach_sender.py status ;;
+            selftest) python outreach_sender.py selftest ;;
+            *) python outreach_sender.py cycle --minutes 8 > cycle.json; python - <<'PY'
+          import json
+          r = json.load(open("cycle.json"))
+          keys = ("sender", "sweep", "plan", "recover", "replies", "selftest", "send", "events", "airtable", "blocking")
+          print(json.dumps({k: r[k] for k in keys if k in r}, indent=2, default=str))
+          PY
+            ;;
+          esac
+      - name: Summary (counts only)
+        if: always()
+        shell: bash
+        run: |
+          python outreach_sender.py status >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true

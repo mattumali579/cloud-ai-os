@@ -1,0 +1,48 @@
+# Hostinger outreach sender settings. Every number here is a knob, not a promise.
+sender:
+  from_email_env: HOSTINGER_EMAIL          # mailbox address (secret); login user is the same address
+  password_env: HOSTINGER_EMAIL_PASSWORD   # mailbox password (secret, never committed)
+  from_name_env: SENDER_NAME           # the name prospects see and the signature (secret: public repo)
+  from_name_default: Matt
+  smtp_host: smtp.hostinger.com
+  smtp_port: 465
+  imap_host: imap.hostinger.com
+  imap_port: 993
+
+pacing:
+  timezone: America/Chicago
+  send_days: [0, 1, 2, 3, 4]      # Monday..Friday
+  window_start: "08:00"           # local time; nothing is sent outside the window
+  window_end: "17:30"
+  min_gap_seconds: 55             # between two sends - never a burst
+  max_gap_seconds: 110
+  # Deliverability ramp for a mailbox that has never sent cold email. Day 1 is the
+  # first day this sender confirmed a send; after the list, the last value holds.
+  ramp: [15, 25, 40, 60, 80, 100, 130, 160, 200, 240, 280, 300]
+  # Hostinger's own per-mailbox cap (rolling 24 h): trial/free email = 100,
+  # Business Starter = 1000 (hostinger.com/support/4625828). The lower of the
+  # ramp and this cap wins. Override with the HOSTINGER_DAILY_LIMIT secret.
+  provider_daily_limit: 100
+  max_attempts: 3                 # transient failures (timeouts, 4xx) before a row is marked failed
+
+sequence:                         # a restrained 3-touch sequence; replies/unsubs/bounces stop it
+  followup_days: [3, 5]           # business days after the previous touch
+  stop_statuses: [replied, interested, qualified, meeting_requested, proposal_needed, proposal_sent,
+                  negotiating, won, lost, not_now, do_not_contact, needs_review]
+
+planning:
+  queue_ahead: 400                # first touches kept prepared (copy written, QA passed) ahead of sending
+
+airtable:
+  monthly_call_budget: 700        # free plan = 1,000 calls/month per workspace; other jobs use some
+  record_ceiling: 950             # free plan = 1,000 records per base
+  sync_every_minutes: 60
+
+agentmail:
+  api_env: AGENTMAIL_API_KEY
+  owner_env: OWNER_NOTIFY_EMAIL   # where role mail is delivered; unset = the manager inbox itself
+  inboxes:
+    manager: brightreach.manager@agentmail.to
+    research: brightreach.research@agentmail.to
+    followup: brightreach.followup@agentmail.to
+  digest_hour: 20                 # 8 PM America/Chicago, one digest per inbox per day

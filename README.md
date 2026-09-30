@@ -72,3 +72,14 @@ Drafts. Never emails a prospect by itself. Senders call
 - STOP: `gh workflow disable outreach-replies.yml`
 
 Details: [`docs/outreach_replies/README.md`](docs/outreach_replies/README.md).
+
+## Hostinger outreach sender
+
+Emails Ready leads from the Hostinger mailbox, paced and capped, follows up twice,
+stops on any reply/unsubscribe/bounce, and reports to AgentMail and Airtable. Runs
+every 10 minutes in GitHub Actions. Counts only READY leads toward the daily 300.
+
+- STATUS: `python outreach_sender.py status`
+- STOP: `gh workflow disable outreach-send.yml`
+
+Details: [`docs/outreach_sender/README.md`](docs/outreach_sender/README.md).

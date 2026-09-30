@@ -52,6 +52,7 @@ def slot_email_alerts(now: datetime) -> datetime:
 # (workflow file, dispatch inputs, slot function, catch-up grace)
 TARGETS = [
     ("outreach-replies.yml", {"mode": "poll"}, slot_every_10_min, timedelta(minutes=10)),
+    ("outreach-send.yml", {"mode": "cycle"}, slot_every_10_min, timedelta(minutes=10)),
     ("email-alerts.yml", {"mode": "normal"}, slot_email_alerts, timedelta(minutes=60)),
     ("lead-engine.yml", {"mode": "cycle"}, slot_lead_engine, timedelta(minutes=60)),
 ]
