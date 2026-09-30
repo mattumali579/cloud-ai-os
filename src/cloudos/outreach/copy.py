@@ -108,21 +108,55 @@ def observation(row: dict) -> tuple[str, str]:
     return f"I came across {name} while looking at local businesses{where}.", "generic"
 
 
+# Bump when first-touch wording changes: queued, never-attempted first touches written
+# with an older version are rewritten before they go out (sender.refresh_queued).
+COPY_VERSION = "v2"
+
+
 def first_touch(row: dict, *, sender_name: str, postal_address: str) -> Email:
+    """One offer per email, chosen by the strongest true fact we have about the business:
+    long track record -> reactivate old leads; free estimates -> follow-up on quotes;
+    emergency calls -> speed of reply; strong reviews -> new leads; nothing -> reactivation."""
     name = display_name(row.get("company_name", ""))
     new, old, booked = INDUSTRY.get((row.get("industry") or "").strip().lower(), DEFAULT)
     obs, tag = observation(row)
+    short = len(name) <= 28
+    if tag == "since":
+        opener = obs.split(" - ")[0] + "."
+        pitch = (f"Businesses that have been around that long usually have a long list of {old} - "
+                 "and most of those people never hear from you again. "
+                 f"I help owners reach back out to those people and turn some of them into {booked} - "
+                 "without new ad spend.")
+        subject = f"Old leads at {name}" if short else "Your old leads"
+    elif tag == "estimates":
+        opener = f"I saw {name} offers free estimates."
+        pitch = ("A lot of estimates end with \"let me think about it\" and then nobody follows up. "
+                 "I help businesses like yours follow up on every estimate and inquiry until it's a clear yes or no, "
+                 "so fewer jobs go to whoever called back first.")
+        subject = "Estimates that go quiet"
+    elif tag == "emergency":
+        opener = f"I saw {name} takes emergency calls."
+        pitch = ("In that line of work, the company that gets back to people first usually gets the job. "
+                 "I help businesses like yours make sure every call and inquiry gets a fast reply and a real "
+                 "follow-up, so those jobs don't go to the next name on the list.")
+        subject = f"Callbacks at {name}" if short else "Getting back to callers first"
+    elif tag == "reviews":
+        opener = obs.split(" - ")[0] + "."
+        pitch = (f"The hard part - earning people's trust - is already done. I help businesses with a reputation "
+                 f"like that get in front of more {new}, and make sure those inquiries turn into {booked}.")
+        subject = f"More {booked} for {name}" if short else f"More {booked}"
+    else:
+        opener = obs
+        pitch = (f"Most businesses like yours have a pile of {old} - and most of those people never got a second call. "
+                 f"I help owners reach back out to those people and turn some of them into {booked} - "
+                 "without new ad spend.")
+        subject = f"Old leads at {name}" if short else "Your old leads"
     body = "\n".join([
         f"Hi {name} team,",
         "",
-        obs,
+        f"{opener} {pitch}",
         "",
-        f"I help businesses like yours turn more inquiries into {booked} in three ways: bringing in more {new}, "
-        f"getting a second look from {old}, and making sure no one who reaches out falls through the cracks "
-        "because nobody followed up.",
-        "",
-        f"Would it be worth a quick conversation to see if there's more business to get for {name}? "
-        "A one-line reply is plenty.",
+        f"Want me to send over how that would work for {name}? A one-word reply is fine.",
         "",
         sender_name,
         "",
@@ -130,8 +164,7 @@ def first_touch(row: dict, *, sender_name: str, postal_address: str) -> Email:
         postal_address,
         "If you'd rather not hear from me, reply \"stop\" and I won't email you again.",
     ])
-    subject = f"More {booked} for {name}" if len(name) <= 32 else f"More {booked} this season"
-    return Email(subject=subject, body=body, variant=f"v1-{tag}")
+    return Email(subject=subject, body=body, variant=f"{COPY_VERSION}-{tag}")
 
 
 def followup(row: dict, step: int, first_subject: str, *, sender_name: str, postal_address: str) -> Email:

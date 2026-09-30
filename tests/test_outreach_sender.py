@@ -135,7 +135,36 @@ def test_copy_never_pitches_technology_and_has_opt_out():
 def test_copy_only_uses_facts_it_has():
     e = cw.first_touch({"company_name": "Glow Salon", "industry": "salon", "city": "", "personalization": {}},
                        sender_name="Sam Sender", postal_address=ADDR)
-    assert "reviews" not in e.body and "since" not in e.body and e.variant == "v1-generic"
+    assert "reviews" not in e.body and "since" not in e.body and e.variant == f"{cw.COPY_VERSION}-generic"
+
+
+@pytest.mark.parametrize("facts,tag", [
+    ({"since_year": 1988}, "since"), ({"free_estimate_offer": True}, "estimates"),
+    ({"emergency_service": True}, "emergency"), ({"google_reviews": 140, "google_rating": 4.9}, "reviews"),
+    ({}, "generic")])
+def test_every_angle_is_one_offer_short_and_passes_qa(facts, tag):
+    row = {"company_name": "Bayou Plumbing Co.", "industry": "plumbing", "city": "Metairie", "personalization": facts}
+    e = cw.first_touch(row, sender_name="Sam Sender", postal_address=ADDR)
+    assert e.variant == f"{cw.COPY_VERSION}-{tag}"
+    assert cw.qa(e, postal_address=ADDR, company_name=row["company_name"]) == []
+    assert len(e.body.replace(ADDR, "").split()) <= 110
+    assert "three ways" not in e.body and e.body.count("?") == 1
+    assert e.subject[0].isupper() and len(e.subject) <= 60
+
+
+def test_refresh_rewrites_old_wording_only_before_any_send_attempt(conn, cfg):
+    fresh = company(conn, "Fresh Roofing", "freshroof.com", "a@freshroof.com")
+    tried = company(conn, "Tried Roofing", "triedroof.com", "a@triedroof.com")
+    sender.plan(conn, cfg)
+    conn.execute("UPDATE outreach_queue SET copy_variant = 'v1-reviews', body = 'old words' || body")
+    conn.execute("UPDATE outreach_queue SET attempts = 1 WHERE company_id = %s", (tried,))
+    conn.commit()
+    out = sender.refresh_queued(conn, cfg)
+    assert out == {"rewritten": 1, "qa_failed": 0}
+    assert q(conn, fresh)["copy_variant"].startswith(cw.COPY_VERSION + "-")
+    assert not q(conn, fresh)["body"].startswith("old words")
+    assert q(conn, tried)["body"].startswith("old words")      # a started send keeps its exact text
+    assert sender.refresh_queued(conn, cfg) == {"rewritten": 0, "qa_failed": 0}
 
 
 # ---------------------------------------------------------------- ready gate

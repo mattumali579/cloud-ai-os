@@ -145,11 +145,44 @@ def _duplicate_in_queue(conn, email: str, company_id: str, exclude_queue_id: int
     return row is not None
 
 
+def refresh_queued(conn, cfg: dict) -> dict:
+    """Rewrite first touches that were prepared with older wording and never touched by a send
+    attempt (no claim, no Message-ID). Anything already attempted keeps its exact text."""
+    out = {"rewritten": 0, "qa_failed": 0}
+    addr = postal_address()
+    if not addr:
+        return out
+    name = sender_name(cfg)
+    rows = conn.execute(
+        """
+        SELECT q.queue_id, c.company_name, c.industry, c.city, c.personalization
+        FROM outreach_queue q JOIN companies c USING (company_id)
+        WHERE q.step = 0 AND q.state = 'queued' AND q.attempts = 0 AND q.message_id_header IS NULL
+          AND coalesce(q.copy_variant, '') NOT LIKE %s
+        """, (copywriter.COPY_VERSION + "-%",)).fetchall()
+    for r in rows:
+        e = copywriter.first_touch(dict(r), sender_name=name, postal_address=addr)
+        problems = copywriter.qa(e, postal_address=addr, company_name=r["company_name"])
+        state, stop = ("queued", None) if not problems else ("cancelled", "qa: " + "; ".join(problems))
+        cur = conn.execute(
+            "UPDATE outreach_queue SET subject = %s, body = %s, copy_variant = %s, state = %s, stop_reason = %s, "
+            "updated_at = now() WHERE queue_id = %s AND state = 'queued' AND attempts = 0 "
+            "AND message_id_header IS NULL",
+            (e.subject, e.body, e.variant, state, stop, r["queue_id"]))
+        if cur.rowcount:
+            out["qa_failed" if problems else "rewritten"] += 1
+    conn.commit()
+    return out
+
+
 def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
     """Prepare first touches for Ready companies. Nothing is sent here."""
+    refreshed = refresh_queued(conn, cfg)
     want = (limit if limit is not None else int(cfg["planning"]["queue_ahead"]))
     have = conn.execute("SELECT count(*) n FROM outreach_queue WHERE state = 'queued' AND step = 0").fetchone()["n"]
     out = {"queued": 0, "blocked": {}, "qa_failed": 0, "already_waiting": have}
+    if refreshed["rewritten"] or refreshed["qa_failed"]:
+        out["refreshed"] = refreshed
     space = max(want - have, 0)
     if space == 0:
         return out
