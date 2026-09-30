@@ -77,6 +77,58 @@ def blockers(conn, f: dict) -> list[str]:
     return out
 
 
+def planner_state(conn, f: dict) -> dict:
+    """Machine-readable state for the planner: the pipeline totals plus the next action the
+    system itself would take, so nothing has to be pasted in or re-asked."""
+    one = lambda sql: conn.execute(sql).fetchone()["n"]  # noqa: E731
+    s = {
+        "day": f["day"],
+        "discovered_total": one("SELECT count(*) n FROM companies WHERE NOT is_historical"),
+        "discovered_today": f["discovered_today"],
+        "ready_waiting": f["ready_waiting_total"],
+        "ready_today": f["ready_today"],
+        "ready_target": f["ready_target"],
+        "target_remaining": f["ready_gap"],
+        "queued": f["queued_first_touches"],
+        "claimed": one("SELECT count(*) n FROM outreach_queue WHERE state = 'claimed'"),
+        "sent_today": f["sent_today"],
+        "sent_total": f["sent_all_time_hostinger"],
+        "send_cap_today": f.get("send_cap_today"),
+        "failed_today": f["failed_today"],
+        "ambiguous_total": one("SELECT count(*) n FROM outreach_queue WHERE state = 'ambiguous'"),
+        "replied_total": one("SELECT count(DISTINCT company_id) n FROM outreach_messages WHERE direction = 'inbound' "
+                             "AND kind NOT IN ('auto_reply','bounce') AND company_id IS NOT NULL"),
+        "interested_total": one("SELECT count(DISTINCT company_id) n FROM reply_analyses WHERE classification IN "
+                                "('INTERESTED','MEETING_REQUEST','READY_TO_BUY','PRICE_QUESTION','MORE_INFORMATION')"),
+        "suppressed_total": one("SELECT count(*) n FROM email_suppressions"),
+        "blocking": f["blocking"],
+    }
+    s["next_action"] = next_action(s)
+    return s
+
+
+def next_action(s: dict) -> dict:
+    """First match wins: a human-only blocker, then money on the table, then broken sends,
+    then supply; otherwise the scheduled jobs already do the work and nothing is needed."""
+    hard = [b for b in s["blocking"] if b.startswith("Hostinger")]
+    if hard:
+        return {"decision": "human_review", "agent": None, "task": "save the Hostinger mailbox password as the "
+                "HOSTINGER_EMAIL_PASSWORD secret; the next 10-minute run sends the self-test, then prospects",
+                "why": hard[0]}
+    if s["interested_total"]:
+        return {"decision": "execute", "agent": "claude", "task": "draft replies for interested prospects in "
+                "company_conversation_state (drafts only; a person approves anything customer-facing)",
+                "why": f"{s['interested_total']} interested prospect(s)"}
+    if s["failed_today"] or s["ambiguous_total"]:
+        return {"decision": "execute", "agent": "codex", "task": "diagnose failed/ambiguous rows in outreach_queue",
+                "why": f"{s['failed_today']} failed today, {s['ambiguous_total']} ambiguous"}
+    if s["target_remaining"] and s["ready_waiting"] < (s["send_cap_today"] or 0) * 5:
+        return {"decision": "execute", "agent": "codex", "task": "check why the lead engine is short of Ready",
+                "why": f"{s['target_remaining']} Ready still needed today"}
+    return {"decision": "stop", "agent": None, "task": "none - the 10-minute sender and lead engine continue on schedule",
+            "why": "nothing is blocked"}
+
+
 def _has(conn, table: str, col: str) -> bool:
     return bool(conn.execute("SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
                              (table, col)).fetchone())

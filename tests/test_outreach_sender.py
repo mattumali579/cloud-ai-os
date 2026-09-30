@@ -597,3 +597,33 @@ def test_funnel_reports_what_it_counts(conn, cfg):
     f = status.funnel(conn)
     assert f["ready_today"] == 1 and f["sent_today"] == 1 and f["no_usable_email_today"] == 1
     assert f["ready_gap"] == 299 and "READY today: 1 of 300" in status.as_text(f)
+
+
+# ---------------------------------------------------------------- planner state
+def _state(**kw):
+    s = {"blocking": [], "interested_total": 0, "failed_today": 0, "ambiguous_total": 0, "target_remaining": 0,
+         "ready_waiting": 500, "send_cap_today": 15}
+    s.update(kw)
+    return s
+
+
+def test_next_action_order_and_stop():
+    from cloudos.outreach.status import next_action
+    hs = "Hostinger mailbox password not saved yet - x"
+    assert next_action(_state(blocking=[hs], interested_total=2))["decision"] == "human_review"
+    assert next_action(_state(blocking=["AgentMail key not saved yet"]))["decision"] == "stop"
+    assert next_action(_state(interested_total=1))["agent"] == "claude"
+    assert next_action(_state(ambiguous_total=1))["agent"] == "codex"
+    assert next_action(_state(target_remaining=50, ready_waiting=10))["agent"] == "codex"
+    assert next_action(_state(target_remaining=50))["decision"] == "stop"
+
+
+def test_planner_state_reads_live_tables(conn, cfg):
+    from cloudos.outreach import status
+    company(conn, "Plan Roofing", "planroof.com", "a@planroof.com")
+    sender.plan(conn, cfg)
+    s = status.planner_state(conn, status.funnel(conn, cap=15))
+    for k in ("discovered_total", "ready_waiting", "queued", "claimed", "sent_today", "failed_today",
+              "replied_total", "interested_total", "suppressed_total", "target_remaining", "next_action"):
+        assert k in s
+    assert s["queued"] == 1 and s["claimed"] == 0

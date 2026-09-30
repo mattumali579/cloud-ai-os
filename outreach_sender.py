@@ -174,6 +174,8 @@ def cycle(minutes: float) -> dict:
             f = status.funnel(conn, tz=cfg["pacing"]["timezone"], cap=cap)
             res["today"] = {k: v for k, v in f.items() if k != "blocking"}
             res["blocking"] = f["blocking"]
+            # the planner reads the newest outreach_sender_runs.stats->'planner' instead of being handed state
+            res["planner"] = status.planner_state(conn, f)
         except Exception as exc:  # noqa: BLE001
             conn.rollback()
             res["today"] = {"error": type(exc).__name__}
@@ -205,6 +207,7 @@ def main(argv=None) -> int:
     c.add_argument("--out", help="also write the result (counts only) to this file")
     s = sub.add_parser("status")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--planner", action="store_true", help="totals + next action, as JSON, for the planner")
     sub.add_parser("plan")
     sub.add_parser("selftest")
     sub.add_parser("airtable")
@@ -219,7 +222,10 @@ def main(argv=None) -> int:
     with db.get_conn() as conn:
         if a.cmd == "status":
             f = status.funnel(conn, tz=cfg["pacing"]["timezone"], cap=sender.daily_cap(conn, cfg))
-            print(public(f) if a.json else status.as_text(f))
+            if a.planner:
+                print(public(status.planner_state(conn, f)))
+            else:
+                print(public(f) if a.json else status.as_text(f))
         elif a.cmd == "plan":
             print(public(sender.plan(conn, cfg)))
         elif a.cmd == "selftest":
