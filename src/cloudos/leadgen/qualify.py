@@ -63,7 +63,7 @@ def qualify(
         return Verdict("REJECT", "franchised car dealership - enterprise marketing department", False)
     if _LOCATION_PAGE.search(website):
         return Verdict("REJECT", "website is one location page of a multi-location company", False)
-    if _B2B.search(name or ""):
+    if _B2B.search(f"{name or ''} {industry or ''}"):
         return Verdict("REJECT", "industrial/B2B supplier - not a local customer-facing business", False)
     path = re.sub(r"^https?://[^/]+", "", website or "").strip("/").lower()
     if path and re.search(r"(baton-rouge|new-orleans|houston|dallas|austin|lafayette|shreveport|[a-z]+-(la|tx|ms|al|fl|ga))\b", path):
