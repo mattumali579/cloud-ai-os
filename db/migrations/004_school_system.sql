@@ -2,8 +2,20 @@
 -- All tables are server-only: RLS is enabled, anon/authenticated receive no
 -- privileges, and the Edge Function uses Supabase's injected service role.
 
-CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA pg_catalog;
-CREATE EXTENSION IF NOT EXISTS pg_net;
+-- Supabase provides pg_cron/pg_net; plain local Postgres often does not.
+-- Install them when the server exposes them, but do not make unrelated local
+-- Cloud AI OS / Revenue OS migrations fail just because those optional
+-- Supabase extensions are unavailable.
+DO $
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_cron') THEN
+        EXECUTE 'CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA pg_catalog';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_net') THEN
+        EXECUTE 'CREATE EXTENSION IF NOT EXISTS pg_net';
+    END IF;
+END
+$;
 
 CREATE TABLE IF NOT EXISTS school_sync_state (
     id                    smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -120,22 +132,45 @@ ALTER TABLE school_notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE school_secret_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE school_runtime_config ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON TABLE school_sync_state FROM anon, authenticated;
-REVOKE ALL ON TABLE school_messages FROM anon, authenticated;
-REVOKE ALL ON TABLE school_assignments FROM anon, authenticated;
-REVOKE ALL ON TABLE school_sync_runs FROM anon, authenticated;
-REVOKE ALL ON TABLE school_notifications FROM anon, authenticated;
-REVOKE ALL ON TABLE school_secret_state FROM anon, authenticated;
-REVOKE ALL ON TABLE school_runtime_config FROM anon, authenticated;
-REVOKE ALL ON SEQUENCE school_sync_runs_id_seq FROM anon, authenticated;
-REVOKE ALL ON SEQUENCE school_notifications_id_seq FROM anon, authenticated;
+-- Supabase roles do not exist in the local postgres:16 image. Apply the same
+-- privilege contract when those roles are present; otherwise leave the local
+-- database accessible only to its normal local role.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL ON TABLE school_sync_state FROM anon;
+        REVOKE ALL ON TABLE school_messages FROM anon;
+        REVOKE ALL ON TABLE school_assignments FROM anon;
+        REVOKE ALL ON TABLE school_sync_runs FROM anon;
+        REVOKE ALL ON TABLE school_notifications FROM anon;
+        REVOKE ALL ON TABLE school_secret_state FROM anon;
+        REVOKE ALL ON TABLE school_runtime_config FROM anon;
+        REVOKE ALL ON SEQUENCE school_sync_runs_id_seq FROM anon;
+        REVOKE ALL ON SEQUENCE school_notifications_id_seq FROM anon;
+    END IF;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_sync_state TO service_role;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_messages TO service_role;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_assignments TO service_role;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_sync_runs TO service_role;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_notifications TO service_role;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_secret_state TO service_role;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_runtime_config TO service_role;
-GRANT USAGE, SELECT ON SEQUENCE school_sync_runs_id_seq TO service_role;
-GRANT USAGE, SELECT ON SEQUENCE school_notifications_id_seq TO service_role;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE ALL ON TABLE school_sync_state FROM authenticated;
+        REVOKE ALL ON TABLE school_messages FROM authenticated;
+        REVOKE ALL ON TABLE school_assignments FROM authenticated;
+        REVOKE ALL ON TABLE school_sync_runs FROM authenticated;
+        REVOKE ALL ON TABLE school_notifications FROM authenticated;
+        REVOKE ALL ON TABLE school_secret_state FROM authenticated;
+        REVOKE ALL ON TABLE school_runtime_config FROM authenticated;
+        REVOKE ALL ON SEQUENCE school_sync_runs_id_seq FROM authenticated;
+        REVOKE ALL ON SEQUENCE school_notifications_id_seq FROM authenticated;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_sync_state TO service_role;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_messages TO service_role;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_assignments TO service_role;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_sync_runs TO service_role;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_notifications TO service_role;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_secret_state TO service_role;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE school_runtime_config TO service_role;
+        GRANT USAGE, SELECT ON SEQUENCE school_sync_runs_id_seq TO service_role;
+        GRANT USAGE, SELECT ON SEQUENCE school_notifications_id_seq TO service_role;
+    END IF;
+END
+$$;
