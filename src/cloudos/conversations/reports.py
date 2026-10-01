@@ -58,7 +58,7 @@ def status_report(conn, day: date | None = None, use_airtable: bool = False) -> 
         "emails_confirmed_sent": airtable_sent if airtable_sent is not None else one(
             "SELECT count(DISTINCT company_id) n FROM outreach_messages WHERE direction='outbound' AND kind='cold' "
             "AND occurred_at >= %s AND occurred_at < %s"),
-        "emails_confirmed_sent_source": "Airtable Emailed At" if airtable_sent is not None else "database (Gmail Sent Mail)",
+        "emails_confirmed_sent_source": "Airtable Emailed At" if airtable_sent is not None else "database (provider-confirmed outreach messages)",
         "follow_ups_and_replies_sent": one("SELECT count(*) n FROM outreach_messages WHERE direction='outbound' AND kind <> 'cold' "
                                            "AND occurred_at >= %s AND occurred_at < %s"),
         "replies": one("SELECT count(*) n FROM outreach_messages WHERE direction='inbound' AND kind='inbound' "
