@@ -22,6 +22,8 @@ email_outbox/
 # Local tool debris (Playwright MCP runs, wave fingerprint cache)
 .playwright-mcp/
 wave.fp
+# Claude Code worktrees (separate checkouts, not source)
+.claude/worktrees/
 
 # Lead engine: company/contact data never goes into this PUBLIC repo
 data/lead_history/
