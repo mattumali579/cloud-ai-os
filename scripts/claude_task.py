@@ -124,13 +124,18 @@ def render_task(spec: dict) -> str:
 
 
 def build_argv(spec: dict, max_turns: int, claude_bin: str = "claude") -> list[str]:
+    # Claude's own shell rebuilds PATH, so inside Hermes its bare `python` is Hermes's (no pytest) whatever
+    # PATH we pass. Give it the project's interpreter by full path and pre-approve exactly that.
+    py = project_python().replace("\\", "/")
+    hint = (f"If bare `python` reports `No module named pytest`, run the same command with this interpreter "
+            f"instead (also pre-approved): {py} -m pytest ...\n\n")
     return [
-        claude_bin, "-p", RULES + render_task(spec),
+        claude_bin, "-p", RULES + hint + render_task(spec),
         "--max-turns", str(max_turns),
         "--permission-mode", "acceptEdits",
         "--output-format", "json",
         "--json-schema", json.dumps(RESULT_SCHEMA),
-        "--allowedTools", *ALLOWED_TOOLS,
+        "--allowedTools", *ALLOWED_TOOLS, f"Bash({py} -m pytest:*)", f"PowerShell({py} -m pytest:*)",
         "--disallowedTools", *DISALLOWED_TOOLS,
     ]
 
