@@ -22,10 +22,14 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     CLOUDOS_ROOT=/app
 
-# curl only — used by container healthchecks; kept tiny.
+# Runtime tools: curl for healthchecks; git + Node CLIs let the local Revenue OS
+# research/build worker operate on the bind-mounted repository using the owner's
+# existing subscription logins. Metered API-key env vars are still scrubbed by
+# cloudos.router.providers.base before either CLI is invoked.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends curl git nodejs npm \
+    && npm install -g @openai/codex@0.159.3 @anthropic-ai/claude-code@2.1.286 \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
 
 # Non-root user (fixed uid/gid for predictable volume ownership).
 RUN groupadd --gid 10001 cloudos \
@@ -43,8 +47,10 @@ COPY scripts/ ./scripts/
 RUN pip install --no-cache-dir . \
     && rm -rf build/ src/*.egg-info
 
-RUN chown -R cloudos:cloudos /app
+RUN mkdir -p /home/cloudos/.codex /home/cloudos/.claude \
+    && chown -R cloudos:cloudos /app /home/cloudos/.codex /home/cloudos/.claude
 USER cloudos
+RUN git config --global --add safe.directory /workspace
 
 EXPOSE 8080
 
