@@ -59,6 +59,58 @@ def test_hostinger_blocker_clears_in_github_actions_with_both_credentials(monkey
     assert decision != "human_review"
 
 
+# ------------------------------------------------- the 300 Ready target (no database)
+class ReadyConn(FakeConn):
+    """Answers the two Ready counts with fixed numbers and every other count with 0."""
+
+    def __init__(self, *, waiting, today):
+        self.waiting, self.today = waiting, today
+
+    def execute(self, sql, params=None):
+        if "first_contacted_at IS NULL" in sql:
+            return _Rows({"n": self.waiting})
+        if "ready_at >=" in sql:
+            return _Rows({"n": self.today})
+        return super().execute(sql, params)
+
+
+def _ready(monkeypatch, *, waiting, today):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    conn = ReadyConn(waiting=waiting, today=today)
+    f = status.funnel(conn, cap=15)
+    return f, status.planner_state(conn, f)
+
+
+def test_ready_target_is_met_by_inventory_even_when_few_were_added_today(monkeypatch):
+    f, s = _ready(monkeypatch, waiting=927, today=12)
+    assert f["ready_target"] == 300 and f["ready_waiting_total"] == 927 and f["ready_today"] == 12
+    assert f["ready_gap"] == 0
+    assert s["target_remaining"] == 0 and s["ready_waiting"] == 927 and s["ready_today"] == 12
+    assert s["next_action"]["decision"] == "stop"
+
+
+@pytest.mark.parametrize("waiting,today,gap", [(0, 0, 300), (40, 400, 260), (299, 5, 1), (300, 0, 0)])
+def test_ready_gap_is_the_exact_inventory_shortfall(monkeypatch, waiting, today, gap):
+    f, s = _ready(monkeypatch, waiting=waiting, today=today)
+    assert f["ready_target"] == s["ready_target"] == 300
+    assert f["ready_gap"] == gap and s["target_remaining"] == gap
+    assert f["ready_today"] == today                    # the daily count is reported, never the target
+
+
+def test_planner_flags_short_inventory_in_inventory_words(monkeypatch):
+    _, s = _ready(monkeypatch, waiting=40, today=400)
+    assert s["next_action"]["agent"] == "codex"
+    assert s["next_action"]["why"] == "Ready inventory is 260 short of 300"
+
+
+def test_status_text_shows_inventory_progress_and_ready_added_today_separately(monkeypatch):
+    f, _ = _ready(monkeypatch, waiting=927, today=12)
+    text = status.as_text(f)
+    assert "Ready inventory (not yet emailed, all days): 927 of 300 (still needed: 0)" in text
+    assert "Ready added today: 12" in text
+    assert "12 of 300" not in text and "READY today" not in text
+
+
 # ------------------------------------------------- manager reply alerts (no database)
 class _ReplyRows:
     def __init__(self, rows):

@@ -626,13 +626,17 @@ def test_funnel_reports_what_it_counts(conn, cfg):
     run(conn, cfg, FakeMailbox())
     f = status.funnel(conn)
     assert f["ready_today"] == 1 and f["sent_today"] == 1 and f["no_usable_email_today"] == 1
-    assert f["ready_gap"] == 299 and "READY today: 1 of 300" in status.as_text(f)
+    # the one Ready company was emailed, so it left the inventory the 300 target measures
+    assert f["ready_waiting_total"] == 0 and f["ready_gap"] == 300
+    text = status.as_text(f)
+    assert "Ready inventory (not yet emailed, all days): 0 of 300 (still needed: 300)" in text
+    assert "Ready added today: 1" in text
 
 
 # ---------------------------------------------------------------- planner state
 def _state(**kw):
     s = {"blocking": [], "interested_total": 0, "failed_today": 0, "ambiguous_total": 0, "target_remaining": 0,
-         "ready_waiting": 500, "send_cap_today": 15}
+         "ready_target": 300, "ready_waiting": 500, "send_cap_today": 15}
     s.update(kw)
     return s
 

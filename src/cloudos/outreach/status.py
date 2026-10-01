@@ -1,5 +1,5 @@
 """The numbers, straight from the database, for one America/Chicago day - and what
-is blocking progress toward today's 300 Ready. Every figure says what it counts.
+is blocking progress toward 300 Ready waiting to be emailed. Every figure says what it counts.
 
 Also turns new events (replies, stopped sequences, failures) into AgentMail
 notices, and writes the three once-a-day digests.
@@ -50,7 +50,9 @@ def funnel(conn, *, tz: str = "America/Chicago", ready_target: int = 300, cap: i
         "followups_waiting": one("SELECT count(*) n FROM outreach_queue WHERE state = 'queued' AND step > 0"),
     }
     f["ready_target"] = ready_target
-    f["ready_gap"] = max(ready_target - f["ready_today"], 0)
+    # The target is inventory: Ready companies nobody has emailed yet, whichever day they became
+    # Ready. ready_today stays as the lead engine's daily output and is not measured against it.
+    f["ready_gap"] = max(ready_target - f["ready_waiting_total"], 0)
     if cap is not None:
         f["send_cap_today"] = cap
     f["blocking"] = blockers(conn, f)
@@ -127,7 +129,7 @@ def next_action(s: dict) -> dict:
                 "why": f"{s['failed_today']} failed today, {s['ambiguous_total']} ambiguous"}
     if s["target_remaining"] and s["ready_waiting"] < (s["send_cap_today"] or 0) * 5:
         return {"decision": "execute", "agent": "codex", "task": "check why the lead engine is short of Ready",
-                "why": f"{s['target_remaining']} Ready still needed today"}
+                "why": f"Ready inventory is {s['target_remaining']} short of {s['ready_target']}"}
     return {"decision": "stop", "agent": None, "task": "none - the 10-minute sender and lead engine continue on schedule",
             "why": "nothing is blocked"}
 
@@ -143,8 +145,9 @@ def as_text(f: dict) -> str:
              f"Usable email found: {f['emails_found_today']} businesses",
              f"Not counted: {f['rejected_today']} rejected, {f['no_usable_email_today']} no usable email, "
              f"{f['duplicates_today']} duplicates of past leads",
-             f"READY today: {f['ready_today']} of {f['ready_target']} (still needed: {f['ready_gap']})",
-             f"Ready and waiting to be emailed (all days): {f['ready_waiting_total']}",
+             f"Ready inventory (not yet emailed, all days): {f['ready_waiting_total']} of {f['ready_target']} "
+             f"(still needed: {f['ready_gap']})",
+             f"Ready added today: {f['ready_today']}",
              "",
              f"First emails sent today: {f['sent_today']}" + (f" (today's limit {f['send_cap_today']})"
                                                               if "send_cap_today" in f else ""),
@@ -225,8 +228,11 @@ def digests(conn, cfg: dict, f: dict, post=None) -> dict:
                                       text=text)["created"]
     out["research"] = agentmail.notify(
         conn, cfg, role="research", dedupe_key=f"digest:research:{day}", post=post,
-        subject=f"Research {day}: {f['ready_today']}/{f['ready_target']} Ready",
-        text=(f"Ready today: {f['ready_today']} of {f['ready_target']}.\nFound {f['discovered_today']} new businesses; "
+        subject=f"Research {day}: {f['ready_waiting_total']}/{f['ready_target']} Ready inventory, "
+                f"{f['ready_today']} added today",
+        text=(f"Ready inventory (not yet emailed, all days): {f['ready_waiting_total']} of {f['ready_target']} "
+              f"(still needed: {f['ready_gap']}).\nReady added today: {f['ready_today']}.\n"
+              f"Found {f['discovered_today']} new businesses; "
               f"{f['emails_found_today']} had a usable email; {f['duplicates_today']} were already in our history; "
               f"{f['rejected_today']} were rejected (chains, dead sites, not a fit).\n\n"
               + ("\n".join(f"- {b}" for b in f["blocking"]) or "Nothing is blocking research.")))["created"]
