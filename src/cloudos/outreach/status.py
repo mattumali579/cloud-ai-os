@@ -60,7 +60,10 @@ def funnel(conn, *, tz: str = "America/Chicago", ready_target: int = 300, cap: i
 def blockers(conn, f: dict) -> list[str]:
     out = []
     import os
-    if not (os.environ.get("HOSTINGER_EMAIL") and os.environ.get("HOSTINGER_EMAIL_PASSWORD")):
+    # The mailbox secrets live only in GitHub Actions, where the sender runs. A local process
+    # not having them says nothing about whether the cloud run can send.
+    in_cloud = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+    if in_cloud and not (os.environ.get("HOSTINGER_EMAIL") and os.environ.get("HOSTINGER_EMAIL_PASSWORD")):
         out.append("Hostinger mailbox password not saved yet - emails are written and waiting, none can go out")
     if not os.environ.get("AGENTMAIL_API_KEY"):
         out.append("AgentMail key not saved yet - status mail waits (urgent items go to Discord)")
