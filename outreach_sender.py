@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,6 +64,23 @@ def _discord(payload: dict):
     return notify.default_sender(payload)
 
 
+# Sent can lag a few seconds behind SMTP. The self-test re-checks Sent (never re-sends): at most
+# SELFTEST_SENT_CHECKS looks, SELFTEST_SENT_WAIT_S apart = 25s of waiting at the very most.
+SELFTEST_SENT_CHECKS = 6
+SELFTEST_SENT_WAIT_S = 5.0
+_sleep = time.sleep
+
+
+def _wait_in_sent(mailbox, mid: str) -> bool:
+    """True only when Sent holds this exact Message-ID. False/None (not there / could not look) is re-checked."""
+    for n in range(SELFTEST_SENT_CHECKS):
+        if n:
+            _sleep(SELFTEST_SENT_WAIT_S)
+        if mailbox.in_sent(mid) is True:
+            return True
+    return False
+
+
 def selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
     """Send one real email to the owner (or the mailbox itself) and prove it: SMTP accepted + found in Sent."""
     to = (os.environ.get(cfg["agentmail"]["owner_env"]) or "").strip() or from_email
@@ -75,7 +93,7 @@ def selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
     out = {"ok": False, "accepted": res.ok, "detail": res.detail}
     if res.ok:
         sender._file_copy(mailbox, msg, mid)
-        out["in_sent"] = bool(mailbox.in_sent(mid))
+        out["in_sent"] = _wait_in_sent(mailbox, mid)
         # passed only when both are proven: the provider took it AND that same Message-ID is in Sent
         if out["in_sent"]:
             out["ok"] = True
