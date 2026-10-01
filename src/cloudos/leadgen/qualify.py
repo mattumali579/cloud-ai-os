@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 
 from cloudos.leadgen.enrich import Enrichment
-from cloudos.leadgen.normalize import FREEMAIL, email_domain, is_directory, normalize_name
+from cloudos.leadgen.normalize import FREEMAIL, LEGACY_ISP_MAIL, email_domain, is_directory, normalize_name
 
 OUTREACH_READY_LEVELS = {"HIGH", "MEDIUM"}
 
@@ -89,9 +89,16 @@ def qualify(
         return Verdict("LOW", f"real {industry} business but no published email ({why})", False)
     if best.status != "validated":
         return Verdict("LOW", f"published email {best.email.split('@')[1]} has no mail server (MX) - would bounce", False)
+    mail_domain = email_domain(best.email)
+    if mail_domain in LEGACY_ISP_MAIL:
+        return Verdict(
+            "LOW",
+            f"published legacy ISP mailbox ({mail_domain}) - MX exists but mailbox-level bounce risk is too high",
+            False,
+        )
 
     fact_keys = {k for k, v in enrichment.facts.items() if v and k not in {"pages_read", "has_chat_or_call_tracking", "has_contact_form"}}
-    freemail = email_domain(best.email) in FREEMAIL
+    freemail = mail_domain in FREEMAIL
     angle = []
     if not enrichment.facts.get("online_booking"):
         angle.append("no online booking/quote request found")
