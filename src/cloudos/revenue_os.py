@@ -93,6 +93,9 @@ def _planner_bottlenecks(planner: dict) -> list[dict]:
     out = []
     for i, item in enumerate(planner.get("blocking") or [], 1):
         low = str(item).lower()
+        # Missing status-mail integration is degraded observability, not a revenue blocker.
+        if low.startswith("agentmail key not saved"):
+            continue
         requires_owner = any(word in low for word in ("password", "login", "mfa", "2fa", "credential", "key not saved", "api key"))
         out.append({
             "id": f"pipeline-{i}",
@@ -141,6 +144,7 @@ def dashboard(conn) -> dict:
         "replies_total": planner["replied_total"],
         "positive_replies": planner["interested_total"],
         "blocked_items": [b["description"] for b in bottlenecks],
+        "degraded_items": [x for x in (planner.get("blocking") or []) if str(x).lower().startswith("agentmail key not saved")],
         "bottleneck_count": len(bottlenecks),
         "bottlenecks": bottlenecks,
         "sales": sales.get("all_time_by_status", {}),
@@ -369,6 +373,8 @@ def _notify(conn, execution_key: str) -> dict:
 
 
 def _set_runtime_bottleneck(conn, action: str, outcome: str, proof: dict) -> None:
+    if action == "notify" and outcome == "skipped":
+        return
     if outcome == "verified":
         if action in {"build", "troubleshoot", "product_verify"}:
             _state_set(conn, "revenue_os_runtime_bottlenecks", [])
@@ -429,8 +435,9 @@ def run(action: str, *, execution_key: str | None = None, allow_send: bool = Fal
             outcome = "verified" if proof.get("ok") else "blocked"
         elif action == "notify":
             proof = _notify(conn, execution_key)
-            # A queued notice is real durable state but not delivered proof.
-            outcome = "verified" if proof.get("delivered") or not proof.get("created") else "blocked"
+            # Delivered proof requires provider acceptance. A queued notice remains
+            # durable but does not block independent revenue work.
+            outcome = "verified" if proof.get("delivered") or not proof.get("created") else "skipped"
         elif action == "product_verify":
             proof = _run([sys.executable, "-m", "pytest", "-q", "tests/test_claude_task.py", "tests/test_revenue_os.py"], timeout=300)
             outcome = "verified" if proof["exit_code"] == 0 else "failed"
