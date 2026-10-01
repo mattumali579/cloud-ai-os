@@ -62,7 +62,7 @@ def cfg():
     c = sender.load_config()
     c = _copy.deepcopy(c)
     c["pacing"].update(send_days=[0, 1, 2, 3, 4, 5, 6], window_start="00:00", window_end="23:59",
-                       provider_daily_limit=1000, ramp=[1000])
+                       provider_daily_limit=1000, daily_limit=1000)
     return c
 
 
@@ -416,11 +416,11 @@ def test_daily_cap_and_window(conn, cfg):
     for i in range(5):
         company(conn, f"Co {i}", f"co{i}.com", f"a@co{i}.com")
     sender.plan(conn, cfg)
-    cfg["pacing"]["ramp"] = [2, 4]
+    cfg["pacing"]["daily_limit"] = 2
     mb = FakeMailbox()
-    assert run(conn, cfg, mb)["sent"] == 2 and len(mb.sent) == 2          # day 1 of the ramp
+    assert run(conn, cfg, mb)["sent"] == 2 and len(mb.sent) == 2
     assert run(conn, cfg, mb)["sent"] == 0
-    cfg["pacing"]["ramp"] = [1000]
+    cfg["pacing"]["daily_limit"] = 1000
     cfg["pacing"]["window_start"], cfg["pacing"]["window_end"] = "00:00", "00:00"
     assert run(conn, cfg, mb) == {**run(conn, cfg, mb), "in_window": False} and len(mb.sent) == 2
 
@@ -428,6 +428,36 @@ def test_daily_cap_and_window(conn, cfg):
 def test_hostinger_daily_limit_env_wins(conn, cfg, monkeypatch):
     monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "1")
     assert sender.daily_cap(conn, cfg) == 1
+
+
+def test_checked_in_cap_is_100_from_the_first_sending_day(monkeypatch):
+    """No database: the cap does not depend on send history, so day 1 and every later day are the same."""
+    monkeypatch.delenv("HOSTINGER_DAILY_LIMIT", raising=False)
+    real = sender.load_config()
+    p = real["pacing"]
+    assert "ramp" not in p and p["daily_limit"] == 100 and p["provider_daily_limit"] == 100
+    assert sender.daily_cap(None, real) == 100
+    monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "40")
+    assert sender.daily_cap(None, real) == 40                  # a lower provider limit still lowers it
+    monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "1000")
+    assert sender.daily_cap(None, real) == 100                 # a higher one never raises it past 100
+    assert (p["window_start"], p["window_end"], p["send_days"]) == ("08:00", "17:30", [0, 1, 2, 3, 4])
+    assert (p["min_gap_seconds"], p["max_gap_seconds"], p["timezone"]) == (55, 110, "America/Chicago")
+    central = lambda *a: datetime(*a, tzinfo=sender.ZoneInfo("America/Chicago"))  # noqa: E731
+    assert sender.in_window(real, central(2026, 10, 1, 8, 0)) and sender.in_window(real, central(2026, 10, 1, 17, 29))
+    assert not sender.in_window(real, central(2026, 10, 1, 7, 59))
+    assert not sender.in_window(real, central(2026, 10, 1, 17, 30))
+    assert not sender.in_window(real, central(2026, 10, 3, 12, 0))          # Saturday
+
+
+def test_run_waits_a_configured_gap_between_sends(conn, cfg):
+    for i in range(3):
+        company(conn, f"Co {i}", f"co{i}.com", f"a@co{i}.com")
+    sender.plan(conn, cfg)
+    cfg["pacing"].update(min_gap_seconds=55, max_gap_seconds=110)
+    gaps: list[float] = []
+    st = sender.run(conn, FakeMailbox(), cfg, from_email=FROM, minutes=60, sleep=gaps.append, clock=lambda: 0.0)
+    assert st["sent"] == 3 and len(gaps) == 3 and all(55 <= g <= 110 for g in gaps)
 
 
 # ---------------------------------------------------------- replies stop it

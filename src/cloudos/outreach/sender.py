@@ -86,21 +86,10 @@ def sent_last_24h(conn) -> int:
                         ).fetchone()["n"]
 
 
-def send_day_number(conn, cfg: dict) -> int:
-    """1 on the first local day this sender ever confirmed a send; weekends/days off don't advance the ramp."""
-    tz = cfg["pacing"]["timezone"]
-    row = conn.execute("SELECT count(DISTINCT (sent_at AT TIME ZONE %s)::date) n, "
-                       "bool_or((sent_at AT TIME ZONE %s)::date = (now() AT TIME ZONE %s)::date) today "
-                       "FROM outreach_queue WHERE state = 'sent'", (tz, tz, tz)).fetchone()
-    return int(row["n"]) + (0 if row["today"] else 1)
-
-
 def daily_cap(conn, cfg: dict) -> int:
-    ramp = cfg["pacing"]["ramp"]
-    day = send_day_number(conn, cfg)
-    ramp_cap = ramp[min(day, len(ramp)) - 1]
+    """The configured daily limit, never above the provider's own cap. The same on every sending day."""
     provider = int(os.environ.get("HOSTINGER_DAILY_LIMIT") or cfg["pacing"]["provider_daily_limit"])
-    return max(0, min(ramp_cap, provider))
+    return max(0, min(int(cfg["pacing"]["daily_limit"]), provider))
 
 
 # ----------------------------------------------------------------- planning

@@ -16,12 +16,11 @@ pacing:
   window_end: "17:30"
   min_gap_seconds: 55             # between two sends - never a burst
   max_gap_seconds: 110
-  # Deliverability ramp for a mailbox that has never sent cold email. Day 1 is the
-  # first day this sender confirmed a send; after the list, the last value holds.
-  ramp: [15, 25, 40, 60, 80, 100, 130, 160, 200, 240, 280, 300]
+  # Sends allowed per rolling 24 h, the same from the first sending day (no warm-up ramp).
+  daily_limit: 100
   # Hostinger's own per-mailbox cap (rolling 24 h): trial/free email = 100,
-  # Business Starter = 1000 (hostinger.com/support/4625828). The lower of the
-  # ramp and this cap wins. Override with the HOSTINGER_DAILY_LIMIT secret.
+  # Business Starter = 1000 (hostinger.com/support/4625828). The lower of
+  # daily_limit and this cap wins. Override with the HOSTINGER_DAILY_LIMIT secret.
   provider_daily_limit: 100
   max_attempts: 3                 # transient failures (timeouts, 4xx) before a row is marked failed
 
