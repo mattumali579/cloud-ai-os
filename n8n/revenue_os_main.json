@@ -1,39 +1,1428 @@
 {
-  "name": "Revenue OS — One Visual Business System",
+  "name": "Revenue OS — Autonomous Money Manager",
   "active": false,
-  "settings": {"executionOrder": "v1", "timezone": "America/Chicago"},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Chicago"
+  },
   "nodes": [
-    {"id":"note-goal","name":"OWNER GOAL","type":"n8n-nodes-base.stickyNote","typeVersion":1,"position":[-1160,-360],"parameters":{"width":340,"height":170,"content":"## OWNER GOAL\n4,000 unique companies, safe provider-confirmed outreach, and a tested product.\n\nThis is one system: work that improves the product and work that earns revenue share the same proof gate."}},
-    {"id":"trigger-schedule","name":"AUTOMATIC NEXT LOOP","type":"n8n-nodes-base.scheduleTrigger","typeVersion":1.2,"position":[-1120,0],"parameters":{"rule":{"interval":[{"field":"minutes","minutesInterval":10}]}},"notes":"A productive revenue cycle, not a keepalive. Existing sender caps and provider limits still decide whether mail can leave."},
-    {"id":"trigger-manual","name":"RUN NOW","type":"n8n-nodes-base.manualTrigger","typeVersion":1,"position":[-1120,120],"parameters":{}},
-    {"id":"goal-input","name":"GOAL INPUT","type":"n8n-nodes-base.set","typeVersion":3.4,"position":[-900,60],"parameters":{"assignments":{"assignments":[{"name":"goal","value":"4,000 unique companies with safe, provider-confirmed outreach","type":"string"},{"name":"execution_key","value":"={{ $execution.id }}","type":"string"}]}},"options":{}},
-    {"id":"current-state","name":"CURRENT STATE","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[-670,60],"parameters":{"method":"POST","url":"={{ $env.AGENT_API_URL }}/v1/revenue-os/run","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"=Bearer {{ $env.AGENT_API_TOKEN }}"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({action:'state',execution_key:$('GOAL INPUT').item.json.execution_key}) }}","options":{"timeout":30000}}},
-    {"id":"next-action","name":"NEXT ACTION","type":"n8n-nodes-base.code","typeVersion":2,"position":[-430,60],"parameters":{"jsCode":"const d=$json.dashboard||$json; const n=d.next_action||{};\n// Revenue work always proceeds safely; a build verification also runs when engineering is the chosen bottleneck.\nreturn [{json:{...d, next:n, branch:n.agent==='codex'||n.agent==='claude'?'product':'revenue'}}];"}},
-    {"id":"choose-branch","name":"BUILD OR REVENUE?","type":"n8n-nodes-base.if","typeVersion":2.2,"position":[-200,60],"parameters":{"conditions":{"options":{"caseSensitive":true,"leftValue":"","typeValidation":"strict"},"conditions":[{"leftValue":"={{ $json.branch }}","rightValue":"product","operator":{"type":"string","operation":"equals"}}],"combinator":"and"},"options":{}}},
-    {"id":"note-product","name":"PRODUCT BUILD SECTION","type":"n8n-nodes-base.stickyNote","typeVersion":1,"position":[40,-370],"parameters":{"width":580,"height":180,"content":"## PRODUCT BUILD / FIX\nBounded worker tasks only. Worker claims do not count.\n\nRead changed files → run independent test → save proof. Two failed attempts become reassessment, not a blind retry."}},
-    {"id":"product-build","name":"PRODUCT BUILD","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[60,-50],"parameters":{"method":"POST","url":"={{ $env.AGENT_API_URL }}/v1/revenue-os/run","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"=Bearer {{ $env.AGENT_API_TOKEN }}"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({action:'product_verify',execution_key:$execution.id}) }}","options":{"timeout":300000}}},
-    {"id":"product-verify","name":"PRODUCT VERIFY","type":"n8n-nodes-base.if","typeVersion":2.2,"position":[300,-50],"parameters":{"conditions":{"conditions":[{"leftValue":"={{ $json.outcome }}","rightValue":"verified","operator":{"type":"string","operation":"equals"}}],"combinator":"and"},"options":{}}},
-    {"id":"note-revenue","name":"REVENUE / OUTREACH SECTION","type":"n8n-nodes-base.stickyNote","typeVersion":1,"position":[40,230],"parameters":{"width":1540,"height":180,"content":"## REVENUE / OUTREACH\nFind real companies → qualify + dedupe against all history → QA → safe sender → provider proof → replies → sales state.\n\nDrafted / queued / attempted is never counted as sent."}},
-    {"id":"find-leads","name":"FIND LEADS","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[40,70],"parameters":{"method":"POST","url":"={{ $env.AGENT_API_URL }}/v1/revenue-os/run","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"=Bearer {{ $env.AGENT_API_TOKEN }}"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({action:'lead_cycle',execution_key:$execution.id}) }}","options":{"timeout":420000}}},
-    {"id":"qualify-dedupe","name":"QUALIFY + DEDUPE","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[280,70],"parameters":{"method":"POST","url":"={{ $env.AGENT_API_URL }}/v1/revenue-os/run","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"=Bearer {{ $env.AGENT_API_TOKEN }}"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({action:'lead_status',execution_key:$execution.id}) }}","options":{"timeout":60000}}},
-    {"id":"outreach-qa","name":"OUTREACH QA","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[520,70],"parameters":{"method":"POST","url":"={{ $env.AGENT_API_URL }}/v1/revenue-os/run","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"=Bearer {{ $env.AGENT_API_TOKEN }}"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({action:'outreach_qa',execution_key:$execution.id}) }}","options":{"timeout":180000}}},
-    {"id":"send","name":"SEND","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[760,70],"parameters":{"method":"POST","url":"={{ $env.AGENT_API_URL }}/v1/revenue-os/run","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"=Bearer {{ $env.AGENT_API_TOKEN }}"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({action:'send',execution_key:$execution.id,allow_send:true}) }}","options":{"timeout":660000}},"notes":"Fail-closed. It uses the existing sender, which only records sent after provider acceptance. REVENUE_OS_SEND_ENABLED must be true on the service before this can send."},
-    {"id":"send-proof","name":"SEND PROOF","type":"n8n-nodes-base.if","typeVersion":2.2,"position":[1000,70],"parameters":{"conditions":{"conditions":[{"leftValue":"={{ $json.outcome }}","rightValue":"verified","operator":{"type":"string","operation":"equals"}}],"combinator":"and"},"options":{}}},
-    {"id":"check-replies","name":"CHECK REPLIES","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[1240,70],"parameters":{"method":"POST","url":"={{ $env.AGENT_API_URL }}/v1/revenue-os/run","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"=Bearer {{ $env.AGENT_API_TOKEN }}"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({action:'reply_check',execution_key:$execution.id}) }}","options":{"timeout":180000}}},
-    {"id":"classify-reply","name":"CLASSIFY REPLY + SALES ACTION","type":"n8n-nodes-base.set","typeVersion":3.4,"position":[1480,70],"parameters":{"assignments":{"assignments":[{"name":"reply_state_persisted_by_existing_pipeline","value":"={{ $json.outcome==='verified' }}","type":"boolean"}]}},"options":{}},
-    {"id":"verify","name":"VERIFY","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[1720,60],"parameters":{"method":"POST","url":"={{ $env.AGENT_API_URL }}/v1/revenue-os/run","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"=Bearer {{ $env.AGENT_API_TOKEN }}"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({action:'state',execution_key:$execution.id}) }}","options":{"timeout":30000}}},
-    {"id":"record-evidence","name":"RECORD EVIDENCE","type":"n8n-nodes-base.set","typeVersion":3.4,"position":[1960,60],"parameters":{"assignments":{"assignments":[{"name":"evidence_id","value":"={{ $json.evidence.evidence_id }}","type":"number"},{"name":"system_status","value":"={{ $json.dashboard.system_status }}","type":"string"},{"name":"next_action","value":"={{ JSON.stringify($json.dashboard.next_action) }}","type":"string"}]},"options":{}},"notes":"Every API action already saved a durable revenue_os_evidence row. This node makes the proof visible in the execution."},
-    {"id":"goal-complete","name":"GOAL COMPLETE?","type":"n8n-nodes-base.if","typeVersion":2.2,"position":[2200,60],"parameters":{"conditions":{"conditions":[{"leftValue":"={{ $json.dashboard.total_unique_companies }}","rightValue":4000,"operator":{"type":"number","operation":"gte"}}],"combinator":"and"},"options":{}}},
-    {"id":"complete","name":"COMPLETE","type":"n8n-nodes-base.set","typeVersion":3.4,"position":[2440,-20],"parameters":{"assignments":{"assignments":[{"name":"result","value":"Goal complete with durable proof in Revenue OS evidence.","type":"string"}]}},"options":{}},
-    {"id":"blocked","name":"BLOCKED","type":"n8n-nodes-base.set","typeVersion":3.4,"position":[1240,-130],"parameters":{"assignments":{"assignments":[{"name":"result","value":"={{ 'Blocked safely: ' + ($json.proof.reason || $json.dashboard?.blocked_items?.join('; ') || 'verification failed') }}","type":"string"}]}},"options":{}},
-    {"id":"notify-owner","name":"NOTIFY OWNER","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[2440,140],"onError":"continueRegularOutput","parameters":{"method":"POST","url":"={{ $env.NOTIFY_WEBHOOK_URL }}","sendBody":true,"specifyBody":"json","jsonBody":"={{ JSON.stringify({severity:'info',code:'REVENUE_OS_CYCLE',message:'Revenue OS completed a verified cycle.',meta:{execution_id:$execution.id,evidence_id:$json.evidence_id,next_action:$json.next_action}}) }}","options":{"timeout":30000}}},
-    {"id":"next-loop","name":"NEXT LOOP","type":"n8n-nodes-base.set","typeVersion":3.4,"position":[2680,140],"parameters":{"assignments":{"assignments":[{"name":"result","value":"Next productive cycle is scheduled automatically.","type":"string"}]}},"options":{}}
+    {
+      "id": "note-goal",
+      "name": "00 — MONEY GOAL",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1500,
+        -480
+      ],
+      "parameters": {
+        "width": 420,
+        "height": 220,
+        "content": "## 00 — MONEY GOAL\nOne goal controls the system.\n\nObserve → decide → execute → verify → adapt → keep working.\n\nStop only for a verified goal or a real human-only blocker."
+      }
+    },
+    {
+      "id": "trigger-schedule",
+      "name": "AUTOMATIC REVENUE LOOP",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1440,
+        -80
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "trigger-manual",
+      "name": "RUN NOW",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1440,
+        60
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "goal-input",
+      "name": "GOAL INPUT",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1210,
+        -20
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "goal",
+              "value": "={{ $env.REVENUE_OS_GOAL || 'Build and operate the service-business lead conversion product and acquire paying customers.' }}",
+              "type": "string"
+            },
+            {
+              "name": "execution_key",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "note-state",
+      "name": "10 — STATE + BOTTLENECKS",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1020,
+        -480
+      ],
+      "parameters": {
+        "width": 620,
+        "height": 220,
+        "content": "## 10 — LOAD STATE + BOTTLENECKS\nLoads proof, product state, lead inventory, replies and prior failures.\n\nEvery cycle exposes **bottleneck_count** and the exact bottlenecks."
+      }
+    },
+    {
+      "id": "current-state",
+      "name": "LOAD CURRENT STATE",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -980,
+        -20
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'state',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "decide",
+      "name": "DECIDE NEXT MONEY ACTION",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -740,
+        -20
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'decide',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "show-bottlenecks",
+      "name": "COUNT + NAME BOTTLENECKS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        -20
+      ],
+      "parameters": {
+        "jsCode": "const d=$json.dashboard||{};\nconst decision=$json.proof||d.next_action||{};\nconst bottlenecks=d.bottlenecks||[];\nreturn [{json:{\n  ...d,\n  decision,\n  action:decision.action||'MEASURE',\n  bottleneck_count:bottlenecks.length,\n  bottlenecks,\n  important:(bottlenecks.length>0)||(d.positive_replies||0)>0\n}}];"
+      }
+    },
+    {
+      "id": "note-router",
+      "name": "20 — ROUTER",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -480
+      ],
+      "parameters": {
+        "width": 700,
+        "height": 220,
+        "content": "## 20 — CHOOSE ONE NEXT ACTION\nPriority: live money → near-term money → new opportunities → product bottleneck → research.\n\nNo human GO between normal milestones."
+      }
+    },
+    {
+      "id": "is-notify",
+      "name": "OWNER ACTION REQUIRED?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -250,
+        -20
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "NOTIFY",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "is-troubleshoot",
+      "name": "TROUBLESHOOT?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "TROUBLESHOOT",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "is-research",
+      "name": "RESEARCH?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        250,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "RESEARCH",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "is-plan",
+      "name": "PLAN?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        500,
+        240
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "PLAN",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "is-build",
+      "name": "BUILD?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        750,
+        320
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "BUILD",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "note-product",
+      "name": "30 — RESEARCH → BUILD",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        520,
+        -480
+      ],
+      "parameters": {
+        "width": 1260,
+        "height": 220,
+        "content": "## 30 — PRODUCT RESEARCH → SPEC → BUILD → VERIFY\nCodex researches current public best examples with web search.\nCodex selects one bounded milestone.\nClaude Code builds it through the existing guarded worker.\nWorker claims never count as proof."
+      }
+    },
+    {
+      "id": "research",
+      "name": "RESEARCH BEST CURRENT BUILDS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        620,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'research',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 900000
+        }
+      }
+    },
+    {
+      "id": "plan",
+      "name": "TURN RESEARCH INTO ONE BUILD SPEC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'plan',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 600000
+        }
+      }
+    },
+    {
+      "id": "build",
+      "name": "CLAUDE BUILD WORKER",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1140,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'build',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 1200000
+        }
+      }
+    },
+    {
+      "id": "product-verify",
+      "name": "INDEPENDENT PRODUCT VERIFY",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'product_verify',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 360000
+        }
+      }
+    },
+    {
+      "id": "product-pass",
+      "name": "PRODUCT VERIFIED?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1660,
+        -160
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.outcome }}",
+              "rightValue": "verified",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "note-trouble",
+      "name": "40 — TROUBLESHOOTER BOT",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        620,
+        40
+      ],
+      "parameters": {
+        "width": 1160,
+        "height": 220,
+        "content": "## 40 — TROUBLESHOOTER BOT\nFailure → classify INPUT / INTERFACE / NETWORK / SERVICE / AGENT / ACTION / RESULT → repair → verify.\n\nSame approach fails twice → change architecture. Never blindly loop the same fix."
+      }
+    },
+    {
+      "id": "troubleshoot",
+      "name": "TROUBLESHOOTER BOT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'troubleshoot',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 700000
+        }
+      }
+    },
+    {
+      "id": "repair-build",
+      "name": "BUILD REPAIR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'build',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 1200000
+        }
+      }
+    },
+    {
+      "id": "repair-verify",
+      "name": "VERIFY REPAIR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'product_verify',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 360000
+        }
+      }
+    },
+    {
+      "id": "repair-pass",
+      "name": "REPAIR VERIFIED?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.outcome }}",
+              "rightValue": "verified",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "note-revenue",
+      "name": "50 — REVENUE EXECUTION",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        860,
+        360
+      ],
+      "parameters": {
+        "width": 1500,
+        "height": 220,
+        "content": "## 50 — DO THE THING THAT CAN MAKE MONEY\nReplies first. Then fresh qualified companies → dedupe → QA → send → provider proof → replies.\n\nQueued / drafted / attempted is NEVER counted as sent."
+      }
+    },
+    {
+      "id": "revenue-router",
+      "name": "REVENUE ACTION ROUTER",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        390
+      ],
+      "parameters": {
+        "jsCode": "const a=$json.action||$json.decision?.action||'SEND';\nreturn [{json:{...$json,revenue_action:a}}];"
+      }
+    },
+    {
+      "id": "is-replies",
+      "name": "PROCESS REPLIES?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1260,
+        390
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.revenue_action }}",
+              "rightValue": "PROCESS_REPLIES",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "is-find",
+      "name": "FIND LEADS FIRST?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1500,
+        480
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.revenue_action }}",
+              "rightValue": "FIND_LEADS",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "reply-check",
+      "name": "CHECK + CLASSIFY REPLIES",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1510,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'reply_check',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 180000
+        }
+      }
+    },
+    {
+      "id": "find-leads",
+      "name": "FIND NEW QUALIFIED COMPANIES",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1750,
+        480
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'lead_cycle',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 420000
+        }
+      }
+    },
+    {
+      "id": "outreach-qa",
+      "name": "DEDUPE + OUTREACH QA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1990,
+        480
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'outreach_qa',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 180000
+        }
+      }
+    },
+    {
+      "id": "send",
+      "name": "SEND THROUGH EXISTING SAFE SENDER",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2230,
+        480
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'send',execution_key:$execution.id,allow_send:true}) }}",
+        "options": {
+          "timeout": 660000
+        }
+      }
+    },
+    {
+      "id": "post-send-replies",
+      "name": "CHECK REPLIES AFTER SEND",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2470,
+        480
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'reply_check',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 180000
+        }
+      }
+    },
+    {
+      "id": "note-proof",
+      "name": "60 — PROOF + IMPORTANT NOTICES",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        -360
+      ],
+      "parameters": {
+        "width": 1160,
+        "height": 220,
+        "content": "## 60 — VERIFY → RECORD PROOF → NOTIFY ONLY IF IMPORTANT\nEvery API action saves durable Revenue OS evidence.\nImportant = money event, human-only blocker, revenue-affecting failure, or major verified milestone."
+      }
+    },
+    {
+      "id": "record-state",
+      "name": "RELOAD VERIFIED STATE",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2020,
+        -100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'state',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "important-event",
+      "name": "IMPORTANT EVENT?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2260,
+        -100
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.dashboard.bottleneck_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "leftValue": "={{ $json.dashboard.positive_replies }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "notify-owner",
+      "name": "NOTIFY OWNER — IMPORTANT ONLY",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2500,
+        -180
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/revenue-os/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({action:'notify',execution_key:$execution.id}) }}",
+        "options": {
+          "timeout": 60000
+        }
+      }
+    },
+    {
+      "id": "next-loop",
+      "name": "NEXT AUTONOMOUS LOOP",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2760,
+        -60
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "status",
+              "value": "Revenue OS recorded this cycle. The scheduled loop will choose the next highest-value action without waiting for GO.",
+              "type": "string"
+            },
+            {
+              "name": "execution_id",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "name": "bottleneck_count",
+              "value": "={{ $json.dashboard?.bottleneck_count || 0 }}",
+              "type": "number"
+            },
+            {
+              "name": "bottlenecks",
+              "value": "={{ JSON.stringify($json.dashboard?.bottlenecks || []) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "blocked-next",
+      "name": "BLOCKED — REPORT EXACTLY",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2500,
+        40
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "status",
+              "value": "BLOCKED for this cycle; next scheduled loop will retry or change approach unless owner action is required.",
+              "type": "string"
+            },
+            {
+              "name": "bottleneck_count",
+              "value": "={{ $json.dashboard?.bottleneck_count || 1 }}",
+              "type": "number"
+            },
+            {
+              "name": "bottlenecks",
+              "value": "={{ JSON.stringify($json.dashboard?.bottlenecks || [$json.proof]) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    }
   ],
   "connections": {
-    "AUTOMATIC NEXT LOOP":{"main":[[{"node":"GOAL INPUT","type":"main","index":0}]]},"RUN NOW":{"main":[[{"node":"GOAL INPUT","type":"main","index":0}]]},"GOAL INPUT":{"main":[[{"node":"CURRENT STATE","type":"main","index":0}]]},"CURRENT STATE":{"main":[[{"node":"NEXT ACTION","type":"main","index":0}]]},"NEXT ACTION":{"main":[[{"node":"BUILD OR REVENUE?","type":"main","index":0}]]},"BUILD OR REVENUE?":{"main":[[{"node":"PRODUCT BUILD","type":"main","index":0}],[{"node":"FIND LEADS","type":"main","index":0}]]},"PRODUCT BUILD":{"main":[[{"node":"PRODUCT VERIFY","type":"main","index":0}]]},"PRODUCT VERIFY":{"main":[[{"node":"VERIFY","type":"main","index":0}],[{"node":"BLOCKED","type":"main","index":0}]]},"FIND LEADS":{"main":[[{"node":"QUALIFY + DEDUPE","type":"main","index":0}]]},"QUALIFY + DEDUPE":{"main":[[{"node":"OUTREACH QA","type":"main","index":0}]]},"OUTREACH QA":{"main":[[{"node":"SEND","type":"main","index":0}]]},"SEND":{"main":[[{"node":"SEND PROOF","type":"main","index":0}]]},"SEND PROOF":{"main":[[{"node":"CHECK REPLIES","type":"main","index":0}],[{"node":"BLOCKED","type":"main","index":0}]]},"CHECK REPLIES":{"main":[[{"node":"CLASSIFY REPLY + SALES ACTION","type":"main","index":0}]]},"CLASSIFY REPLY + SALES ACTION":{"main":[[{"node":"VERIFY","type":"main","index":0}]]},"VERIFY":{"main":[[{"node":"RECORD EVIDENCE","type":"main","index":0}]]},"RECORD EVIDENCE":{"main":[[{"node":"GOAL COMPLETE?","type":"main","index":0}]]},"GOAL COMPLETE?":{"main":[[{"node":"COMPLETE","type":"main","index":0}],[{"node":"NOTIFY OWNER","type":"main","index":0}]]},"COMPLETE":{"main":[[{"node":"NOTIFY OWNER","type":"main","index":0}]]},"BLOCKED":{"main":[[{"node":"NOTIFY OWNER","type":"main","index":0}]]},"NOTIFY OWNER":{"main":[[{"node":"NEXT LOOP","type":"main","index":0}]]}
+    "AUTOMATIC REVENUE LOOP": {
+      "main": [
+        [
+          {
+            "node": "GOAL INPUT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RUN NOW": {
+      "main": [
+        [
+          {
+            "node": "GOAL INPUT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GOAL INPUT": {
+      "main": [
+        [
+          {
+            "node": "LOAD CURRENT STATE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LOAD CURRENT STATE": {
+      "main": [
+        [
+          {
+            "node": "DECIDE NEXT MONEY ACTION",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DECIDE NEXT MONEY ACTION": {
+      "main": [
+        [
+          {
+            "node": "COUNT + NAME BOTTLENECKS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "COUNT + NAME BOTTLENECKS": {
+      "main": [
+        [
+          {
+            "node": "OWNER ACTION REQUIRED?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OWNER ACTION REQUIRED?": {
+      "main": [
+        [
+          {
+            "node": "NOTIFY OWNER — IMPORTANT ONLY",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TROUBLESHOOT?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TROUBLESHOOT?": {
+      "main": [
+        [
+          {
+            "node": "TROUBLESHOOTER BOT",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RESEARCH?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RESEARCH?": {
+      "main": [
+        [
+          {
+            "node": "RESEARCH BEST CURRENT BUILDS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PLAN?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PLAN?": {
+      "main": [
+        [
+          {
+            "node": "TURN RESEARCH INTO ONE BUILD SPEC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BUILD?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BUILD?": {
+      "main": [
+        [
+          {
+            "node": "CLAUDE BUILD WORKER",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "REVENUE ACTION ROUTER",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RESEARCH BEST CURRENT BUILDS": {
+      "main": [
+        [
+          {
+            "node": "TURN RESEARCH INTO ONE BUILD SPEC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TURN RESEARCH INTO ONE BUILD SPEC": {
+      "main": [
+        [
+          {
+            "node": "CLAUDE BUILD WORKER",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CLAUDE BUILD WORKER": {
+      "main": [
+        [
+          {
+            "node": "INDEPENDENT PRODUCT VERIFY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "INDEPENDENT PRODUCT VERIFY": {
+      "main": [
+        [
+          {
+            "node": "PRODUCT VERIFIED?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PRODUCT VERIFIED?": {
+      "main": [
+        [
+          {
+            "node": "RELOAD VERIFIED STATE",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TROUBLESHOOTER BOT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TROUBLESHOOTER BOT": {
+      "main": [
+        [
+          {
+            "node": "BUILD REPAIR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BUILD REPAIR": {
+      "main": [
+        [
+          {
+            "node": "VERIFY REPAIR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VERIFY REPAIR": {
+      "main": [
+        [
+          {
+            "node": "REPAIR VERIFIED?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "REPAIR VERIFIED?": {
+      "main": [
+        [
+          {
+            "node": "RELOAD VERIFIED STATE",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BLOCKED — REPORT EXACTLY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "REVENUE ACTION ROUTER": {
+      "main": [
+        [
+          {
+            "node": "PROCESS REPLIES?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PROCESS REPLIES?": {
+      "main": [
+        [
+          {
+            "node": "CHECK + CLASSIFY REPLIES",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "FIND LEADS FIRST?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK + CLASSIFY REPLIES": {
+      "main": [
+        [
+          {
+            "node": "RELOAD VERIFIED STATE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FIND LEADS FIRST?": {
+      "main": [
+        [
+          {
+            "node": "FIND NEW QUALIFIED COMPANIES",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "DEDUPE + OUTREACH QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FIND NEW QUALIFIED COMPANIES": {
+      "main": [
+        [
+          {
+            "node": "DEDUPE + OUTREACH QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DEDUPE + OUTREACH QA": {
+      "main": [
+        [
+          {
+            "node": "SEND THROUGH EXISTING SAFE SENDER",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SEND THROUGH EXISTING SAFE SENDER": {
+      "main": [
+        [
+          {
+            "node": "CHECK REPLIES AFTER SEND",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK REPLIES AFTER SEND": {
+      "main": [
+        [
+          {
+            "node": "RELOAD VERIFIED STATE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RELOAD VERIFIED STATE": {
+      "main": [
+        [
+          {
+            "node": "IMPORTANT EVENT?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IMPORTANT EVENT?": {
+      "main": [
+        [
+          {
+            "node": "NOTIFY OWNER — IMPORTANT ONLY",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "NEXT AUTONOMOUS LOOP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NOTIFY OWNER — IMPORTANT ONLY": {
+      "main": [
+        [
+          {
+            "node": "NEXT AUTONOMOUS LOOP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BLOCKED — REPORT EXACTLY": {
+      "main": [
+        [
+          {
+            "node": "NOTIFY OWNER — IMPORTANT ONLY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
   "pinData": {},
-  "versionId": "revenue-os-v1",
+  "versionId": "revenue-os-v2-autonomous",
   "id": "RevenueOSMain1",
   "tags": []
 }
