@@ -1,4 +1,5 @@
-# Starts the ACTIVE BrightReach worker: Hermes (operator) + Claude Code (coder).
+# Starts the ACTIVE BrightReach loop: Hermes on the ChatGPT subscription is the PLANNER,
+# Claude Code is the WORKER it calls through scripts/claude_task.py. Claude never picks its own task.
 #   start-hermes-revenue.ps1           check everything, then open the live Hermes session
 #   start-hermes-revenue.ps1 -Check    check everything and exit (starts nothing)
 param([switch]$Check)
@@ -48,6 +49,12 @@ $auth = (hermes auth list | Out-String)
 if ($LASTEXITCODE -ne 0 -or $auth -notmatch "openai-codex") {
     throw "Hermes is not signed in with ChatGPT. Run: hermes auth add openai-codex"
 }
+# The planner must be the OpenAI model. If Hermes were pointed at anything else, stop rather than let it plan.
+$planner = (hermes status | Select-String -Pattern "^\s*(Model|Provider):" | ForEach-Object { $_.Line.Trim() }) -join "; "
+Write-Host "      Planner -> $planner"
+if ($planner -notmatch "Provider:\s+ChatGPT or Codex Subscription" -or $planner -notmatch "Model:\s+gpt-") {
+    throw "Hermes planner is not the ChatGPT/OpenAI model ($planner). Run: hermes model"
+}
 
 Write-Host "[4/5] Checking Claude Code authentication..."
 claude auth status --text
@@ -60,5 +67,6 @@ if ($Check) {
 
 Write-Host "[5/5] Starting ACTIVE Hermes work session..."
 Write-Host "This does not create a recurring schedule. Hermes works now, in this window, until you close it."
+Write-Host "Planner = ChatGPT model (decides every task). Worker = Claude Code (executes one task at a time)."
 hermes --in $repoRoot chat --provider openai-codex --query-file $mission
 if ($LASTEXITCODE -ne 0) { throw "Hermes session exited with an error." }
