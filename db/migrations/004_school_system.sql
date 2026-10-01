@@ -6,7 +6,7 @@
 -- Install them when the server exposes them, but do not make unrelated local
 -- Cloud AI OS / Revenue OS migrations fail just because those optional
 -- Supabase extensions are unavailable.
-DO $
+DO $school_ext$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_cron') THEN
         EXECUTE 'CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA pg_catalog';
@@ -15,7 +15,7 @@ BEGIN
         EXECUTE 'CREATE EXTENSION IF NOT EXISTS pg_net';
     END IF;
 END
-$;
+$school_ext$;
 
 CREATE TABLE IF NOT EXISTS school_sync_state (
     id                    smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
