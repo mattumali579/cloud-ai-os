@@ -269,6 +269,143 @@ def test_agentmail_selftest_twice_sends_once_and_second_run_is_not_a_success(am)
 
 def test_workflow_has_a_separate_agentmail_selftest_mode():
     yml = (outreach_sender.ROOT / ".github" / "workflows" / "outreach-send.yml").read_text(encoding="utf-8")
-    assert "options: [cycle, status, selftest, agentmail-selftest]" in yml
+    assert "options: [cycle, status, selftest, agentmail-selftest, airtable-selftest]" in yml
     assert "            agentmail-selftest) python outreach_sender.py agentmail-selftest ;;" in yml
     assert "            selftest) python outreach_sender.py selftest ;;" in yml
+
+
+# ------------------------------------------------- `outreach_sender.py airtable-selftest`
+AT_KEY, AT_BASE, AT_TABLE = "pat_test_do_not_print", "appTESTBASE0000001", "Leads Secret Table"
+AT_ENV = {"AIRTABLE_API_KEY": AT_KEY, "AIRTABLE_BASE_ID": AT_BASE, "AIRTABLE_TABLE_NAME": AT_TABLE}
+
+
+class FakeStateConn:
+    """Stands in for `airtable_state` / `airtable_api_usage`. `persist` = what the saved count reads back as."""
+
+    def __init__(self, persist=lambda n: n):
+        self.persist, self.count, self.calls, self.rolled_back = persist, None, 0, 0
+        self._row = None
+
+    def execute(self, sql, params=None):
+        self._row = None
+        if sql.startswith("INSERT INTO airtable_api_usage"):
+            self.calls += params[1]
+        elif "'record_count'" in sql:
+            self.count = self.persist(params[0])
+        elif sql.startswith("SELECT value, updated_at FROM airtable_state") and params == ("record_count",):
+            self._row = None if self.count is None else {"value": self.count, "updated_at": None}
+        return self
+
+    def fetchone(self):
+        return self._row
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        self.rolled_back += 1
+
+
+class FakeAirtable:
+    """Stands in for the Airtable HTTP client: pages of rows on GET; any write is recorded and fails the test."""
+
+    def __init__(self, pages, fail_on=None):
+        self.pages, self.fail_on, self.gets, self.writes = pages, fail_on, [], []
+
+    def get(self, url, params=None):
+        self.gets.append((url, dict(params)))
+        page, pages = len(self.gets), self.pages
+        fail = self.fail_on == page
+
+        class Resp:
+            def raise_for_status(self):
+                if fail:
+                    raise outreach_sender.airtable_sync.httpx.HTTPStatusError(
+                        f"403 for {url} {AT_KEY}", request=None, response=None)
+
+            def json(self):
+                recs = [{"id": f"recSECRET{page}x{i}", "fields": {"Company": f"Secret Gym {i}"}}
+                        for i in range(pages[page - 1])]
+                return {"records": recs} if page == len(pages) else {"records": recs, "offset": f"itrOFFSET{page}"}
+
+        return Resp()
+
+    def request(self, method, url, **kw):
+        self.writes.append(method)
+        raise AssertionError("the Airtable self-test must never write")
+
+    def post(self, *a, **kw):
+        return self.request("POST", "")
+
+    patch = put = delete = post
+
+
+@pytest.fixture
+def at(monkeypatch, capsys):
+    for k, v in AT_ENV.items():
+        monkeypatch.setenv(k, v)
+
+    def _run(pages, persist=lambda n: n, fail_on=None):
+        conn, api = FakeStateConn(persist), FakeAirtable(pages, fail_on)
+
+        @contextmanager
+        def get_conn():
+            yield conn
+
+        monkeypatch.setattr(outreach_sender.db, "get_conn", get_conn)
+        monkeypatch.setattr(outreach_sender.airtable_sync.httpx, "Client", lambda **kw: api)   # nothing leaves the machine
+        code = outreach_sender.main(["airtable-selftest"])
+        out = capsys.readouterr().out
+        for secret in (AT_KEY, AT_BASE, AT_TABLE, "Leads%20Secret%20Table", "recSECRET", "Secret Gym", "itrOFFSET"):
+            assert secret not in out
+        assert api.writes == []
+        return code, json.loads(out), conn, api
+
+    return _run
+
+
+def test_airtable_selftest_paginated_read_saves_the_exact_count_and_exits_zero(at):
+    code, shown, conn, api = at([100, 100, 37])
+    assert code == 0 and shown == {"ok": True, "records": 237, "persisted": 237}
+    assert conn.count == 237
+    # three read-only pages, each following the offset of the one before, each counted against the budget
+    assert len(api.gets) == 3 and conn.calls == 3
+    assert [p.get("offset") for _, p in api.gets] == [None, "itrOFFSET1", "itrOFFSET2"]
+
+
+def test_airtable_selftest_empty_table_is_a_real_zero_not_a_failure(at):
+    code, shown, conn, api = at([0])
+    assert code == 0 and shown == {"ok": True, "records": 0, "persisted": 0}
+    assert len(api.gets) == 1 and conn.calls == 1
+
+
+@pytest.mark.parametrize("missing", sorted(AT_ENV))
+def test_airtable_selftest_missing_setting_exits_nonzero_without_calling_airtable(at, monkeypatch, missing):
+    monkeypatch.delenv(missing)
+    code, shown, conn, api = at([5])
+    assert code == 3 and shown["ok"] is False and "blocked" in shown
+    assert api.gets == [] and conn.calls == 0 and conn.count is None
+
+
+@pytest.mark.parametrize("fail_on", [1, 2])
+def test_airtable_selftest_provider_error_exits_nonzero_and_saves_no_count(at, fail_on):
+    code, shown, conn, api = at([100, 100, 37], fail_on=fail_on)
+    assert code == 1 and shown == {"ok": False, "error": "HTTPStatusError"}
+    assert conn.count is None and conn.rolled_back == 1
+    assert len(api.gets) == fail_on and conn.calls == fail_on      # the failed call still spent budget
+
+
+@pytest.mark.parametrize("persist", [lambda n: n - 1, lambda n: None, lambda n: str(n)])
+def test_airtable_selftest_saved_count_mismatch_exits_nonzero(at, persist):
+    code, shown, conn, api = at([100, 12], persist=persist)
+    assert code == 1 and shown["ok"] is False and shown["records"] == 112
+    assert shown["persisted"] != 112
+    assert len(api.gets) == 2
+
+
+def test_workflow_has_a_separate_airtable_selftest_mode():
+    yml = (outreach_sender.ROOT / ".github" / "workflows" / "outreach-send.yml").read_text(encoding="utf-8")
+    assert "options: [cycle, status, selftest, agentmail-selftest, airtable-selftest]" in yml
+    assert "            airtable-selftest) python outreach_sender.py airtable-selftest ;;" in yml
+    assert "            *) python outreach_sender.py cycle --minutes 8" in yml          # normal cycles unchanged
+    assert "default: cycle" in yml

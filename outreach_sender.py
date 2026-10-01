@@ -6,6 +6,7 @@
     python outreach_sender.py plan                  prepare first emails for Ready leads (sends nothing)
     python outreach_sender.py selftest              one real email to the owner through Hostinger, then prove it
     python outreach_sender.py agentmail-selftest    one internal notice to the owner through AgentMail, once a day
+    python outreach_sender.py airtable-selftest     count the Airtable rows (read only) and prove the count was saved
     python outreach_sender.py airtable              push changed lead states to Airtable now
 
 cycle, in order - each step survives the one before it failing:
@@ -115,6 +116,21 @@ def agentmail_selftest(conn, cfg: dict, post=None) -> dict:
     if not r["created"]:
         return {"ok": False, "duplicate": True}
     return {"ok": r["delivered"] is True, "delivered": r["delivered"], "receipt": r["receipt"]}
+
+
+def airtable_selftest(conn) -> dict:
+    """Read-only: count the Airtable rows through the normal counting path (its calls are budgeted there), then
+    read the saved count back. Passes only when Airtable answered AND the database holds that same count."""
+    try:
+        n = airtable_sync.refresh_record_count(conn)
+    except Exception as exc:  # noqa: BLE001 - PUBLIC log: the error type only, the message can hold the base/table
+        conn.rollback()
+        return {"ok": False, "error": type(exc).__name__}
+    if n is None:
+        return {"ok": False, "blocked": "Airtable settings missing"}
+    row = _state(conn, "record_count")
+    saved = row["value"] if row and type(row["value"]) is int else None
+    return {"ok": saved == n, "records": n, "persisted": saved}
 
 
 def cycle(minutes: float) -> dict:
@@ -248,6 +264,7 @@ def main(argv=None) -> int:
     sub.add_parser("plan")
     sub.add_parser("selftest")
     sub.add_parser("agentmail-selftest")
+    sub.add_parser("airtable-selftest")
     sub.add_parser("airtable")
     a = ap.parse_args(argv)
     cfg = sender.load_config()
@@ -277,6 +294,13 @@ def main(argv=None) -> int:
                 return 1
         elif a.cmd == "agentmail-selftest":
             out = agentmail_selftest(conn, cfg)
+            print(public(out))
+            if "blocked" in out:
+                return 3
+            if not out["ok"]:
+                return 1
+        elif a.cmd == "airtable-selftest":
+            out = airtable_selftest(conn)
             print(public(out))
             if "blocked" in out:
                 return 3
