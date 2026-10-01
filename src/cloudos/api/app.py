@@ -30,6 +30,7 @@ from .schemas import (
     InvokeRequest,
     JobCreate,
     PhoneTaskRequest,
+    RevenueOSRunRequest,
 )
 from .phone import execute_phone_task
 
@@ -270,6 +271,22 @@ async def quota() -> dict:
         if provider in fail_closed and row.get("state") in {"QUOTA_EXHAUSTED", "AUTH_REQUIRED", "BILLING_RISK"}:
             fail_closed[provider] = True
     return {"usage": usage, "budgets": budgets, "fail_closed": fail_closed, "providers": providers}
+
+
+# ---------------------------------------------------------------- Revenue OS visual controller
+
+@app.get("/v1/revenue-os/status", dependencies=[authed])
+async def revenue_os_status() -> dict:
+    from cloudos import db
+    from cloudos.revenue_os import dashboard
+    with db.get_conn() as conn:
+        return dashboard(conn)
+
+
+@app.post("/v1/revenue-os/run", dependencies=[authed])
+async def revenue_os_run(body: RevenueOSRunRequest) -> dict:
+    from cloudos.revenue_os import run
+    return run(body.action, execution_key=body.execution_key, allow_send=body.allow_send)
 
 
 # ---------------------------------------------------------------- BrightReach

@@ -67,3 +67,11 @@ class EmailBuildRequest(EmailDraftRequest):
 
 class EmailSendRequest(EmailDraftRequest):
     fingerprint: str = Field(pattern="^[a-fA-F0-9]{12}$")
+
+
+class RevenueOSRunRequest(BaseModel):
+    """Whitelisted visual-controller action; no arbitrary command execution."""
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["state", "product_verify", "lead_status", "lead_cycle", "outreach_qa", "reply_check", "send"]
+    execution_key: Optional[str] = Field(default=None, max_length=120)
+    allow_send: bool = False
