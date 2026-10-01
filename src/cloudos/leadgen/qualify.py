@@ -18,7 +18,7 @@ OUTREACH_READY_LEVELS = {"HIGH", "MEDIUM"}
 
 _ENTERPRISE_WORDS = re.compile(r"\b(franchis(e|ing) opportunit|investor relations|nasdaq|nyse|fortune 500|\d{3,} locations|locations nationwide|find a location near you)\b", re.I)
 _LOCATION_PAGE = re.compile(r"/(locations?|gyms?|clubs?|stores?|offices?|dentist|find-a|studios?|branch(es)?|branch-locator|stores?)/[^/]+", re.I)
-_B2B = re.compile(r"\b(supply|supplies|wholesale|distribut\w*|industrial|manufactur\w*|spill|marine|oilfield|offshore|workers.? comp\w*|staffing|logistics|freight|trucking)\b", re.I)
+_B2B = re.compile(r"\b(supply|supplies|supplier|wholesale|distribut\w*|industrial|manufactur\w*|spill|marine|oilfield|offshore|workers.? comp\w*|staffing|logistics|freight|trucking)\b", re.I)
 _DEALER = re.compile(r"\b(chevrolet|chevy|toyota|honda|nissan|hyundai|kia|dodge|chrysler|jeep|subaru|mazda|volkswagen|bmw|mercedes|lexus|acura|cadillac|buick|gmc|infiniti|audi)\b", re.I)
 _NOT_A_BUSINESS = re.compile(r"\b(city of|county|parish|school district|university|college|church|ministr(y|ies)|government|department of|police|fire dept|hospital|medical center|ymca|foundation)\b", re.I)
 
