@@ -66,6 +66,7 @@ In this terminal plain `python` is Hermes's own interpreter and lacks the projec
 - `"$BRIGHTREACH_PYTHON" outreach_sender.py status` - today's sends, queue, caps, and the "What's in the way" list
 - `"$BRIGHTREACH_PYTHON" lead_engine.py status` - lead inventory and source health
 - `"$BRIGHTREACH_PYTHON" -m pytest -q` - whole test suite (about a minute)
+Tests that need a real database are skipped unless `CONVERSATIONS_TEST_DATABASE_URL` is set. Before a task whose success test needs them, run `"$BRIGHTREACH_PYTHON" scripts/conv_test_db.py` (starts a throwaway local Postgres; Docker Desktop must be running) and `export CONVERSATIONS_TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/brtest`. That variable must only ever point at localhost - these tests wipe the database.
 The mailbox and AgentMail secrets live only in GitHub, so the local "What's in the way" list always says they are missing. For the truth about sending, read the newest cloud run: `gh run view $(gh run list --workflow outreach-send.yml --limit 1 --json databaseId --jq '.[0].databaseId') --log | grep -E 'sender:|agentmail:|"sender"'`. Sends happen only 8:00-17:30 Central on weekdays; zero sends outside that window is not a fault.
 First session only: also read README.md, AGENTS.md, CLAUDE.md, docs/REVENUE_AUTOPILOT.md, docs/OUTREACH_EXECUTION_RULES.md, docs/outreach_sender/README.md, n8n/README.md.
 
