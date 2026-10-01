@@ -40,12 +40,15 @@ def test_email_extraction_deobfuscates_and_drops_junk():
     html = """
       <a href="mailto:office@roofco.com">Email</a>
       <span class="__cf_email__" data-cfemail="%s"></span>
-      <p>sales [at] roofco.com</p> <img src="logo@2x.png"> <p>user@example.com</p>\n      <p>accessibility@roofco.com</p>
+      <p>sales [at] roofco.com</p> <img src="logo@2x.png"> <p>user@example.com</p>
+      <p>accessibility@roofco.com</p>
       <script type="application/ld+json">{"email":"hello@roofco.com"}</script>
     """ % ("2a" + bytes(b ^ 0x2A for b in b"info@roofco.com").hex())
     found = extract_emails(html)
     assert {"office@roofco.com", "info@roofco.com", "sales@roofco.com", "hello@roofco.com"} <= set(found)
-    assert "user@example.com" not in found\n    assert "accessibility@roofco.com" not in found\n    assert not any("png" in e for e in found)
+    assert "user@example.com" not in found
+    assert "accessibility@roofco.com" not in found
+    assert not any("png" in e for e in found)
 
 
 def test_rank_prefers_own_domain_generic_and_drops_third_party():
@@ -119,7 +122,10 @@ def test_rejects_b2b_suppliers_and_city_pages_but_not_trades():
                                                       chains=CHAINS, enrichment=_enr()).level
     assert q("Core & Main Distribution") == "REJECT"
     assert q("Woerner Landscape Supply") == "REJECT"
-    assert q("Gulf Manufacturing Co") == "REJECT"\n    assert qualify(name="Acme Refrigeration", website="https://acme.example", industry="air conditioning system supplier",\n                   chains=CHAINS, enrichment=_enr()).level == "REJECT"\n    assert q("Supreme Plumbing") == "HIGH"
+    assert q("Gulf Manufacturing Co") == "REJECT"
+    assert qualify(name="Acme Refrigeration", website="https://acme.example", industry="air conditioning system supplier",
+                   chains=CHAINS, enrichment=_enr()).level == "REJECT"
+    assert q("Supreme Plumbing") == "HIGH"
     assert q("Bayou Plumbing") == "HIGH"
     assert q("Acme", "https://acme.com/landscape-supply-baton-rouge/") == "REJECT"
     assert q("Acme", "https://acme.com/branches/la-batonrouge-70809-024/") == "REJECT"
