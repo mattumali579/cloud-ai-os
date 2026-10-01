@@ -4,6 +4,7 @@
     python outreach_sender.py cycle [--minutes 8]   the whole loop (below), safe to run any time
     python outreach_sender.py status [--json]       today's numbers and what's blocking 300
     python outreach_sender.py plan                  prepare first emails for Ready leads (sends nothing)
+    python outreach_sender.py queue-audit [--min 100]  count prepared first emails that pass every send check (read only)
     python outreach_sender.py selftest              one real email to the owner through Hostinger, then prove it
     python outreach_sender.py agentmail-selftest    one internal notice to the owner through AgentMail, once a day
     python outreach_sender.py airtable-selftest     count the Airtable rows (read only) and prove the count was saved
@@ -270,6 +271,8 @@ def main(argv=None) -> int:
     s.add_argument("--json", action="store_true")
     s.add_argument("--planner", action="store_true", help="totals + next action, as JSON, for the planner")
     sub.add_parser("plan")
+    qa = sub.add_parser("queue-audit")
+    qa.add_argument("--min", type=int, default=100, help="exit 1 unless at least this many pass")
     sub.add_parser("selftest")
     sub.add_parser("agentmail-selftest")
     sub.add_parser("airtable-selftest")
@@ -291,6 +294,12 @@ def main(argv=None) -> int:
                 print(public(f) if a.json else status.as_text(f))
         elif a.cmd == "plan":
             print(public(sender.plan(conn, cfg)))
+        elif a.cmd == "queue-audit":
+            out = sender.audit_queue(conn)
+            out.update(target=a.min, meets_target=out["passing"] >= a.min)
+            print(public(out))
+            if not out["meets_target"]:
+                return 1
         elif a.cmd == "selftest":
             mb = from_env(cfg)
             if mb is None:

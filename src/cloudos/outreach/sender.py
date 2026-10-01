@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import socket
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -35,6 +36,8 @@ ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT / "config" / "outreach_sender.yaml"
 STALE_CLAIM = timedelta(minutes=15)
 _SUPPRESSED = {"email_suppressed", "domain_suppressed", "company_suppressed", "do_not_contact", "bounced"}
+_USABLE_CONTACT = "email_status IN ('validated','published')"     # the only contacts a first touch may go to
+_AUDIT_LABEL = re.compile(r"[a-z_]+")
 
 
 def load_config(path: Path = CONFIG) -> dict:
@@ -95,12 +98,12 @@ def daily_cap(conn, cfg: dict) -> int:
 # ----------------------------------------------------------------- planning
 def _candidates(conn, limit: int) -> list[dict]:
     return conn.execute(
-        """
+        f"""
         SELECT c.company_id::text, c.company_name, c.domain, c.normalized_domain, c.industry, c.city, c.state,
                c.qualification_status, c.personalization, c.outreach_status, ct.email
         FROM companies c
         JOIN LATERAL (SELECT email FROM contacts WHERE company_id = c.company_id
-                      AND email_status IN ('validated','published') ORDER BY (email_status = 'validated') DESC,
+                      AND {_USABLE_CONTACT} ORDER BY (email_status = 'validated') DESC,
                       (role = 'generic') DESC, discovered_at LIMIT 1) ct ON true
         WHERE c.outreach_status IN ('outreach_ready', 'handed_off') AND c.first_contacted_at IS NULL AND c.active
           AND c.qualification_status IN ('HIGH', 'MEDIUM')
@@ -295,25 +298,65 @@ def record_sent(conn, item: dict, cfg: dict, *, from_email: str, sent_at: dateti
     return mid
 
 
-def send_item(conn, item: dict, mailbox: Mailbox, cfg: dict, *, from_email: str) -> str:
-    """Returns: sent | cancelled | failed | retry | ambiguous | auth."""
+def _refusal(conn, item: dict) -> tuple[str, list[str]] | None:
+    """Why this row must not be sent right now, or None when it may go. Reads only - the caller acts.
+    (guard_error | guard | duplicate_business | qa, the reasons). send_item() and audit_queue() share it."""
     kind = "cold" if item["step"] == 0 else "followup"
     verdict = guard.check_fail_closed(conn, item["recipient"], kind, str(item["company_id"]))
     if verdict.get("allowed") is not True:
-        reasons = verdict.get("reasons") or ["guard_error"]
-        if "guard_error" in reasons:
-            _release(conn, item, delay=timedelta(minutes=10), undo_attempt=True)
-            return "retry"
-        _finish(conn, item, "cancelled", "guard: " + ", ".join(reasons))
-        return "cancelled"
+        reasons = list(verdict.get("reasons") or ["guard_error"])
+        return ("guard_error" if "guard_error" in reasons else "guard"), reasons
     if item["step"] == 0 and _duplicate_in_queue(conn, item["recipient"], str(item["company_id"]), item["queue_id"]):
-        _finish(conn, item, "cancelled", "same business as a company already emailed or queued")
-        return "cancelled"
+        return "duplicate_business", []
     problems = copywriter.qa(copywriter.Email(item["subject"], item["body"], item["copy_variant"] or ""),
                              postal_address=postal_address(),
                              company_name=(store.company(conn, str(item["company_id"])) or {}).get("company_name", ""))
-    if problems:
-        _finish(conn, item, "cancelled", "qa: " + "; ".join(problems))
+    return ("qa", problems) if problems else None
+
+
+def audit_queue(conn) -> dict:
+    """How many prepared first touches would pass every send-time check right now. Reads only: nothing is
+    claimed, cancelled, rewritten or sent, and nothing is committed. Counts and failure categories only."""
+    out = {"audited": 0, "passing": 0, "failing": 0, "failures": {}, "guard_reasons": {}, "qa_problems": {},
+           "postal_address_set": bool(postal_address())}
+
+    def bump(group: str, key: str) -> None:
+        out[group][key] = out[group].get(key, 0) + 1
+
+    rows = conn.execute("SELECT * FROM outreach_queue WHERE state = 'queued' AND step = 0 ORDER BY queue_id").fetchall()
+    for item in rows:
+        out["audited"] += 1
+        refusal = _refusal(conn, item)
+        if refusal is None or refusal[0] in ("duplicate_business", "qa"):
+            # the address must still be one the planner may pick; checked right after the guard
+            usable = conn.execute("SELECT 1 FROM contacts WHERE company_id = %s AND lower(trim(email)) = %s AND "
+                                  + _USABLE_CONTACT + " LIMIT 1", (item["company_id"], item["recipient"])).fetchone()
+            if usable is None:
+                refusal = ("contact_not_eligible", [])
+        if refusal is None:
+            out["passing"] += 1
+            continue
+        out["failing"] += 1
+        bump("failures", refusal[0])
+        for reason in refusal[1]:
+            if refusal[0] == "guard":
+                bump("guard_reasons", reason if _AUDIT_LABEL.fullmatch(str(reason)) else "other")
+            elif refusal[0] == "qa":
+                bump("qa_problems", reason.split(" (")[0])      # never the wording that tripped it
+    conn.rollback()                                              # nothing was written; end the read
+    return out
+
+
+def send_item(conn, item: dict, mailbox: Mailbox, cfg: dict, *, from_email: str) -> str:
+    """Returns: sent | cancelled | failed | retry | ambiguous | auth."""
+    refusal = _refusal(conn, item)
+    if refusal:
+        why, reasons = refusal
+        if why == "guard_error":
+            _release(conn, item, delay=timedelta(minutes=10), undo_attempt=True)
+            return "retry"
+        _finish(conn, item, "cancelled", {"guard": "guard: " + ", ".join(reasons), "qa": "qa: " + "; ".join(reasons),
+                                          "duplicate_business": "same business as a company already emailed or queued"}[why])
         return "cancelled"
     msgid = item["message_id_header"]
     if not msgid:
