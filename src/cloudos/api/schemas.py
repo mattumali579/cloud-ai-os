@@ -72,6 +72,6 @@ class EmailSendRequest(EmailDraftRequest):
 class RevenueOSRunRequest(BaseModel):
     """Whitelisted visual-controller action; no arbitrary command execution."""
     model_config = ConfigDict(extra="forbid")
-    action: Literal["state", "product_verify", "lead_status", "lead_cycle", "outreach_qa", "reply_check", "send"]
+    action: Literal["state", "decide", "research", "plan", "build", "troubleshoot", "notify", "product_verify", "lead_status", "lead_cycle", "outreach_qa", "reply_check", "send"]
     execution_key: Optional[str] = Field(default=None, max_length=120)
     allow_send: bool = False
