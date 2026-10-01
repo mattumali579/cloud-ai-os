@@ -16,6 +16,7 @@ therefore run over a SESSION-mode connection -- see docs/SUPABASE.md.
 """
 from __future__ import annotations
 
+import atexit
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 _pool: Optional[psycopg_pool.ConnectionPool] = None
 _pool_lock = threading.Lock()
+_atexit_registered = False
 
 
 def get_pool() -> psycopg_pool.ConnectionPool:
@@ -59,7 +61,7 @@ def get_pool() -> psycopg_pool.ConnectionPool:
 
     Raises CloudOSError(DEPENDENCY_UNAVAILABLE) if DATABASE_URL is unset.
     """
-    global _pool
+    global _pool, _atexit_registered
     if _pool is not None:
         return _pool
     with _pool_lock:
@@ -80,6 +82,13 @@ def get_pool() -> psycopg_pool.ConnectionPool:
                 name="cloudos",
                 open=True,
             )
+            # Close the pool while its threads can still be joined.  Left to
+            # ConnectionPool.__del__ during interpreter finalization, Python
+            # 3.13+ raises PythonFinalizationError ("cannot join thread at
+            # interpreter shutdown") after an otherwise clean exit.
+            if not _atexit_registered:
+                atexit.register(reset_pool)
+                _atexit_registered = True
         return _pool
 
 

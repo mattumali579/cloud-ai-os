@@ -153,6 +153,47 @@ def test_reset_pool_is_safe_without_a_pool():
     db.reset_pool()  # idempotent
 
 
+def test_pool_cleanup_is_registered_once_and_idempotent(set_db_url, monkeypatch):
+    class Pool:
+        def __init__(self, *args, **kwargs):
+            self.closes = 0
+
+        def close(self):
+            self.closes += 1
+
+    registered = []
+    monkeypatch.setattr(db.psycopg_pool, "ConnectionPool", Pool)
+    monkeypatch.setattr(db.atexit, "register", registered.append)
+    monkeypatch.setattr(db, "_atexit_registered", False)
+    set_db_url("postgresql://cloudos:x@127.0.0.1:9/cloudos")
+
+    first = db.get_pool()
+    assert db.get_pool() is first
+    assert registered == [db.reset_pool]
+
+    registered[0]()  # what the interpreter runs at exit
+    assert first.closes == 1
+    assert db._pool is None
+    registered[0]()  # idempotent: no second close, no error
+    assert first.closes == 1
+
+    second = db.get_pool()  # a rebuilt pool is covered by the same hook
+    assert second is not first
+    assert registered == [db.reset_pool]
+    registered[0]()
+    assert second.closes == 1
+
+
+def test_pool_cleanup_swallows_close_errors(monkeypatch):
+    class Pool:
+        def close(self):
+            raise RuntimeError("simulated close failure")
+
+    monkeypatch.setattr(db, "_pool", Pool())
+    db.reset_pool()  # must never raise at interpreter exit
+    assert db._pool is None
+
+
 # ---------------------------------------------------------------------------
 # migrate() logic against a fake connection
 
