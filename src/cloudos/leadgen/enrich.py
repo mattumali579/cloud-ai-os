@@ -33,7 +33,7 @@ from cloudos.leadgen.normalize import (
 USER_AGENT = "Mozilla/5.0 (compatible; BrightReachLeadResearch/1.0; +https://github.com/mattumali579/cloud-ai-os)"
 
 _EMAIL_IN_TEXT = re.compile(r"[a-z0-9._%+\-]{1,64}@[a-z0-9.\-]{1,190}\.[a-z]{2,24}", re.I)
-_JUNK_LOCAL = re.compile(r"^(example|test|noreply|no-reply|donotreply|do-not-reply|user|name|email|your|yourname|john|jane|abuse|postmaster|webmaster|privacy|wordpress|careers|career|jobs|job|hr|hiring|recruiting|resumes|employment|billing|accounting|payments|ap|invoices)$")
+_JUNK_LOCAL = re.compile(r"^(example|test|noreply|no-reply|donotreply|do-not-reply|user|name|email|your|yourname|john|jane|abuse|postmaster|webmaster|privacy|accessibility|wordpress|careers|career|jobs|job|hr|hiring|recruiting|resumes|employment|billing|accounting|payments|ap|invoices)$")
 _JUNK_DOMAIN = re.compile(r"(sentry|wixpress|example\.|domain\.com|email\.com|yoursite|yourdomain|godaddy|squarespace|wix\.com|mysite|sentry\.io|\.png|\.jpg|\.jpeg|\.gif|\.webp|\.svg)")
 _CONTACT_LINK = re.compile(r"contact|about|our-team|staff|our-story|get-in-touch|reach-us|location", re.I)
 _SKIP_LINK = re.compile(r"career|job|join|employ|hiring|apply|resume|recruit|privacy|terms|login|cart", re.I)
