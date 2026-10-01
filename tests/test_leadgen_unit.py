@@ -84,6 +84,21 @@ def test_qualification_levels():
         assert q(enrichment=_enr() if level == "HIGH" else _enr(email="a@gmail.com")).outreach_ready
 
 
+def test_legacy_isp_mailbox_is_not_outreach_ready():
+    q = lambda email: qualify(
+        name="Local Repair Shop",
+        website="https://localrepair.example",
+        industry="auto_repair",
+        chains=CHAINS,
+        enrichment=_enr(email=email),
+    )
+    legacy = q("shop@bellsouth.net")
+    assert legacy.level == "LOW"
+    assert legacy.outreach_ready is False
+    assert "legacy ISP mailbox" in legacy.reason
+    assert q("localrepair@gmail.com").outreach_ready is True
+
+
 def test_osm_filter_matching():
     assert _matches({"craft": "roofer", "website": "x"}, '["craft"="roofer"]')
     assert not _matches({"craft": "plumber"}, '["craft"="roofer"]')
