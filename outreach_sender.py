@@ -104,18 +104,26 @@ def selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
 
 
 def agentmail_selftest(conn, cfg: dict, post=None) -> dict:
-    """One generic internal notice to the manager inbox through the normal AgentMail path. Passes only when
-    AgentMail accepted it in THIS call. Deduped per UTC day: asking twice never sends a second one."""
+    """One generic internal notice to the manager inbox through the normal AgentMail path. First creates any
+    configured role inbox the account is missing (never deletes or renames one). Passes only when AgentMail
+    accepted the notice in THIS call. Deduped per UTC day: a delivered one is never sent again; one that was
+    saved but never went out is retried."""
     post = post or agentmail.http_poster(cfg)
     if post is None:
         return {"ok": False, "blocked": f"{cfg['agentmail']['api_env']} not set"}   # nothing queued either
-    day = datetime.now(timezone.utc).date()
-    r = agentmail.notify(conn, cfg, role="manager", dedupe_key=f"selftest:{day}", post=post,
+    inboxes = agentmail.ensure_inboxes(cfg)
+    if not inboxes["ok"]:
+        return {"ok": False, "inboxes": inboxes}                                    # nothing queued, nothing sent
+    key = f"selftest:{datetime.now(timezone.utc).date()}"
+    r = agentmail.notify(conn, cfg, role="manager", dedupe_key=key, post=post,
                          subject="BrightReach AgentMail self-test",
                          text="This is the internal check that manager notices can be delivered. Nothing to do.")
     if not r["created"]:
-        return {"ok": False, "duplicate": True}
-    return {"ok": r["delivered"] is True, "delivered": r["delivered"], "receipt": r["receipt"]}
+        r = agentmail.retry(conn, cfg, key, post=post)
+        if not r["retried"]:
+            return {"ok": False, "duplicate": True}
+    return {"ok": r["delivered"] is True, "delivered": r["delivered"], "receipt": r["receipt"],
+            "retried": bool(r.get("retried")), "inboxes": inboxes}
 
 
 def airtable_selftest(conn) -> dict:

@@ -168,6 +168,9 @@ def test_missing_credentials_still_exits_nonzero(run):
 
 # ------------------------------------------------- `outreach_sender.py agentmail-selftest`
 KEY = "am_test_key_do_not_print"
+OTHER_INBOX = "someone.elses.inbox@agentmail.test"     # an inbox in the account that is none of ours
+AM_ERROR = f"denied\n  for {OTHER_INBOX} using {KEY} " + "x" * 400
+ALL_ROLES = ["followup", "manager", "research"]
 
 
 class FakeNoticeConn:
@@ -183,8 +186,11 @@ class FakeNoticeConn:
             key = params[4]
             if key not in self.rows:
                 self.rows[key] = {"id": len(self.rows) + 1, "code": params[1], "meta": json.loads(params[3]),
+                                  "severity": params[0], "message": params[2],
                                   "delivered": False, "receipt": None, "attempts": 0}
                 self._row = {"id": self.rows[key]["id"]}
+        elif sql.startswith("SELECT id, severity, message, meta, delivered FROM notifications"):
+            self._row = self.rows.get(params[0])
         elif sql.startswith("UPDATE notifications"):
             row = next(r for r in self.rows.values() if r["id"] == params[3])
             row.update(delivered=params[0], receipt=params[2], attempts=row["attempts"] + 1)
@@ -203,7 +209,11 @@ def am(monkeypatch, capsys):
     monkeypatch.setenv(cfg["agentmail"]["owner_env"], OWNER)
     monkeypatch.setenv(cfg["agentmail"]["api_env"], KEY)
     conn = FakeNoticeConn()
-    posts: list[tuple] = []
+    posts: list[tuple] = []        # notices sent
+    creates: list[tuple] = []      # inboxes created
+    gets: list[tuple] = []         # inbox listings
+    roles = cfg["agentmail"]["inboxes"]
+    account = [OTHER_INBOX, *roles.values()]      # what the AgentMail account holds; tests remove from it
 
     @contextmanager
     def get_conn():
@@ -211,24 +221,41 @@ def am(monkeypatch, capsys):
 
     monkeypatch.setattr(outreach_sender.db, "get_conn", get_conn)
 
-    def _run(status_code=200):
+    def _run(status_code=200, list_status=200, create_status=200, listing_lags=False):
         class Resp:
-            def json(self):
-                return {"message_id": "am-msg-1"}
+            def __init__(self, status, body):
+                self.status_code, self._body = status, body
+                self.text = "" if 200 <= status < 300 else AM_ERROR
 
-        Resp.status_code = status_code
+            def json(self):
+                return self._body
+
+        def fake_get(url, params=None, timeout=None, headers=None):
+            gets.append((url, headers))
+            return Resp(list_status, {"count": len(account), "inboxes": [{"inbox_id": a} for a in account]})
 
         def fake_post(url, json=None, timeout=None, headers=None):
+            if url == "https://api.agentmail.to/v0/inboxes":
+                creates.append((json, headers))
+                made = f"{json['username']}@{json['domain']}"
+                if 200 <= create_status < 300 and not listing_lags:
+                    account.append(made)
+                return Resp(create_status, {"inbox_id": made})
             posts.append((url, json, headers))
-            return Resp()
+            return Resp(status_code, {"message_id": "am-msg-1"})
 
-        monkeypatch.setattr(outreach_sender.agentmail.httpx, "post", fake_post)   # nothing leaves the machine
+        monkeypatch.setattr(outreach_sender.agentmail.httpx, "get", fake_get)     # nothing leaves the machine
+        monkeypatch.setattr(outreach_sender.agentmail.httpx, "post", fake_post)
         code = outreach_sender.main(["agentmail-selftest"])
         out = capsys.readouterr().out
         assert KEY not in out and OWNER not in out and FROM not in out
+        assert "@" not in out.replace("<email>", "")                  # no inbox address of any kind
+        assert all(u == "https://api.agentmail.to/v0/inboxes" for u, _ in gets)
+        # only ever adds: nothing but the send path and the create path is POSTed, and nothing is deleted/renamed
+        assert all(u.endswith("/messages/send") for u, _, _ in posts)
         return code, json.loads(out)
 
-    _run.conn, _run.posts, _run.cfg = conn, posts, cfg
+    _run.conn, _run.posts, _run.creates, _run.gets, _run.cfg, _run.account = conn, posts, creates, gets, cfg, account
     return _run
 
 
@@ -243,6 +270,11 @@ def test_agentmail_selftest_accepted_exits_zero_and_records_delivery(am):
     (key, row), = am.conn.rows.items()
     assert key.startswith("am:selftest:") and row["code"] == "agentmail.manager"
     assert row["delivered"] is True and row["receipt"].startswith("agentmail am-msg-1") and row["attempts"] == 1
+    # every configured inbox already existed: looked once, created nothing, reported counts and role names only
+    assert len(am.gets) == 1 and am.gets[0][1]["Authorization"] == f"Bearer {KEY}"
+    assert am.creates == [] and shown["retried"] is False
+    assert shown["inboxes"] == {"ok": True, "count": 4, "present": ALL_ROLES, "missing": [], "created": [],
+                                "list_status": 200}
 
 
 def test_agentmail_selftest_missing_key_exits_nonzero_and_queues_nothing(am, monkeypatch):
@@ -250,14 +282,74 @@ def test_agentmail_selftest_missing_key_exits_nonzero_and_queues_nothing(am, mon
     code, shown = am(200)
     assert code == 3 and shown["ok"] is False and "blocked" in shown
     assert am.posts == [] and am.conn.rows == {}
+    assert am.gets == [] and am.creates == []
+
+
+def _sanitized(detail: str) -> None:
+    assert detail == "denied for <email> using <key> " + "x" * 129      # one short line, 160 characters at most
+    assert len(detail) == 160
 
 
 def test_agentmail_selftest_provider_rejection_exits_nonzero_and_is_not_delivered(am):
     code, shown = am(403)
     assert code == 1 and shown["ok"] is False and shown["delivered"] is False
-    assert len(am.posts) == 1
+    assert len(am.posts) == 1 and am.creates == []
     (row,) = am.conn.rows.values()
-    assert row["delivered"] is False and row["receipt"] == "agentmail HTTP 403"
+    assert row["delivered"] is False and row["receipt"].startswith("agentmail HTTP 403: ")
+    assert shown["receipt"] == row["receipt"]
+    _sanitized(row["receipt"].removeprefix("agentmail HTTP 403: "))
+
+
+def test_agentmail_selftest_creates_only_the_missing_inboxes_then_retries_the_undelivered_notice(am):
+    inboxes = am.cfg["agentmail"]["inboxes"]
+    am.account.remove(inboxes["manager"])
+    am.account.remove(inboxes["followup"])
+    want = [{"username": "brightreach.followup", "domain": "agentmail.to",
+             "client_id": "brightreach-followup-brightreach-followup-agentmail-to"},
+            {"username": "brightreach.manager", "domain": "agentmail.to",
+             "client_id": "brightreach-manager-brightreach-manager-agentmail-to"}]
+    # run 1: both missing inboxes are created, but the notice is refused -> saved, not delivered, not a success
+    code, shown = am(404, listing_lags=True)
+    assert code == 1 and shown["ok"] is False and shown["delivered"] is False and shown["retried"] is False
+    assert [c[0] for c in am.creates] == want                        # research existed: never re-created
+    assert all(h["Authorization"] == f"Bearer {KEY}" for _, h in am.creates)
+    assert shown["inboxes"] == {"ok": True, "count": 2, "present": ["research"], "missing": ["followup", "manager"],
+                                "created": ["followup", "manager"], "list_status": 200,
+                                "create_status": {"followup": 200, "manager": 200}}
+    (row,) = am.conn.rows.values()
+    assert row["delivered"] is False and row["attempts"] == 1
+    # run 2: the listing still lags, so the same two are asked for again with the very same payloads (idempotent);
+    # the saved notice is retried - same row, no second row - and this time the provider confirms it
+    code, shown = am(200)
+    assert code == 0 and shown["ok"] is True and shown["delivered"] is True and shown["retried"] is True
+    assert [c[0] for c in am.creates] == want + want
+    assert len(am.conn.rows) == 1 and row["delivered"] is True and row["attempts"] == 2
+    assert row["receipt"].startswith("agentmail am-msg-1") and shown["receipt"] == row["receipt"]
+    assert len(am.posts) == 2 and am.posts[0][:2] == am.posts[1][:2]
+    assert am.posts[1][0].endswith(f"/inboxes/{inboxes['manager']}/messages/send") and am.posts[1][1]["to"] == [OWNER]
+    # run 3: everything exists and the notice was delivered -> nothing created, nothing sent again
+    code, shown = am(200)
+    assert code == 1 and shown == {"ok": False, "duplicate": True}
+    assert len(am.creates) == 4 and len(am.posts) == 2 and row["attempts"] == 2
+
+
+def test_agentmail_selftest_list_failure_exits_nonzero_and_creates_and_sends_nothing(am):
+    am.account.remove(am.cfg["agentmail"]["inboxes"]["manager"])
+    code, shown = am(200, list_status=401)
+    assert code == 1 and shown["ok"] is False
+    assert shown["inboxes"]["ok"] is False and shown["inboxes"]["list_status"] == 401
+    _sanitized(shown["inboxes"]["error"])
+    assert len(am.gets) == 1 and am.creates == [] and am.posts == [] and am.conn.rows == {}
+
+
+def test_agentmail_selftest_create_failure_exits_nonzero_and_sends_nothing(am):
+    am.account.remove(am.cfg["agentmail"]["inboxes"]["manager"])
+    code, shown = am(200, create_status=403)
+    assert code == 1 and shown["ok"] is False
+    assert shown["inboxes"]["missing"] == ["manager"] and shown["inboxes"]["created"] == []
+    assert shown["inboxes"]["list_status"] == 200 and shown["inboxes"]["create_status"] == {"manager": 403}
+    _sanitized(shown["inboxes"]["error"])
+    assert len(am.creates) == 1 and am.posts == [] and am.conn.rows == {}
 
 
 def test_agentmail_selftest_twice_sends_once_and_second_run_is_not_a_success(am):

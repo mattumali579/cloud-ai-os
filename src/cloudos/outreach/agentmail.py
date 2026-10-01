@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Callable
 
 import httpx
@@ -29,6 +30,63 @@ def _to(cfg: dict) -> str:
     return (os.environ.get(cfg["agentmail"]["owner_env"]) or "").strip() or cfg["agentmail"]["inboxes"]["manager"]
 
 
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
+
+
+def _clean(text, key: str) -> str:
+    """A provider error body made safe for a PUBLIC log: one short line, no API key, no addresses."""
+    text = " ".join(str(text or "").split())
+    if key:
+        text = text.replace(key, "<key>")
+    return EMAIL_RE.sub("<email>", text)[:160]
+
+
+def ensure_inboxes(cfg: dict) -> dict:
+    """Create the configured role inboxes the account does not have yet. Never deletes or renames one, and is
+    safe to repeat (one stable client_id per role). Reports counts, role names and HTTP statuses only."""
+    key, roles = _key(cfg), cfg["agentmail"]["inboxes"]
+    headers = {"Authorization": f"Bearer {key}"}
+    out: dict = {"ok": False, "count": 0, "present": [], "missing": [], "created": []}
+    have: set[str] = set()
+    try:
+        token = None
+        for _ in range(20):
+            r = httpx.get(f"{API}/inboxes", params={"page_token": token} if token else None, timeout=30,
+                          headers=headers)
+            out["list_status"] = r.status_code
+            if not 200 <= r.status_code < 300:
+                out["error"] = _clean(getattr(r, "text", ""), key)
+                return out
+            body = r.json()
+            for i in body.get("inboxes") or []:
+                have |= {str(i.get(k) or "").lower() for k in ("inbox_id", "email")}
+            token = body.get("next_page_token")
+            if not token:
+                break
+        have.discard("")
+        out["count"] = len(have)
+        out["present"] = sorted(role for role, addr in roles.items() if addr.lower() in have)
+        out["missing"] = sorted(set(roles) - set(out["present"]))
+        for role in out["missing"]:
+            username, _, domain = roles[role].lower().partition("@")
+            r = httpx.post(f"{API}/inboxes", timeout=30, headers=headers, json={
+                "username": username, "domain": domain,
+                "client_id": f"brightreach-{role}-" + re.sub(r"[^a-z0-9]+", "-", roles[role].lower())})
+            out.setdefault("create_status", {})[role] = r.status_code
+            if not 200 <= r.status_code < 300:
+                out["error"] = _clean(getattr(r, "text", ""), key)
+                return out
+            if str(r.json().get("inbox_id") or "").lower() != roles[role].lower():
+                out["error"] = f"the {role} inbox came back under a different address"
+                return out
+            out["created"].append(role)
+    except Exception as exc:  # noqa: BLE001 - PUBLIC log: the error type only
+        out["error"] = type(exc).__name__
+        return out
+    out["ok"] = True
+    return out
+
+
 def http_poster(cfg: dict) -> Poster | None:
     key = _key(cfg)
     if not key:
@@ -40,7 +98,8 @@ def http_poster(cfg: dict) -> Poster | None:
                            headers={"Authorization": f"Bearer {key}"})
             if 200 <= r.status_code < 300:
                 return True, "agentmail " + str(r.json().get("message_id", ""))[:120]
-            return False, f"agentmail HTTP {r.status_code}"
+            detail = _clean(getattr(r, "text", ""), key)
+            return False, f"agentmail HTTP {r.status_code}" + (f": {detail}" if detail else "")
         except Exception as exc:  # noqa: BLE001 - a notice must never crash the sender
             return False, f"agentmail {type(exc).__name__}"
     return post
@@ -77,6 +136,17 @@ def _deliver(conn, cfg, nid, inbox, subject, text, severity, post, discord) -> d
                  "delivery_receipt = %s, attempts = attempts + 1 WHERE id = %s", (ok, ok, receipt[:200], nid))
     conn.commit()
     return {"delivered": ok, "receipt": receipt}
+
+
+def retry(conn, cfg: dict, dedupe_key: str, post: Poster | None = None) -> dict:
+    """Try one already-saved notice again if it never went out. A delivered one is left alone (never sent twice)."""
+    r = conn.execute("SELECT id, severity, message, meta, delivered FROM notifications WHERE dedupe_key = %s",
+                     (f"am:{dedupe_key}",)).fetchone()
+    if r is None or r["delivered"]:
+        return {"retried": False}
+    meta = r["meta"] if isinstance(r["meta"], dict) else json.loads(r["meta"] or "{}")
+    return {"retried": True, **_deliver(conn, cfg, r["id"], meta.get("inbox"), meta.get("subject", "BrightReach"),
+                                        r["message"], r["severity"], post, None)}
 
 
 def flush(conn, cfg: dict, post: Poster | None = None, max_attempts: int = 8) -> dict:
