@@ -42,7 +42,8 @@ def schema():
         c.execute("INSERT INTO schema_migrations (version) VALUES ('004_school_system')")
     with psycopg.connect(URL, row_factory=dict_row) as c:
         applied = db._migrate(c)
-    assert applied[-1].startswith("009")
+    assert any(v.startswith("009") for v in applied)
+    assert any(v.startswith("010") for v in applied)
     yield
 
 
