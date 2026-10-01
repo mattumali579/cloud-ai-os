@@ -157,15 +157,33 @@ def as_text(f: dict) -> str:
 
 
 # ------------------------------------------------------------------ events
+def _draft_note(r: dict) -> str:
+    """The pending suggested reply for this exact message, cut short - or a plain statement
+    that there is none. Nothing here sends or approves anything."""
+    body = " ".join((r.get("draft_body") or "").split())
+    if not body:
+        return "No safe draft was prepared for this reply - it needs to be written by hand."
+    if len(body) > 600:
+        body = body[:600].rstrip() + "..."
+    subject = " ".join((r.get("draft_subject") or "").split())[:150] or "(no subject)"
+    return (f"Suggested reply (NOT sent - approval is required before it goes out):\nSubject: {subject}\n\n{body}")
+
+
 def events(conn, cfg: dict, post=None, discord=None) -> dict:
     """New replies and stopped sequences -> one AgentMail notice each (dedupe keys make reruns free)."""
     n = {"manager": 0, "followup": 0}
     rows = conn.execute(
         """
         SELECT ra.message_id::text mid, ra.classification, ra.interpretation, ra.recommended_action,
-               c.company_name, m.sender, left(m.body, 600) body, m.company_id::text cid
+               c.company_name, m.sender, left(m.body, 600) body, m.company_id::text cid,
+               d.subject draft_subject, left(d.body, 800) draft_body
         FROM reply_analyses ra JOIN outreach_messages m ON m.message_id = ra.message_id
         LEFT JOIN companies c ON c.company_id = m.company_id
+        LEFT JOIN LATERAL (
+            SELECT subject, body FROM outreach_drafts
+            WHERE company_id = m.company_id AND based_on_message_id = m.message_id
+              AND state IN ('awaiting_approval','approved')
+            ORDER BY created_at DESC LIMIT 1) d ON true
         WHERE ra.created_at > now() - interval '3 days' AND m.provider = 'hostinger'
         ORDER BY ra.created_at
         """).fetchall()
@@ -179,7 +197,7 @@ def events(conn, cfg: dict, post=None, discord=None) -> dict:
                                    subject=f"{who} replied: {label.replace('_', ' ').lower()}",
                                    text=f"{who} ({r['sender']}) wrote back.\n\nThey said: \"{said}\"\n\n"
                                         f"What it means: {r['interpretation']}\nWhat to do: {r['recommended_action']}\n\n"
-                                        "Automatic follow-ups to them are stopped. A suggested reply is in the drafts.")
+                                        "Automatic follow-ups to them are stopped.\n\n" + _draft_note(r))
             n["manager"] += int(res["created"])
         if label == "DELIVERY_FAILURE":
             continue
