@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
-from cloudos.revenue_os import SAFE_ACTIONS
+from cloudos import config
+from cloudos.outreach import sender
+from cloudos.revenue_os import SAFE_ACTIONS, _planner_bottlenecks
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,3 +71,34 @@ def test_visual_workflow_contains_full_research_build_repair_revenue_loop():
 def test_workflow_is_not_marked_active_before_live_n8n_import():
     data = json.loads((ROOT / "n8n" / "revenue_os_main.json").read_text(encoding="utf-8"))
     assert data["active"] is False
+
+
+def test_installed_runtime_uses_central_repo_root_for_outreach_config():
+    assert sender.CONFIG == config.REPO_ROOT / "config" / "outreach_sender.yaml"
+
+
+def test_missing_agentmail_is_degraded_not_a_revenue_blocker():
+    planner = {"blocking": ["AgentMail key not saved yet - status mail waits (urgent items go to Discord)"]}
+    assert _planner_bottlenecks(planner) == []
+
+
+def test_local_compose_wires_real_repo_and_n8n_internal_api():
+    import yaml
+
+    compose = yaml.safe_load((ROOT / "infra" / "docker" / "docker-compose.yml").read_text(encoding="utf-8-sig"))
+    api = compose["services"]["agent-api"]
+    assert api["working_dir"] == "/workspace"
+    assert api["environment"]["CLOUDOS_ROOT"] == "/workspace"
+    assert api["environment"]["PYTHONPATH"] == "/workspace/src"
+    assert any(v.get("target") == "/workspace" for v in api["volumes"] if isinstance(v, dict))
+
+    n8n = compose["services"]["n8n"]["environment"]
+    assert n8n["N8N_BLOCK_ENV_ACCESS_IN_NODE"] == "false"
+    assert n8n["AGENT_API_URL"] == "http://agent-api:8080"
+
+
+def test_api_image_contains_subscription_cli_workers():
+    dockerfile = (ROOT / "infra" / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    assert "@openai/codex@" in dockerfile
+    assert "@anthropic-ai/claude-code@" in dockerfile
+    assert "git" in dockerfile
