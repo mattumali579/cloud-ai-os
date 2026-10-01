@@ -33,6 +33,15 @@ FREEMAIL = {
     "frontier.com", "suddenlink.net", "embarqmail.com", "q.com",
 }
 
+# Legacy consumer/ISP mail domains are disproportionately stale for business
+# outreach. MX proves the provider exists, not that a decades-old mailbox still
+# does. Keep them discoverable, but do not promote them into the send-ready queue.
+LEGACY_ISP_MAIL = {
+    "att.net", "sbcglobal.net", "bellsouth.net", "cox.net", "comcast.net",
+    "verizon.net", "charter.net", "earthlink.net", "windstream.net",
+    "centurylink.net", "frontier.com", "suddenlink.net", "embarqmail.com", "q.com",
+}
+
 _TWO_LEVEL_SUFFIXES = {"co.uk", "com.au", "co.nz", "com.mx", "com.br", "co.za", "org.uk", "ac.uk"}
 
 _NAME_NOISE = re.compile(
