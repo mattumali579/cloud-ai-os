@@ -117,7 +117,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({action:'state',execution_key:$execution.id}) }}",
+        "jsonBody": "={{ JSON.stringify({action:'state',execution_key:$execution.id,goal:$('GOAL INPUT').item.json.goal}) }}",
         "options": {
           "timeout": 30000
         }
