@@ -361,7 +361,7 @@ def test_agentmail_selftest_twice_sends_once_and_second_run_is_not_a_success(am)
 
 def test_workflow_has_a_separate_agentmail_selftest_mode():
     yml = (outreach_sender.ROOT / ".github" / "workflows" / "outreach-send.yml").read_text(encoding="utf-8")
-    assert "options: [cycle, status, selftest, agentmail-selftest, airtable-selftest]" in yml
+    assert "options: [cycle, status, selftest, agentmail-selftest, airtable-selftest, queue-audit]" in yml
     assert "            agentmail-selftest) python outreach_sender.py agentmail-selftest ;;" in yml
     assert "            selftest) python outreach_sender.py selftest ;;" in yml
 
@@ -497,7 +497,22 @@ def test_airtable_selftest_saved_count_mismatch_exits_nonzero(at, persist):
 
 def test_workflow_has_a_separate_airtable_selftest_mode():
     yml = (outreach_sender.ROOT / ".github" / "workflows" / "outreach-send.yml").read_text(encoding="utf-8")
-    assert "options: [cycle, status, selftest, agentmail-selftest, airtable-selftest]" in yml
+    assert "options: [cycle, status, selftest, agentmail-selftest, airtable-selftest, queue-audit]" in yml
     assert "            airtable-selftest) python outreach_sender.py airtable-selftest ;;" in yml
     assert "            *) python outreach_sender.py cycle --minutes 8" in yml          # normal cycles unchanged
     assert "default: cycle" in yml
+
+
+def test_workflow_has_a_separate_read_only_queue_audit_mode():
+    yml = (outreach_sender.ROOT / ".github" / "workflows" / "outreach-send.yml").read_text(encoding="utf-8")
+    assert "options: [cycle, status, selftest, agentmail-selftest, airtable-selftest, queue-audit]" in yml
+    assert yml.count("queue-audit)") == 1
+    assert "            queue-audit) python outreach_sender.py queue-audit --min 100 ;;" in yml
+    # the other modes and the normal cycle are untouched, and a scheduled run (no input) is still a cycle
+    assert "            status) python outreach_sender.py status ;;" in yml
+    assert "            selftest) python outreach_sender.py selftest ;;" in yml
+    assert "            agentmail-selftest) python outreach_sender.py agentmail-selftest ;;" in yml
+    assert "            airtable-selftest) python outreach_sender.py airtable-selftest ;;" in yml
+    assert "            *) python outreach_sender.py cycle --minutes 8 --out cycle.json > /dev/null" in yml
+    assert 'case "${{ inputs.mode || \'cycle\' }}" in' in yml
+    assert "default: cycle" in yml and "- cron: '3,33 * * * *'" in yml
