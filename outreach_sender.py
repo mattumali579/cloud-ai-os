@@ -72,11 +72,14 @@ def selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
                 body="This is the one-time check that the outreach mailbox can send. Nothing to do.\n\n"
                      f"Sent {datetime.now(timezone.utc).isoformat()} by the cloud sender.")
     res = mailbox.send(msg)
-    out = {"accepted": res.ok, "detail": res.detail}
+    out = {"ok": False, "accepted": res.ok, "detail": res.detail}
     if res.ok:
         sender._file_copy(mailbox, msg, mid)
         out["in_sent"] = bool(mailbox.in_sent(mid))
-        _set_state(conn, "selftest", {"ok": True, "message_id": mid, "at": datetime.now(timezone.utc), **out})
+        # passed only when both are proven: the provider took it AND that same Message-ID is in Sent
+        if out["in_sent"]:
+            out["ok"] = True
+            _set_state(conn, "selftest", {"message_id": mid, "at": datetime.now(timezone.utc), **out})
     return out
 
 
@@ -233,7 +236,10 @@ def main(argv=None) -> int:
             if mb is None:
                 print("BLOCKED: HOSTINGER_EMAIL / HOSTINGER_EMAIL_PASSWORD not set")
                 return 3
-            print(public(selftest(conn, cfg, mb, os.environ[cfg["sender"]["from_email_env"]].strip())))
+            out = selftest(conn, cfg, mb, os.environ[cfg["sender"]["from_email_env"]].strip())
+            print(public(out))
+            if not out["ok"]:
+                return 1
         elif a.cmd == "airtable":
             print(public(airtable_sync.sync(conn, cfg)))
     return 0
