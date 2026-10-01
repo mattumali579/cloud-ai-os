@@ -26,12 +26,14 @@ If a layer is blocked by something only the owner can provide (a password, a log
 
 ## Live state - run these, read the output
 All run from the repo root in the bash terminal. They are read-only.
+In this terminal plain `python` is Hermes's own interpreter and lacks the project's packages. Always use `"$BRIGHTREACH_PYTHON"` (set by the launcher). Do not create virtualenvs or run `uv`.
 - `git status -sb && git log --oneline -5`
 - `gh run list --limit 15` - what the cloud jobs did (Lead Engine, Outreach Send, Outreach Replies, Ticker)
-- `python outreach_sender.py status` - today's sends, queue, caps, and the "What's in the way" list
-- `python outreach_status.py` - replies, positive replies, top prospects, what needs the owner
-- `python lead_engine.py status` - lead inventory and source health
-- `python -m pytest -q` - whole test suite (about a minute)
+- `"$BRIGHTREACH_PYTHON" outreach_sender.py status` - today's sends, queue, caps, and the "What's in the way" list
+- `"$BRIGHTREACH_PYTHON" outreach_status.py` - replies, positive replies, top prospects, what needs the owner
+- `"$BRIGHTREACH_PYTHON" lead_engine.py status` - lead inventory and source health
+- `"$BRIGHTREACH_PYTHON" -m pytest -q` - whole test suite (about a minute)
+The mailbox and AgentMail secrets live only in GitHub, so the local "What's in the way" list always says they are missing. For the truth about sending, read the newest cloud run: `gh run view $(gh run list --workflow outreach-send.yml --limit 1 --json databaseId --jq '.[0].databaseId') --log | grep -E 'sender:|agentmail:|"sender"'`. Sends happen only 8:00-17:30 Central on weekdays; zero sends outside that window is not a fault.
 First session only: also read README.md, AGENTS.md, CLAUDE.md, docs/REVENUE_AUTOPILOT.md, docs/OUTREACH_EXECUTION_RULES.md, docs/outreach_sender/README.md, n8n/README.md.
 
 ## Revenue priorities
@@ -56,7 +58,7 @@ First session only: also read README.md, AGENTS.md, CLAUDE.md, docs/REVENUE_AUTO
 ## Claude delegation
 For any code change bigger than a one-line edit, hand it to Claude Code:
 
-`python scripts/claude_task.py "<specific task: files, constraints, the exact test command to run>" --max-turns 15`
+`"$BRIGHTREACH_PYTHON" scripts/claude_task.py "<specific task: files, constraints, the exact test command to run>" --max-turns 15`
 
 Call the terminal tool with a timeout of at least 900 seconds for this command. It runs Claude on the owner's subscription with metered keys removed, lets Claude edit files and run tests, and blocks it from pushing, committing, sending email, or scheduling. It prints JSON:
 - `files_changed` comes from git and is the evidence of what changed.

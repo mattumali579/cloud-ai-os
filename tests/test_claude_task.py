@@ -86,6 +86,20 @@ def test_metered_keys_never_reach_claude(monkeypatch):
     assert claude_task.base.run_cli is base.run_cli     # the handoff uses the scrubbing runner
 
 
+def test_claude_gets_the_project_python_first_on_path(repo):
+    env = claude_task.project_env({"BRIGHTREACH_PYTHON": "/opt/proj/bin/python", "PATH": "/hermes/venv"})
+    assert env["PATH"].split(claude_task.os.pathsep)[0] == str(Path("/opt/proj/bin"))
+    assert env["PATH"].endswith("/hermes/venv")
+    seen = {}
+
+    def runner(argv, *, timeout, cwd, extra_env):
+        seen.update(extra_env)
+        return base.CliResult(0, json.dumps({"result": "ok", "is_error": False}), "")
+
+    assert claude_task.run("x", cwd=repo, runner=runner)["ok"] is True
+    assert "PATH" in seen
+
+
 def test_empty_task_is_rejected():
     with pytest.raises(SystemExit):
         claude_task.main(["   "])

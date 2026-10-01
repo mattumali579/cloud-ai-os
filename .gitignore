@@ -24,6 +24,7 @@ email_outbox/
 wave.fp
 # Claude Code worktrees (separate checkouts, not source)
 .claude/worktrees/
+uv.lock
 
 # Lead engine: company/contact data never goes into this PUBLIC repo
 data/lead_history/

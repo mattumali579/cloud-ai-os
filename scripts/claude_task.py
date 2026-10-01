@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -31,7 +32,7 @@ from cloudos.router.providers import base  # noqa: E402
 #: What the delegated Claude run may do without asking. Everything else is denied in -p mode.
 ALLOWED_TOOLS = [
     "Read", "Glob", "Grep", "Edit", "Write",
-    "Bash(python -m pytest:*)", "Bash(python -m ruff:*)",
+    "Bash(python -m pytest:*)", "PowerShell(python -m pytest:*)", "Bash(python -m ruff:*)",
     "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
 ]
 #: Never, even if a user-level setting would allow it. The operator ships; Claude builds.
@@ -43,6 +44,7 @@ RULES = (
     "You are the coding worker for the BrightReach operator. Do exactly the task below in this repository, "
     "with the smallest change that works. Do not weaken dedupe, unsubscribe, bounce suppression, send caps, "
     "QA or verification gates. Do not send email, push, commit, or create schedules. Never print secrets. "
+    "Run tests only as `python -m pytest ...` (that exact form is pre-approved and uses the project's Python). "
     "Run the relevant tests and finish with: what you changed, the exact test command, and its result.\n\nTASK:\n"
 )
 
@@ -56,6 +58,14 @@ def build_argv(task: str, max_turns: int, claude_bin: str = "claude") -> list[st
         "--allowedTools", *ALLOWED_TOOLS,
         "--disallowedTools", *DISALLOWED_TOOLS,
     ]
+
+
+def project_env(environ=None) -> dict:
+    """PATH with the project's Python first, so Claude's `python -m pytest` uses the interpreter that has
+    the project's packages. Inside Hermes, plain `python` is Hermes's own (no pytest)."""
+    environ = os.environ if environ is None else environ
+    py = environ.get("BRIGHTREACH_PYTHON") or sys.executable
+    return {"PATH": str(Path(py).parent) + os.pathsep + environ.get("PATH", "")}
 
 
 def changed_files(cwd: Path) -> dict[str, str]:
@@ -92,7 +102,7 @@ def run(task: str, *, max_turns: int = 15, timeout: int = 900, cwd: Path = ROOT,
         return {"ok": False, "error": "claude is not installed or not on PATH", "files_changed": []}
     before = changed_files(cwd)
     started = time.time()
-    res = runner(build_argv(task, max_turns, claude_bin), timeout=timeout, cwd=str(cwd))
+    res = runner(build_argv(task, max_turns, claude_bin), timeout=timeout, cwd=str(cwd), extra_env=project_env())
     seconds = round(time.time() - started, 1)
     after = changed_files(cwd)
     data = parse_result(res.stdout)

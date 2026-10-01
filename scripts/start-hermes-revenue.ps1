@@ -24,6 +24,11 @@ foreach ($v in @("ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","OPENAI_API_KEY","GE
 
 Set-Location $repoRoot
 
+# Inside Hermes, plain `python` is Hermes's own. Hand it the project's Python (the one with the packages).
+$env:BRIGHTREACH_PYTHON = (Get-Command python).Source -replace '\\','/'
+& $env:BRIGHTREACH_PYTHON -c "import pytest, psycopg" 2>$null
+if ($LASTEXITCODE -ne 0) { throw "Python at $env:BRIGHTREACH_PYTHON is missing the project's packages. Run: python -m pip install -e .[dev]" }
+
 Write-Host "[1/5] Syncing repository..."
 $pulled = $false
 foreach ($try in 1..3) {
