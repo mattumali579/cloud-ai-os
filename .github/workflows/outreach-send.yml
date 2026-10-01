@@ -13,11 +13,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'cycle (normal), status, selftest'
+        description: 'cycle (normal), status, selftest (Hostinger), agentmail-selftest'
         required: true
         default: cycle
         type: choice
-        options: [cycle, status, selftest]
+        options: [cycle, status, selftest, agentmail-selftest]
 
 permissions:
   contents: read
@@ -70,6 +70,7 @@ jobs:
           case "${{ inputs.mode || 'cycle' }}" in
             status) python outreach_sender.py status ;;
             selftest) python outreach_sender.py selftest ;;
+            agentmail-selftest) python outreach_sender.py agentmail-selftest ;;
             *) python outreach_sender.py cycle --minutes 8 --out cycle.json > /dev/null; python - <<'PY'
           import json
           r = json.load(open("cycle.json"))

@@ -164,3 +164,111 @@ def test_missing_credentials_still_exits_nonzero(run):
     assert code == 3
     assert _saved(conn) == []
     assert out.startswith("BLOCKED")
+
+
+# ------------------------------------------------- `outreach_sender.py agentmail-selftest`
+KEY = "am_test_key_do_not_print"
+
+
+class FakeNoticeConn:
+    """Stands in for the `notifications` table: one row per dedupe_key, delivery written back by UPDATE."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+        self._row = None
+
+    def execute(self, sql, params=None):
+        self._row = None
+        if sql.startswith("INSERT INTO notifications"):
+            key = params[4]
+            if key not in self.rows:
+                self.rows[key] = {"id": len(self.rows) + 1, "code": params[1], "meta": json.loads(params[3]),
+                                  "delivered": False, "receipt": None, "attempts": 0}
+                self._row = {"id": self.rows[key]["id"]}
+        elif sql.startswith("UPDATE notifications"):
+            row = next(r for r in self.rows.values() if r["id"] == params[3])
+            row.update(delivered=params[0], receipt=params[2], attempts=row["attempts"] + 1)
+        return self
+
+    def fetchone(self):
+        return self._row
+
+    def commit(self):
+        pass
+
+
+@pytest.fixture
+def am(monkeypatch, capsys):
+    cfg = sender.load_config()
+    monkeypatch.setenv(cfg["agentmail"]["owner_env"], OWNER)
+    monkeypatch.setenv(cfg["agentmail"]["api_env"], KEY)
+    conn = FakeNoticeConn()
+    posts: list[tuple] = []
+
+    @contextmanager
+    def get_conn():
+        yield conn
+
+    monkeypatch.setattr(outreach_sender.db, "get_conn", get_conn)
+
+    def _run(status_code=200):
+        class Resp:
+            def json(self):
+                return {"message_id": "am-msg-1"}
+
+        Resp.status_code = status_code
+
+        def fake_post(url, json=None, timeout=None, headers=None):
+            posts.append((url, json, headers))
+            return Resp()
+
+        monkeypatch.setattr(outreach_sender.agentmail.httpx, "post", fake_post)   # nothing leaves the machine
+        code = outreach_sender.main(["agentmail-selftest"])
+        out = capsys.readouterr().out
+        assert KEY not in out and OWNER not in out and FROM not in out
+        return code, json.loads(out)
+
+    _run.conn, _run.posts, _run.cfg = conn, posts, cfg
+    return _run
+
+
+def test_agentmail_selftest_accepted_exits_zero_and_records_delivery(am):
+    code, shown = am(200)
+    assert code == 0 and shown["ok"] is True and shown["delivered"] is True
+    # one message, from the configured manager inbox, to the owner only, through the existing AgentMail path
+    assert len(am.posts) == 1
+    url, payload, headers = am.posts[0]
+    assert url.endswith(f"/inboxes/{am.cfg['agentmail']['inboxes']['manager']}/messages/send")
+    assert payload["to"] == [OWNER] and headers["Authorization"] == f"Bearer {KEY}"
+    (key, row), = am.conn.rows.items()
+    assert key.startswith("am:selftest:") and row["code"] == "agentmail.manager"
+    assert row["delivered"] is True and row["receipt"].startswith("agentmail am-msg-1") and row["attempts"] == 1
+
+
+def test_agentmail_selftest_missing_key_exits_nonzero_and_queues_nothing(am, monkeypatch):
+    monkeypatch.delenv(am.cfg["agentmail"]["api_env"])
+    code, shown = am(200)
+    assert code == 3 and shown["ok"] is False and "blocked" in shown
+    assert am.posts == [] and am.conn.rows == {}
+
+
+def test_agentmail_selftest_provider_rejection_exits_nonzero_and_is_not_delivered(am):
+    code, shown = am(403)
+    assert code == 1 and shown["ok"] is False and shown["delivered"] is False
+    assert len(am.posts) == 1
+    (row,) = am.conn.rows.values()
+    assert row["delivered"] is False and row["receipt"] == "agentmail HTTP 403"
+
+
+def test_agentmail_selftest_twice_sends_once_and_second_run_is_not_a_success(am):
+    assert am(200)[0] == 0
+    code, shown = am(200)
+    assert code == 1 and shown == {"ok": False, "duplicate": True}
+    assert len(am.posts) == 1 and len(am.conn.rows) == 1          # no second email, no second row
+
+
+def test_workflow_has_a_separate_agentmail_selftest_mode():
+    yml = (outreach_sender.ROOT / ".github" / "workflows" / "outreach-send.yml").read_text(encoding="utf-8")
+    assert "options: [cycle, status, selftest, agentmail-selftest]" in yml
+    assert "            agentmail-selftest) python outreach_sender.py agentmail-selftest ;;" in yml
+    assert "            selftest) python outreach_sender.py selftest ;;" in yml

@@ -5,6 +5,7 @@
     python outreach_sender.py status [--json]       today's numbers and what's blocking 300
     python outreach_sender.py plan                  prepare first emails for Ready leads (sends nothing)
     python outreach_sender.py selftest              one real email to the owner through Hostinger, then prove it
+    python outreach_sender.py agentmail-selftest    one internal notice to the owner through AgentMail, once a day
     python outreach_sender.py airtable              push changed lead states to Airtable now
 
 cycle, in order - each step survives the one before it failing:
@@ -99,6 +100,21 @@ def selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
             out["ok"] = True
             _set_state(conn, "selftest", {"message_id": mid, "at": datetime.now(timezone.utc), **out})
     return out
+
+
+def agentmail_selftest(conn, cfg: dict, post=None) -> dict:
+    """One generic internal notice to the manager inbox through the normal AgentMail path. Passes only when
+    AgentMail accepted it in THIS call. Deduped per UTC day: asking twice never sends a second one."""
+    post = post or agentmail.http_poster(cfg)
+    if post is None:
+        return {"ok": False, "blocked": f"{cfg['agentmail']['api_env']} not set"}   # nothing queued either
+    day = datetime.now(timezone.utc).date()
+    r = agentmail.notify(conn, cfg, role="manager", dedupe_key=f"selftest:{day}", post=post,
+                         subject="BrightReach AgentMail self-test",
+                         text="This is the internal check that manager notices can be delivered. Nothing to do.")
+    if not r["created"]:
+        return {"ok": False, "duplicate": True}
+    return {"ok": r["delivered"] is True, "delivered": r["delivered"], "receipt": r["receipt"]}
 
 
 def cycle(minutes: float) -> dict:
@@ -231,6 +247,7 @@ def main(argv=None) -> int:
     s.add_argument("--planner", action="store_true", help="totals + next action, as JSON, for the planner")
     sub.add_parser("plan")
     sub.add_parser("selftest")
+    sub.add_parser("agentmail-selftest")
     sub.add_parser("airtable")
     a = ap.parse_args(argv)
     cfg = sender.load_config()
@@ -256,6 +273,13 @@ def main(argv=None) -> int:
                 return 3
             out = selftest(conn, cfg, mb, os.environ[cfg["sender"]["from_email_env"]].strip())
             print(public(out))
+            if not out["ok"]:
+                return 1
+        elif a.cmd == "agentmail-selftest":
+            out = agentmail_selftest(conn, cfg)
+            print(public(out))
+            if "blocked" in out:
+                return 3
             if not out["ok"]:
                 return 1
         elif a.cmd == "airtable":
