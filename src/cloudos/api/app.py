@@ -286,7 +286,7 @@ async def revenue_os_status() -> dict:
 @app.post("/v1/revenue-os/run", dependencies=[authed])
 async def revenue_os_run(body: RevenueOSRunRequest) -> dict:
     from cloudos.revenue_os import run
-    return run(body.action, execution_key=body.execution_key, allow_send=body.allow_send)
+    return run(body.action, execution_key=body.execution_key, allow_send=body.allow_send, goal=body.goal)
 
 
 # ---------------------------------------------------------------- BrightReach
