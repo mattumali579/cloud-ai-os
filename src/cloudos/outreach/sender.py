@@ -28,12 +28,13 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from cloudos.conversations import guard, store
+from cloudos.config import REPO_ROOT
 from cloudos.conversations.text import business_domain
 from cloudos.outreach import copy as copywriter
 from cloudos.outreach.transport import AuthError, Mailbox, build, new_message_id
 
-ROOT = Path(__file__).resolve().parents[3]
-CONFIG = ROOT / "config" / "outreach_sender.yaml"
+ROOT = REPO_ROOT
+CONFIG = REPO_ROOT / "config" / "outreach_sender.yaml"
 STALE_CLAIM = timedelta(minutes=15)
 _SUPPRESSED = {"email_suppressed", "domain_suppressed", "company_suppressed", "do_not_contact", "bounced"}
 _USABLE_CONTACT = "email_status IN ('validated','published')"     # the only contacts a first touch may go to
