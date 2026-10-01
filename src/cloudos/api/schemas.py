@@ -74,4 +74,5 @@ class RevenueOSRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["state", "decide", "research", "plan", "build", "troubleshoot", "notify", "product_verify", "lead_status", "lead_cycle", "outreach_qa", "reply_check", "send"]
     execution_key: Optional[str] = Field(default=None, max_length=120)
+    goal: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
     allow_send: bool = False
