@@ -1,0 +1,30 @@
+name: Missed-call demo pages
+
+# Manual only. Uploads products/missed-call-textback/demo to GitHub Pages.
+# Enable Pages on the repo first. Do not run this if Pages is already serving something else.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: mctb-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: products/missed-call-textback/demo
+      - id: deployment
+        uses: actions/deploy-pages@v4
