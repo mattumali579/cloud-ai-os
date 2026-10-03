@@ -74,6 +74,10 @@ function code(name, tail, notes, row) {
   };
 }
 
+function selectAs(expression, alias) {
+  return 'SELECT ' + expression + ' AS "' + alias + '"';
+}
+
 function postgres(name, query, replacement, notes, batch) {
   const options = {};
   if (replacement) options.queryReplacement = replacement;
@@ -221,7 +225,7 @@ function voiceLike(options) {
   graph.add(ifYes(options.ifName, '={{ $json.save }}', 'Skip the database write when the caller is unknown or this call was already handled.'));
   graph.add(postgres(
     options.applyName,
-    'SELECT jsonb_build_object(\'result\', mctb.' + options.applyFn + '($1::jsonb))',
+    selectAs('mctb.' + options.applyFn + '($1::jsonb)', 'result'),
     '={{ JSON.stringify($json.record) }}',
     'One JSON parameter. n8n binds a JSON string as a single value, so commas inside the payload are safe.'
   ));
@@ -267,7 +271,7 @@ const voice = voiceLike({
   webhookNotes: 'Twilio voice webhook. Forward mode texts the caller in this response. Dial mode rings the owner, then mctb-dial-status sends the text.',
   normalizeName: 'Normalize Voice',
   loadName: 'Load Voice Context',
-  loadQuery: 'SELECT jsonb_build_object(\'ctx\', mctb.load_voice_context($1::text, $2::text, $3::text))',
+  loadQuery: selectAs('mctb.load_voice_context($1::text, $2::text, $3::text)', 'ctx'),
   decideName: 'Decide Voice',
   decideTail: `
 const norm = $('Normalize Voice').first().json;
@@ -303,7 +307,7 @@ const dial = voiceLike({
   webhookNotes: 'Twilio Dial action URL. no-answer, busy, failed, and canceled become a missed-call text. completed does not text the caller.',
   normalizeName: 'Normalize Dial',
   loadName: 'Load Dial Context',
-  loadQuery: 'SELECT jsonb_build_object(\'ctx\', mctb.load_voice_context($1::text, $2::text, $3::text))',
+  loadQuery: selectAs('mctb.load_voice_context($1::text, $2::text, $3::text)', 'ctx'),
   decideName: 'Decide Dial',
   decideTail: `
 const norm = $('Normalize Dial').first().json;
@@ -334,7 +338,7 @@ smsGraph.add(webhook('SMS Webhook', 'POST', 'mctb-sms', 'mctb-sms-hook', 'Twilio
 smsGraph.add(code('Normalize SMS', NORMALIZE, 'Normalizes the inbound SMS.'));
 smsGraph.add(postgres(
   'Load SMS Context',
-  'SELECT jsonb_build_object(\'ctx\', mctb.load_sms_context($1::text, $2::text))',
+  selectAs('mctb.load_sms_context($1::text, $2::text)', 'ctx'),
   '={{ $json.to_e164 }},{{ $json.from_e164 }}',
   'Tenant, conversation, suppression, open estimate, and rate-limit counts.'
 ));
@@ -353,7 +357,7 @@ return [{ json: engine.handleInboundSms(ctx) }];
 smsGraph.add(ifYes('Save SMS', '={{ $json.save }}', 'Unknown numbers get an empty 200 so Twilio does not retry.'));
 smsGraph.add(postgres(
   'Apply SMS',
-  'SELECT jsonb_build_object(\'result\', mctb.apply_sms_decision($1::jsonb))',
+  selectAs('mctb.apply_sms_decision($1::jsonb)', 'result'),
   '={{ JSON.stringify($json.record) }}',
   'Persists the reply, opt-out, estimate command, and outbound log.'
 ));
@@ -411,7 +415,7 @@ return [{ json: { now: simulated || new Date().toISOString() } }];
 `, 'Picks the clock used for quiet hours.'));
 followGraph.add(postgres(
   'Load Due Work',
-  'SELECT jsonb_build_object(\'work\', mctb.due_work())',
+  selectAs('mctb.due_work()', 'work'),
   '',
   'Due estimates and queued texts. No parameters.'
 ));
@@ -477,7 +481,7 @@ return responses.map((item, index) => {
 `, 'A missing Twilio sid retries in 15 minutes instead of advancing the sequence.'));
 followGraph.add(postgres(
   'Mark Outbound',
-  'SELECT jsonb_build_object(\'result\', mctb.mark_outbound($1::jsonb))',
+  selectAs('mctb.mark_outbound($1::jsonb)', 'result'),
   '={{ JSON.stringify($json.mark) }}',
   'Writes the send, deferral, suppression, or rate-limit result.',
   'independently'
@@ -501,7 +505,7 @@ return [{ json: { token: engine.readToken($input.first().json) } }];
 `, 'Reads ?token= from the query string.'));
 dashGraph.add(postgres(
   'Load Snapshot',
-  'SELECT jsonb_build_object(\'snap\', mctb.dashboard_snapshot($1::text))',
+  selectAs('mctb.dashboard_snapshot($1::text)', 'snap'),
   '={{ $json.token }}',
   'Returns null when the token does not match a tenant. Tokens are not commas, so the single parameter is safe.'
 ));
@@ -539,7 +543,7 @@ return [{
 `, 'Form fields from the dashboard.'));
 actionGraph.add(postgres(
   'Load Action Tenant',
-  'SELECT jsonb_build_object(\'tenant_pack\', mctb.action_context($1::text))',
+  selectAs('mctb.action_context($1::text)', 'tenant_pack'),
   '={{ $json.token }}',
   'Tenant for this dashboard token only.'
 ));
@@ -567,7 +571,7 @@ return [{ json: decision }];
 actionGraph.add(ifYes('Save Action', '={{ $json.save }}', 'Invalid forms still render an explanation.'));
 actionGraph.add(postgres(
   'Apply Action',
-  'SELECT jsonb_build_object(\'result\', mctb.apply_sms_decision($1::jsonb))',
+  selectAs('mctb.apply_sms_decision($1::jsonb)', 'result'),
   '={{ JSON.stringify($json.record) }}',
   'Stores the estimate, status change, or mock reply.'
 ));

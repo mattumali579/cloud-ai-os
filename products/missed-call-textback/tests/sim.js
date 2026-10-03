@@ -36,6 +36,28 @@ function quoteJson(value) {
   return '$mctb7f3a$' + text + '$mctb7f3a$';
 }
 
+function columnKey(query) {
+  const trimmed = String(query || '').trim().replace(/;\s*$/, '');
+  const quoted = trimmed.match(/\bAS\s+"([^"]+)"\s*$/i);
+  if (quoted) return quoted[1];
+  const bare = trimmed.match(/\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
+  if (bare) return bare[1];
+  const fn = trimmed.match(/\bSELECT\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/i);
+  return fn ? fn[1] : 'column';
+}
+
+function postgresItem(query, raw) {
+  const key = columnKey(query);
+  if (raw == null || String(raw).trim() === '') return { json: { [key]: null } };
+  let value = String(raw).trim();
+  try {
+    value = JSON.parse(value);
+  } catch (err) {
+    value = String(raw).trim();
+  }
+  return { json: { [key]: value } };
+}
+
 function bindQuery(query, params) {
   return query.replace(/\$(\d+)(::[a-zA-Z_]+)?/g, (_, number, cast) => {
     const value = params[Number(number) - 1];
@@ -142,8 +164,7 @@ function runWorkflow(workflow, triggerName, inputJson, env) {
         const replacement = node.parameters.options && node.parameters.options.queryReplacement;
         const params = replacement ? queryParams(replacement, item, environment, outputs, index) : [];
         const sql = bindQuery(node.parameters.query, params);
-        const parsed = psqlJson(sql);
-        return { json: parsed || {} };
+        return postgresItem(node.parameters.query, psql(DATABASE, sql));
       };
       outItems = batch === 'independently'
         ? items.map((item, index) => runOne(item, index))
@@ -205,5 +226,7 @@ module.exports = {
   psqlJson: psqlJson,
   resetDatabase: resetDatabase,
   quoteJson: quoteJson,
+  columnKey: columnKey,
+  postgresItem: postgresItem,
   runWorkflow: runWorkflow,
 };

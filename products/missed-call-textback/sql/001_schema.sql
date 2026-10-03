@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS mctb.conversations (
   UNIQUE (tenant_id, phone)
 );
 
+ALTER TABLE mctb.conversations ADD COLUMN IF NOT EXISTS qualified_at timestamptz;
+
+UPDATE mctb.conversations
+SET qualified_at = COALESCE(qualified_at, updated_at)
+WHERE qualified_at IS NULL
+  AND (
+    state = 'handed_off'
+    OR (COALESCE(need, '') <> '' AND COALESCE(location, '') <> '' AND COALESCE(urgency, '') <> '')
+  );
+
 CREATE TABLE IF NOT EXISTS mctb.messages (
   id bigserial PRIMARY KEY,
   tenant_id uuid NOT NULL REFERENCES mctb.tenants(id),
@@ -248,6 +258,9 @@ BEGIN
     'suppressed', EXISTS (
       SELECT 1 FROM mctb.suppressions s WHERE s.tenant_id = t.id AND s.phone = p_from
     ),
+    'suppressed_phones', COALESCE((
+      SELECT jsonb_agg(s.phone) FROM mctb.suppressions s WHERE s.tenant_id = t.id
+    ), '[]'::jsonb),
     'conversation', (
       SELECT jsonb_build_object('state', c.state, 'need', c.need, 'location', c.location, 'urgency', c.urgency)
       FROM mctb.conversations c
@@ -297,6 +310,9 @@ BEGIN
   END IF;
   RETURN jsonb_build_object(
     'tenant', mctb.tenant_public(t),
+    'suppressed_phones', COALESCE((
+      SELECT jsonb_agg(s.phone) FROM mctb.suppressions s WHERE s.tenant_id = t.id
+    ), '[]'::jsonb),
     'estimates', COALESCE((
       SELECT jsonb_agg(x.obj)
       FROM (
@@ -330,6 +346,13 @@ DECLARE
 BEGIN
   FOR item IN SELECT value FROM jsonb_array_elements(COALESCE(p_items, '[]'::jsonb))
   LOOP
+    IF EXISTS (
+      SELECT 1 FROM mctb.suppressions s
+      WHERE s.tenant_id = p_tenant AND s.phone = COALESCE(item->>'to', '')
+    ) AND COALESCE(item->>'purpose', '') NOT IN ('stop_confirm', 'help', 'start_confirm') THEN
+      CONTINUE;
+    END IF;
+
     IF item->>'delivery' = 'queue' THEN
       INSERT INTO mctb.outbound_queue (tenant_id, to_number, from_number, body, purpose, send_at, status)
       VALUES (
@@ -382,20 +405,25 @@ BEGIN
   IF p_conversation IS NULL OR p_conversation = 'null'::jsonb OR COALESCE(p_phone, '') = '' THEN
     RETURN NULL;
   END IF;
-  INSERT INTO mctb.conversations (tenant_id, phone, state, need, location, urgency)
+  INSERT INTO mctb.conversations (tenant_id, phone, state, need, location, urgency, qualified_at)
   VALUES (
     p_tenant,
     p_phone,
     COALESCE(p_conversation->>'state', 'awaiting_need'),
     NULLIF(p_conversation->>'need', ''),
     NULLIF(p_conversation->>'location', ''),
-    NULLIF(p_conversation->>'urgency', '')
+    NULLIF(p_conversation->>'urgency', ''),
+    CASE WHEN COALESCE(p_conversation->>'state', '') = 'handed_off' THEN now() ELSE NULL END
   )
   ON CONFLICT (tenant_id, phone) DO UPDATE SET
     state = EXCLUDED.state,
     need = COALESCE(EXCLUDED.need, mctb.conversations.need),
     location = COALESCE(EXCLUDED.location, mctb.conversations.location),
     urgency = COALESCE(EXCLUDED.urgency, mctb.conversations.urgency),
+    qualified_at = COALESCE(
+      mctb.conversations.qualified_at,
+      CASE WHEN EXCLUDED.state = 'handed_off' THEN now() ELSE NULL END
+    ),
     updated_at = now()
   RETURNING id INTO v_id;
   RETURN v_id;
@@ -713,7 +741,9 @@ BEGIN
       ),
       'leads_30d', (
         SELECT count(*) FROM mctb.conversations c
-        WHERE c.tenant_id = t.id AND c.state = 'handed_off' AND c.updated_at > now() - interval '30 days'
+        WHERE c.tenant_id = t.id
+          AND c.qualified_at IS NOT NULL
+          AND c.qualified_at > now() - interval '30 days'
       ),
       'texts_30d', (
         SELECT count(*) FROM mctb.outbound_log o

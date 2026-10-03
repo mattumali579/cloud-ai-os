@@ -528,6 +528,29 @@ function createEngine() {
     return now.toISOString();
   }
 
+  function suppressedSet(ctx) {
+    const set = {};
+    const listed = ctx.suppressedPhones || [];
+    listed.forEach((phone) => {
+      const normalized = normalizePhone(phone);
+      if (normalized) set[normalized] = true;
+    });
+    if (ctx.suppressed) {
+      const current = normalizePhone(ctx.from);
+      if (current) set[current] = true;
+    }
+    return set;
+  }
+
+  function isOptedOut(ctx, phone) {
+    const normalized = normalizePhone(phone);
+    return Boolean(normalized && suppressedSet(ctx)[normalized]);
+  }
+
+  function optedOutNotice(phone) {
+    return phone + ' opted out of texts. Not sent. Call them by phone. Do not text them.';
+  }
+
   function pushIfAllowed(outbound, counters, tenant, to, body, purpose, delivery, recipientCountKey) {
     const sentTo = counters[recipientCountKey] || 0;
     if (!to || !canText(tenant, counters.sentToday, sentTo)) return false;
@@ -620,6 +643,14 @@ function createEngine() {
       if (!phone || !parsed.message) {
         outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, 'Reply needs a phone and a message. ' + commandHelp(), 'owner_help', delivery, null));
         return finishSms(ctx, { inbound_purpose: 'owner_command', outbound: outbound });
+      }
+      if (isOptedOut(ctx, phone)) {
+        outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, optedOutNotice(phone), 'owner_confirm', delivery, null));
+        return finishSms(ctx, {
+          inbound_purpose: 'owner_command',
+          outbound: outbound,
+          owner_notification: { channel: 'sms', body: optedOutNotice(phone) },
+        });
       }
       const counters = { sentToday: Number(ctx.sentToday || 0), sentToCustomer: Number(ctx.sentToToday || 0) };
       const sent = pushIfAllowed(outbound, counters, tenant, phone, clip(parsed.message, 500), 'owner_reply', delivery, 'sentToCustomer');
@@ -1048,6 +1079,9 @@ function createEngine() {
           next_send_at: nextSend,
         };
         note = 'Estimate saved for ' + name + '. First follow-up ' + formatWhen(nextSend, tenant.timezone) + '.';
+        if (isOptedOut(ctx, phone)) {
+          note = 'Estimate saved for ' + name + '. ' + phone + ' opted out, so no follow-up text will be sent. Call them.';
+        }
         if (ownerPhone) {
           outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, note, 'owner_confirm', delivery, delivery === 'queue' ? nextSend : null));
         }
@@ -1057,6 +1091,8 @@ function createEngine() {
       const message = clip(ctx.message, 500);
       if (!phone || !message) {
         note = 'A phone number and a message are required.';
+      } else if (isOptedOut(ctx, phone)) {
+        note = optedOutNotice(phone);
       } else if (!canText(tenant, Number(ctx.sentToday || 0), 0)) {
         note = 'Daily text limit reached. Call ' + phone + ' instead.';
       } else {
@@ -1167,6 +1203,7 @@ function createEngine() {
     return {
       conversation: null,
       suppressed: false,
+      suppressedPhones: [],
       estimates: [],
       messages: [],
       calls: [],
@@ -1181,6 +1218,7 @@ function createEngine() {
     const next = {
       conversation: state.conversation,
       suppressed: state.suppressed,
+      suppressedPhones: (state.suppressedPhones || []).slice(),
       estimates: state.estimates.map((estimate) => Object.assign({}, estimate)),
       messages: state.messages.slice(),
       calls: state.calls.slice(),
@@ -1191,8 +1229,16 @@ function createEngine() {
     };
     if (!record) return next;
     if (record.conversation) next.conversation = Object.assign({}, record.conversation);
-    if (record.suppress) next.suppressed = true;
-    if (record.clear_suppression) next.suppressed = false;
+    if (record.suppress) {
+      next.suppressed = true;
+      const stopped = normalizePhone(record.from);
+      if (stopped && next.suppressedPhones.indexOf(stopped) === -1) next.suppressedPhones.push(stopped);
+    }
+    if (record.clear_suppression) {
+      next.suppressed = false;
+      const resumed = normalizePhone(record.from);
+      next.suppressedPhones = next.suppressedPhones.filter((phone) => phone !== resumed);
+    }
     if (record.kind === 'incoming' || record.kind === 'dial_status') {
       next.calls.push({
         from: record.from,
@@ -1247,6 +1293,7 @@ function createEngine() {
       tenant: tenant,
       duplicate: Boolean(fields.duplicate),
       suppressed: Boolean(state.suppressed),
+      suppressedPhones: (state.suppressedPhones || []).slice(),
       conversation: state.conversation,
       sentToday: state.sentToday,
       sentToToday: state.sentToNumber[from] || 0,
@@ -1265,6 +1312,7 @@ function createEngine() {
       messageSid: fields.messageSid || '',
       tenant: tenant,
       suppressed: state.suppressed,
+      suppressedPhones: (state.suppressedPhones || []).slice(),
       conversation: state.conversation,
       openEstimate: open[0] || null,
       estimates: state.estimates,
@@ -1297,6 +1345,7 @@ function createEngine() {
       tenant: packLoaded.tenant || null,
       duplicate: Boolean(packLoaded.duplicate),
       suppressed: Boolean(packLoaded.suppressed),
+      suppressedPhones: Array.isArray(packLoaded.suppressed_phones) ? packLoaded.suppressed_phones : [],
       conversation: packLoaded.conversation || null,
       openEstimate: packLoaded.open_estimate || null,
       estimates: packLoaded.estimates || [],

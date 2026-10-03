@@ -314,6 +314,44 @@ test('business names with ampersands stay valid TwiML', () => {
   assert.doesNotMatch(decision.twiml, /Pike & Sons/);
 });
 
+test('manual sends to opted-out numbers are refused', () => {
+  const tenant = engine.exampleTenant();
+  const state = engine.freshState();
+  state.suppressedPhones = [caller()];
+  const reply = engine.handleInboundSms(engine.smsContext(state, tenant, {
+    now: DAY,
+    from: tenant.owner_phone,
+    body: 'REPLY ' + caller() + ' We can be there Thursday',
+  }));
+  assert.equal(reply.record.outbound.some((item) => item.to === caller()), false);
+  assert.equal(reply.record.estimate_update, null);
+  assert.match(reply.twiml, /opted out/);
+  assert.match(reply.twiml, /Do not text them/);
+  assert.match(reply.twiml, /<Message to="\+14145550199">/);
+
+  const pack = {
+    tenant: tenant,
+    estimates: [{ id: 3, status: 'open', phone: caller(), customer_name: 'Jane', job: 'furnace' }],
+    sent_today: 0,
+  };
+  const fields = {
+    now: DAY,
+    token: 'token',
+    action: 'reply',
+    phone: caller(),
+    message: 'Thursday works',
+  };
+  const allowed = engine.handleAction(engine.contextFromLoad(Object.assign({ suppressed_phones: [] }, pack), fields), { TWILIO_MODE: 'mock' });
+  assert.equal(allowed.save, 'yes');
+  assert.equal(allowed.record.outbound.some((item) => item.to === caller() && item.purpose === 'owner_reply'), true);
+
+  const refused = engine.handleAction(engine.contextFromLoad(Object.assign({ suppressed_phones: [caller()] }, pack), fields), { TWILIO_MODE: 'mock' });
+  assert.equal(refused.save, 'no');
+  assert.equal(refused.record, null);
+  assert.match(refused.html, /opted out/);
+  assert.match(refused.html, /Do not text them/);
+});
+
 test('Chicago winter and summer offsets', () => {
   const winter = engine.zonedTimeToUtc(2026, 1, 15, 10, 0, 'America/Chicago');
   const summer = engine.zonedTimeToUtc(2026, 7, 15, 10, 0, 'America/Chicago');
