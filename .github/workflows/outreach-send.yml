@@ -13,11 +13,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'cycle (normal), status, selftest (Hostinger), agentmail-selftest, airtable-selftest (read only), queue-audit (read only, counts only, sends nothing)'
+        description: 'cycle (normal), status, selftest (Hostinger), agentmail-selftest, airtable-selftest (read only), queue-audit (read only, counts only, sends nothing), trade-count (read only, counts only)'
         required: true
         default: cycle
         type: choice
-        options: [cycle, status, selftest, agentmail-selftest, airtable-selftest, queue-audit]
+        options: [cycle, status, selftest, agentmail-selftest, airtable-selftest, queue-audit, trade-count]
 
 permissions:
   contents: read
@@ -73,6 +73,7 @@ jobs:
             agentmail-selftest) python outreach_sender.py agentmail-selftest ;;
             airtable-selftest) python outreach_sender.py airtable-selftest ;;
             queue-audit) python outreach_sender.py queue-audit --min 100 ;;
+            trade-count) python outreach_sender.py trade-count ;;
             *) python outreach_sender.py cycle --minutes 8 --out cycle.json > /dev/null; python - <<'PY'
           import json
           r = json.load(open("cycle.json"))
