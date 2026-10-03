@@ -350,7 +350,8 @@ const ctx = engine.contextFromLoad($input.first().json.ctx, {
   to: norm.to_e164,
   from: norm.from_e164,
   body: norm.text,
-  messageSid: norm.message_sid
+  messageSid: norm.message_sid,
+  publicBaseUrl: $env.MCTB_PUBLIC_BASE_URL || ''
 });
 return [{ json: engine.handleInboundSms(ctx) }];
 `, 'Qualification, compliance keywords, and owner commands.'));

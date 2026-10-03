@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { psql, psqlJson, resetDatabase, quoteJson, runWorkflow, columnKey, postgresItem } = require('./sim');
@@ -424,7 +425,27 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
   assert.equal(harbor.num, '+14145550188');
   say('setup_tenant.sh added Harbor Electric on its own number.');
 
-  const artifactDir = '/opt/cursor/artifacts';
+  psql('mctb_test', "UPDATE mctb.tenants SET owner_daily_sms_limit = 1 WHERE slug = 'northline'");
+  const pauseCall = runWorkflow(workflows.voice, 'Voice Webhook', envelope({
+    From: '+14145550150',
+    To: '+14145550100',
+    CallSid: 'CA-cap-1',
+    CallStatus: 'no-answer',
+  }), env);
+  assert.match(pauseCall.responses[0].body, /Alerts paused for today, see your dashboard: https:\/\/text\.example\/webhook\/mctb-dashboard\?token=token-northline/);
+  assert.equal((pauseCall.responses[0].body.match(/<Message to="\+14145550199">/g) || []).length, 1);
+  const pauseAgain = runWorkflow(workflows.voice, 'Voice Webhook', envelope({
+    From: '+14145550151',
+    To: '+14145550100',
+    CallSid: 'CA-cap-2',
+    CallStatus: 'no-answer',
+  }), env);
+  assert.doesNotMatch(pauseAgain.responses[0].body, /Alerts paused for today/);
+  assert.doesNotMatch(pauseAgain.responses[0].body, /<Message to="\+14145550199">/);
+  assert.equal(Number(one("SELECT jsonb_build_object('n', (SELECT count(*) FROM mctb.outbound_log WHERE purpose = 'owner_cap_notice'))").n), 1);
+  say('Owner alert cap sent one pause text and did not repeat it.');
+
+  const artifactDir = process.env.MCTB_ARTIFACT_DIR || os.tmpdir();
   fs.mkdirSync(artifactDir, { recursive: true });
   const text = transcript.join('\n') + '\n';
   fs.writeFileSync(path.join(artifactDir, 'missed-call-e2e.txt'), text);

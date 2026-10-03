@@ -224,6 +224,54 @@ function createEngine() {
       Number(sentToRecipient) < Number(tenant.per_number_daily_limit);
   }
 
+  function ownerDailyLimit(tenant) {
+    const value = Number(tenant && tenant.owner_daily_sms_limit);
+    return value > 0 ? value : 60;
+  }
+
+  function canTextOwner(tenant, sentToday, sentToOwner) {
+    return Number(sentToday) < Number(tenant.daily_sms_limit) &&
+      Number(sentToOwner) < ownerDailyLimit(tenant);
+  }
+
+  function dashboardLink(ctx) {
+    const tenant = (ctx && ctx.tenant) || {};
+    const path = (ctx && ctx.dashboardPath) || tenant.dashboard_path || '';
+    const base = String((ctx && ctx.publicBaseUrl) || '').replace(/\/$/, '');
+    if (base && path.charAt(0) === '/') return base + path;
+    if (path) return path;
+    if (base) return base + '/webhook/mctb-dashboard';
+    return '';
+  }
+
+  function ownerPauseBody(ctx) {
+    const link = dashboardLink(ctx);
+    return link
+      ? 'Alerts paused for today, see your dashboard: ' + link
+      : 'Alerts paused for today, see your dashboard.';
+  }
+
+  function pushOwnerAlert(outbound, counters, ctx, body) {
+    const tenant = ctx.tenant;
+    const ownerPhone = normalizePhone(tenant.owner_phone);
+    if (!ownerPhone || !body) return false;
+    if (canTextOwner(tenant, counters.sentToday, counters.sentToOwner)) {
+      outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, body, 'owner_notify', 'twiml', null));
+      counters.sentToday += 1;
+      counters.sentToOwner += 1;
+      return true;
+    }
+    const shopHasRoom = Number(counters.sentToday) < Number(tenant.daily_sms_limit);
+    const ownerCapped = Number(counters.sentToOwner) >= ownerDailyLimit(tenant);
+    if (shopHasRoom && ownerCapped && !ctx.ownerCapNoticeSent) {
+      outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, ownerPauseBody(ctx), 'owner_cap_notice', 'twiml', null));
+      counters.sentToday += 1;
+      counters.sentToOwner += 1;
+      ctx.ownerCapNoticeSent = true;
+    }
+    return false;
+  }
+
   function buildTwiml(options) {
     const opts = options || {};
     let inner = '';
@@ -356,11 +404,7 @@ function createEngine() {
       ownerBody = 'Missed call at ' + tenant.business_name + ' from ' + from + '. No text sent (' + (suppressedReason || 'unknown') + ').';
     }
 
-    let ownerTexted = false;
-    if (ownerBody && ownerPhone && canText(tenant, counters.sentToday, counters.sentToOwner)) {
-      outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, ownerBody, 'owner_notify', 'twiml', null));
-      ownerTexted = true;
-    }
+    const ownerTexted = ownerBody ? pushOwnerAlert(outbound, counters, ctx, ownerBody) : false;
 
     const say = kind === 'dial_status'
       ? null
@@ -700,27 +744,25 @@ function createEngine() {
       const conversation = copyConversation(ctx.conversation);
       conversation.state = 'opted_out';
       const ownerBody = from + ' opted out of ' + tenant.business_name + ' texts.';
-      if (ownerPhone) outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, ownerBody, 'owner_notify', 'twiml', null));
+      const ownerTexted = pushOwnerAlert(outbound, counters, ctx, ownerBody);
       return finishSms(ctx, {
         inbound_purpose: 'stop',
         outbound: outbound,
         suppress: true,
         conversation: conversation,
         estimate_update: ctx.openEstimate ? { id: Number(ctx.openEstimate.id), status: 'opted_out' } : null,
-        owner_notification: { channel: 'sms', body: ownerBody },
+        owner_notification: { channel: ownerTexted ? 'sms' : 'dashboard', body: ownerBody },
         webhookCode: 'MCTB_STOP',
       });
     }
 
     if (ctx.suppressed && kind !== 'start') {
       const ownerBody = 'Opted-out number ' + from + ' texted ' + tenant.business_name + ': "' + clip(ctx.body, 240) + '". Call them by phone. Do not text them.';
-      if (ownerPhone && canText(tenant, counters.sentToday, counters.sentToOwner)) {
-        outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, ownerBody, 'owner_notify', 'twiml', null));
-      }
+      const ownerTexted = pushOwnerAlert(outbound, counters, ctx, ownerBody);
       return finishSms(ctx, {
         inbound_purpose: 'suppressed',
         outbound: outbound,
-        owner_notification: { channel: 'dashboard', body: ownerBody },
+        owner_notification: { channel: ownerTexted ? 'sms' : 'dashboard', body: ownerBody },
         webhookCode: 'MCTB_OPTED_OUT_REPLY',
       });
     }
@@ -768,15 +810,13 @@ function createEngine() {
     const allowed = canText(tenant, counters.sentToday, counters.sentToCaller);
     if (!allowed) {
       const ownerBody = 'Text from ' + from + ' was not answered automatically. Daily text limit reached. They said: "' + clip(text, 240) + '".';
-      if (ownerPhone && canText(tenant, counters.sentToday, counters.sentToOwner)) {
-        outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, ownerBody, 'owner_notify', 'twiml', null));
-      }
+      const ownerTexted = pushOwnerAlert(outbound, counters, ctx, ownerBody);
       return finishSms(ctx, {
         inbound_purpose: 'rate_limited',
         outbound: outbound,
         conversation: ctx.conversation ? copyConversation(ctx.conversation) : null,
         estimate_update: estimateUpdate,
-        owner_notification: { channel: 'dashboard', body: ownerBody },
+        owner_notification: { channel: ownerTexted ? 'sms' : 'dashboard', body: ownerBody },
       });
     }
 
@@ -787,16 +827,14 @@ function createEngine() {
     const leadLine = justQualified
       ? 'Qualified lead for ' + tenant.business_name + '\nFrom: ' + from + '\nNeed: ' + (conversation.need || '') + '\nArea: ' + (conversation.location || '') + '\nUrgency: ' + (conversation.urgency || '') + '\nReply: REPLY ' + from + ' your message'
       : 'Reply from ' + from + ' to ' + tenant.business_name + ': "' + clip(text, 300) + '"';
-    if (ownerPhone && canText(tenant, counters.sentToday, counters.sentToOwner)) {
-      outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, leadLine, 'owner_notify', 'twiml', null));
-    }
+    const ownerTexted = pushOwnerAlert(outbound, counters, ctx, leadLine);
 
     return finishSms(ctx, {
       inbound_purpose: purpose,
       outbound: outbound,
       conversation: conversation,
       estimate_update: estimateUpdate,
-      owner_notification: { channel: 'sms', body: leadLine },
+      owner_notification: { channel: ownerTexted ? 'sms' : 'dashboard', body: leadLine },
       webhookCode: conversation.state === 'handed_off' ? 'MCTB_QUALIFIED' : 'MCTB_REPLY',
     });
   }
@@ -1204,6 +1242,7 @@ function createEngine() {
       conversation: null,
       suppressed: false,
       suppressedPhones: [],
+      ownerCapNoticeSent: false,
       estimates: [],
       messages: [],
       calls: [],
@@ -1219,6 +1258,7 @@ function createEngine() {
       conversation: state.conversation,
       suppressed: state.suppressed,
       suppressedPhones: (state.suppressedPhones || []).slice(),
+      ownerCapNoticeSent: Boolean(state.ownerCapNoticeSent),
       estimates: state.estimates.map((estimate) => Object.assign({}, estimate)),
       messages: state.messages.slice(),
       calls: state.calls.slice(),
@@ -1256,6 +1296,7 @@ function createEngine() {
         next.sentToNumber[item.to] = (next.sentToNumber[item.to] || 0) + 1;
         next.messages.push({ direction: 'out', to: item.to, body: item.body, purpose: item.purpose });
       }
+      if (item.purpose === 'owner_cap_notice') next.ownerCapNoticeSent = true;
       next.outbound.push(item);
     });
     if (record.new_estimate) {
@@ -1294,6 +1335,8 @@ function createEngine() {
       duplicate: Boolean(fields.duplicate),
       suppressed: Boolean(state.suppressed),
       suppressedPhones: (state.suppressedPhones || []).slice(),
+      ownerCapNoticeSent: Boolean(state.ownerCapNoticeSent),
+      dashboardPath: state.dashboardPath || '',
       conversation: state.conversation,
       sentToday: state.sentToday,
       sentToToday: state.sentToNumber[from] || 0,
@@ -1310,9 +1353,12 @@ function createEngine() {
       from: from,
       body: fields.body || '',
       messageSid: fields.messageSid || '',
+      publicBaseUrl: fields.publicBaseUrl || '',
       tenant: tenant,
       suppressed: state.suppressed,
       suppressedPhones: (state.suppressedPhones || []).slice(),
+      ownerCapNoticeSent: Boolean(state.ownerCapNoticeSent),
+      dashboardPath: state.dashboardPath || '',
       conversation: state.conversation,
       openEstimate: open[0] || null,
       estimates: state.estimates,
@@ -1346,6 +1392,8 @@ function createEngine() {
       duplicate: Boolean(packLoaded.duplicate),
       suppressed: Boolean(packLoaded.suppressed),
       suppressedPhones: Array.isArray(packLoaded.suppressed_phones) ? packLoaded.suppressed_phones : [],
+      ownerCapNoticeSent: Boolean(packLoaded.owner_cap_notice_sent),
+      dashboardPath: packLoaded.dashboard_path || '',
       conversation: packLoaded.conversation || null,
       openEstimate: packLoaded.open_estimate || null,
       estimates: packLoaded.estimates || [],
@@ -1404,6 +1452,7 @@ function createEngine() {
       missed_call_respects_quiet_hours: false,
       daily_sms_limit: 200,
       per_number_daily_limit: 12,
+      owner_daily_sms_limit: 60,
       active: true,
     }, overrides || {});
   }

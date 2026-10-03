@@ -313,7 +313,7 @@ The phone in `REPLY` is one token. `WON` and `LOST` use the estimate id on the d
 ## 10. Quiet hours, caps, STOP
 
 - Quiet hours default to 9:00 p.m.–8:00 a.m. in `timezone` (default `America/Chicago`). Follow-ups and queued texts wait until 8:00 a.m. Missed-call texts go immediately unless `missed_call_respects_quiet_hours` is true.
-- Default cap: 200 outbound texts per shop per rolling 24 hours, and 12 to any one number. STOP, HELP, and START confirmations still go out over the cap. Those are the compliance replies.
+- Default cap: 200 outbound texts per shop per rolling 24 hours, and 12 to any one customer number. The owner phone uses `owner_daily_sms_limit` (default 60), so lead alerts are not cut off by the customer cap. When the owner cap is reached, the owner gets one text, `Alerts paused for today, see your dashboard: <link>`, and later alerts that day stay on the dashboard only. Raise it with `UPDATE mctb.tenants SET owner_daily_sms_limit = 60 WHERE slug = 'northline';`. STOP, HELP, and START confirmations to the customer still go out over the cap. Those are the compliance replies.
 - STOP / STOPALL / UNSUBSCRIBE / CANCEL / END / QUIT must be the whole message. “Stop by tomorrow” is a normal reply.
 - A later missed call from an opted-out number is stored and the owner is told to call them. They are not texted.
 - Dashboard “Text a customer” and an owner `REPLY` to an opted-out number are refused. The owner sees that the number opted out. The text is not sent and is not written to `outbound_log` as sent.

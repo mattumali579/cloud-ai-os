@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS mctb.tenants (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE mctb.tenants ADD COLUMN IF NOT EXISTS owner_daily_sms_limit integer NOT NULL DEFAULT 60 CHECK (owner_daily_sms_limit > 0);
+
 CREATE TABLE IF NOT EXISTS mctb.calls (
   id bigserial PRIMARY KEY,
   tenant_id uuid NOT NULL REFERENCES mctb.tenants(id),
@@ -188,6 +190,7 @@ AS $$
     'missed_call_respects_quiet_hours', t.missed_call_respects_quiet_hours,
     'daily_sms_limit', t.daily_sms_limit,
     'per_number_daily_limit', t.per_number_daily_limit,
+    'owner_daily_sms_limit', t.owner_daily_sms_limit,
     'active', t.active
   );
 $$;
@@ -233,6 +236,14 @@ BEGIN
       SELECT jsonb_build_object('state', c.state, 'need', c.need, 'location', c.location, 'urgency', c.urgency)
       FROM mctb.conversations c
       WHERE c.tenant_id = t.id AND c.phone = p_from
+    ),
+    'dashboard_path', '/webhook/mctb-dashboard?token=' || t.dashboard_token,
+    'owner_cap_notice_sent', EXISTS (
+      SELECT 1 FROM mctb.outbound_log o
+      WHERE o.tenant_id = t.id
+        AND o.purpose = 'owner_cap_notice'
+        AND o.status IN ('twiml', 'sent', 'mock_sent')
+        AND o.created_at > now() - interval '24 hours'
     ),
     'sent_today', mctb.sent_count(t.id, NULL),
     'sent_to_today', mctb.sent_count(t.id, p_from),
@@ -289,6 +300,14 @@ BEGIN
         LIMIT 50
       ) x
     ), '[]'::jsonb),
+    'dashboard_path', '/webhook/mctb-dashboard?token=' || t.dashboard_token,
+    'owner_cap_notice_sent', EXISTS (
+      SELECT 1 FROM mctb.outbound_log o
+      WHERE o.tenant_id = t.id
+        AND o.purpose = 'owner_cap_notice'
+        AND o.status IN ('twiml', 'sent', 'mock_sent')
+        AND o.created_at > now() - interval '24 hours'
+    ),
     'sent_today', mctb.sent_count(t.id, NULL),
     'sent_to_today', mctb.sent_count(t.id, p_from),
     'sent_to_owner_today', mctb.sent_count(t.id, t.owner_phone)
