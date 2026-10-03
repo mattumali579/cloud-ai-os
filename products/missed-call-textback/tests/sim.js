@@ -157,6 +157,92 @@ function runCode(node, items, env, outputs, index, workflow) {
   return result;
 }
 
+function pathHasParam(webhookPath) {
+  return String(webhookPath || '').split('/').some((part) => part.startsWith(':'));
+}
+
+// n8n mounts a webhook path that contains :param under the node's webhook id.
+// /webhook/mctb-r/:token is served at /webhook/<webhookId>/mctb-r/<token> and 404s
+// at /webhook/mctb-r/<token>. A path with no colon is served at /webhook/<path>.
+function registeredWebhookPath(node) {
+  const raw = String((node.parameters && node.parameters.path) || '').replace(/^\/+|\/+$/g, '');
+  if (!pathHasParam(raw)) return raw;
+  if (!node.webhookId) return null;
+  return node.webhookId + '/' + raw;
+}
+
+function requestPathname(requestPath) {
+  const pathOnly = String(requestPath || '').split('?')[0];
+  return pathOnly.replace(/^\/+/, '').replace(/^webhook\//, '').replace(/\/+$/, '');
+}
+
+function matchPathPattern(pattern, actual) {
+  const expected = String(pattern || '').split('/');
+  const got = String(actual || '').split('/');
+  if (!pattern || expected.length !== got.length) return null;
+  const params = {};
+  for (let i = 0; i < expected.length; i += 1) {
+    if (expected[i].startsWith(':')) {
+      params[expected[i].slice(1)] = decodeURIComponent(got[i]);
+    } else if (expected[i] !== got[i]) {
+      return null;
+    }
+  }
+  return params;
+}
+
+function matchWebhook(workflow, method, requestPath) {
+  const wanted = String(method || 'GET').toUpperCase();
+  const actual = requestPathname(requestPath);
+  const nodes = (workflow && workflow.nodes) || [];
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i];
+    if (node.type !== 'n8n-nodes-base.webhook') continue;
+    const nodeMethod = String((node.parameters && node.parameters.httpMethod) || 'GET').toUpperCase();
+    if (nodeMethod !== wanted) continue;
+    const pattern = registeredWebhookPath(node);
+    const params = matchPathPattern(pattern, actual);
+    if (params) return { node: node, params: params };
+  }
+  return null;
+}
+
+function parseRequestTarget(requestUrl) {
+  const absolute = /^https?:\/\//i.test(requestUrl) ? requestUrl : 'https://n8n.local' + (String(requestUrl).startsWith('/') ? '' : '/') + requestUrl;
+  const url = new URL(absolute);
+  const query = {};
+  url.searchParams.forEach((value, key) => {
+    if (Object.prototype.hasOwnProperty.call(query, key)) {
+      query[key] = Array.isArray(query[key]) ? query[key].concat(value) : [query[key], value];
+    } else {
+      query[key] = value;
+    }
+  });
+  return { pathname: url.pathname, query: query };
+}
+
+function runWebhook(workflow, method, requestUrl, env, body) {
+  const target = parseRequestTarget(requestUrl);
+  const matched = matchWebhook(workflow, method, target.pathname);
+  if (!matched) {
+    return {
+      matched: false,
+      outputs: {},
+      httpLog: [],
+      emailLog: [],
+      responses: [{ statusCode: 404, body: 'not found', headers: {}, contentType: '' }],
+    };
+  }
+  const result = runWorkflow(workflow, matched.node.name, {
+    headers: {},
+    params: matched.params,
+    query: target.query,
+    body: body || {},
+  }, env);
+  result.matched = true;
+  return result;
+}
+
 function runWorkflow(workflow, triggerName, inputJson, env) {
   const nodes = {};
   workflow.nodes.forEach((node) => {
@@ -278,5 +364,8 @@ module.exports = {
   columnKey: columnKey,
   postgresItem: postgresItem,
   runWorkflow: runWorkflow,
+  runWebhook: runWebhook,
+  matchWebhook: matchWebhook,
+  pathHasParam: pathHasParam,
   resetWorkflowStaticData: resetWorkflowStaticData,
 };

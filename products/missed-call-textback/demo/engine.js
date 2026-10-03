@@ -1151,7 +1151,7 @@ function createEngine() {
         }),
       };
     }
-    const link = origin + '/webhook/mctb-r/' + row.token;
+    const link = origin + '/webhook/mctb-r?t=' + encodeURIComponent(row.token);
     const body = reviewBody(row.business_name || 'us', link, row.kind === 'reminder');
     return {
       send: true,

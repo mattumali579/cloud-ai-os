@@ -823,6 +823,7 @@ $$;
 
 ALTER TABLE mctb.tenants ADD COLUMN IF NOT EXISTS revenue_report_enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE mctb.tenants ADD COLUMN IF NOT EXISTS google_review_url text;
+ALTER TABLE mctb.outbound_queue ADD COLUMN IF NOT EXISTS revenue_report_id bigint;
 
 CREATE TABLE IF NOT EXISTS mctb.revenue_reports (
   id bigserial PRIMARY KEY,
@@ -1282,7 +1283,7 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   v_tenant uuid := (p->>'tenant_id')::uuid;
-  v_inserted integer := 0;
+  v_report bigint;
 BEGIN
   INSERT INTO mctb.revenue_reports (tenant_id, period, period_key, status, body)
   VALUES (
@@ -1292,15 +1293,15 @@ BEGIN
     COALESCE(p->>'status', 'queued'),
     COALESCE(p->>'body', '')
   )
-  ON CONFLICT (tenant_id, period, period_key) DO NOTHING;
-  GET DIAGNOSTICS v_inserted = ROW_COUNT;
-  IF v_inserted = 0 THEN
+  ON CONFLICT (tenant_id, period, period_key) DO NOTHING
+  RETURNING id INTO v_report;
+  IF v_report IS NULL THEN
     RETURN jsonb_build_object('ok', true, 'duplicate', true);
   END IF;
   IF COALESCE(p->>'status', '') = 'queued'
      AND COALESCE(p->>'body', '') <> ''
      AND COALESCE(p->>'to', '') <> '' THEN
-    INSERT INTO mctb.outbound_queue (tenant_id, to_number, from_number, body, purpose, send_at, status)
+    INSERT INTO mctb.outbound_queue (tenant_id, to_number, from_number, body, purpose, send_at, status, revenue_report_id)
     VALUES (
       v_tenant,
       p->>'to',
@@ -1308,7 +1309,8 @@ BEGIN
       p->>'body',
       COALESCE(p->>'purpose', 'revenue_report'),
       COALESCE(NULLIF(p->>'send_at', '')::timestamptz, now()),
-      'pending'
+      'pending',
+      v_report
     );
   END IF;
   RETURN jsonb_build_object('ok', true, 'duplicate', false);
@@ -1671,11 +1673,21 @@ BEGIN
       VALUES (v_tenant, 'out', COALESCE(p->>'from', ''), COALESCE(p->>'to', ''), p->>'body', COALESCE(p->>'purpose', 'followup'));
     END IF;
   ELSIF p->>'kind' = 'queue' THEN
-    IF v_status IN ('sent', 'mock_sent', 'suppressed') THEN
+    IF v_status IN ('sent', 'mock_sent', 'suppressed', 'failed') THEN
       UPDATE mctb.outbound_queue
-         SET status = CASE WHEN v_status = 'suppressed' THEN 'cancelled' ELSE 'sent' END
+         SET status = CASE WHEN v_status IN ('sent', 'mock_sent') THEN 'sent' ELSE 'cancelled' END
        WHERE id = (p->>'queue_id')::bigint
          AND tenant_id = v_tenant;
+      UPDATE mctb.revenue_reports r
+         SET status = CASE WHEN v_status IN ('sent', 'mock_sent') THEN 'sent' ELSE 'failed' END
+       WHERE r.id = (
+         SELECT q.revenue_report_id
+           FROM mctb.outbound_queue q
+          WHERE q.id = (p->>'queue_id')::bigint
+            AND q.tenant_id = v_tenant
+       )
+         AND r.tenant_id = v_tenant
+         AND r.status = 'queued';
     ELSIF v_status IN ('deferred', 'rate_limited', 'retry') AND NULLIF(p->>'next_send_at', '') IS NOT NULL THEN
       UPDATE mctb.outbound_queue
          SET send_at = (p->>'next_send_at')::timestamptz
