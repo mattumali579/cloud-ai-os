@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { psql, psqlJson, resetDatabase, quoteJson, runWorkflow, resetWorkflowStaticData } = require('./sim');
+const { psql, psqlJson, resetDatabase, quoteJson, runWorkflow, runWebhook, matchWebhook, resetWorkflowStaticData } = require('./sim');
 
 const root = path.join(__dirname, '..');
 const workflows = {
@@ -102,9 +102,28 @@ test('weekly and month-end revenue texts include the dashboard link and do not r
 
   psql('mctb_test', "UPDATE mctb.outbound_queue SET send_at = now() - interval '1 minute'");
   runWorkflow(workflows.followups, 'Run Follow-ups Webhook', envelope({ now: DAY }), env);
-  const sent = one("SELECT jsonb_build_object('n', (SELECT count(*) FROM mctb.outbound_log WHERE purpose = 'revenue_report_week'), 'status', (SELECT status FROM mctb.outbound_queue LIMIT 1))");
+  const sent = one("SELECT jsonb_build_object('n', (SELECT count(*) FROM mctb.outbound_log WHERE purpose = 'revenue_report_week'), 'status', (SELECT status FROM mctb.outbound_queue LIMIT 1), 'report', (SELECT status FROM mctb.revenue_reports))");
   assert.equal(Number(sent.n), 1);
   assert.equal(sent.status, 'sent');
+  assert.equal(sent.report, 'sent');
+
+  psql('mctb_test', `
+    INSERT INTO mctb.revenue_reports (tenant_id, period, period_key, status, body)
+    SELECT id, 'month', '2026-09', 'queued', 'September summary'
+    FROM mctb.tenants WHERE slug = 'northline';
+    INSERT INTO mctb.outbound_queue (tenant_id, to_number, from_number, body, purpose, send_at, status, revenue_report_id)
+    SELECT t.id, t.owner_phone, t.twilio_number, 'September summary', 'revenue_report_month', now() - interval '1 minute', 'pending', r.id
+    FROM mctb.tenants t
+    JOIN mctb.revenue_reports r ON r.tenant_id = t.id AND r.period_key = '2026-09'
+    WHERE t.slug = 'northline';
+    INSERT INTO mctb.suppressions (tenant_id, phone, reason)
+    SELECT id, owner_phone, 'stop' FROM mctb.tenants WHERE slug = 'northline';
+  `);
+  runWorkflow(workflows.followups, 'Run Follow-ups Webhook', envelope({ now: DAY }), env);
+  const failed = one("SELECT jsonb_build_object('report', (SELECT status FROM mctb.revenue_reports WHERE period_key = '2026-09'), 'queue', (SELECT status FROM mctb.outbound_queue WHERE purpose = 'revenue_report_month'))");
+  assert.equal(failed.report, 'failed');
+  assert.equal(failed.queue, 'cancelled');
+  psql('mctb_test', 'DELETE FROM mctb.suppressions');
 
   psql('mctb_test', "DELETE FROM mctb.revenue_reports; DELETE FROM mctb.outbound_queue; UPDATE mctb.tenants SET revenue_report_enabled = false");
   const off = runWorkflow(workflows.revenue, 'Run Revenue Webhook', envelope({ now: MONDAY_EIGHT }), env);
@@ -177,16 +196,17 @@ test('review requests wait two hours, track the click, remind once, and refuse o
   runWorkflow(workflows.followups, 'Run Follow-ups Webhook', envelope({ now: DAY }), env);
   const sent = one("SELECT jsonb_build_object('status', status, 'body', (SELECT body FROM mctb.outbound_log WHERE purpose = 'review_request' ORDER BY id DESC LIMIT 1), 'token', token) FROM mctb.review_requests");
   assert.equal(sent.status, 'sent');
-  assert.match(sent.body, /https:\/\/text\.example\/webhook\/mctb-r\//);
+  assert.match(sent.body, /https:\/\/text\.example\/webhook\/mctb-r\?t=/);
+  assert.doesNotMatch(sent.body, /\/webhook\/mctb-r\//);
   assert.match(sent.body, /STOP/);
   assert.doesNotMatch(sent.body, /placeid/);
 
-  const click = runWorkflow(workflows.review, 'Review Click', {
-    headers: {},
-    params: { token: sent.token },
-    query: {},
-    body: {},
-  }, env);
+  const hidden = runWebhook(workflows.review, 'GET', '/webhook/mctb-r/' + sent.token, env);
+  assert.equal(hidden.matched, false);
+  assert.equal(hidden.responses[0].statusCode, 404);
+
+  const click = runWebhook(workflows.review, 'GET', '/webhook/mctb-r?t=' + encodeURIComponent(sent.token), env);
+  assert.equal(click.matched, true);
   assert.equal(click.responses[0].statusCode, 302);
   assert.equal(click.responses[0].headers.Location, 'https://search.google.com/local/writereview?placeid=abc');
   const clicked = one("SELECT jsonb_build_object('status', status, 'clicked', clicked_at IS NOT NULL) FROM mctb.review_requests");
@@ -196,12 +216,8 @@ test('review requests wait two hours, track the click, remind once, and refuse o
   runWorkflow(workflows.followups, 'Run Follow-ups Webhook', envelope({ now: DAY }), env);
   assert.equal(Number(one("SELECT jsonb_build_object('n', (SELECT count(*) FROM mctb.outbound_log WHERE purpose = 'review_reminder'))").n), 0);
 
-  const missing = runWorkflow(workflows.review, 'Review Click', {
-    headers: {},
-    params: { token: 'missing-token' },
-    query: {},
-    body: {},
-  }, env);
+  const missing = runWebhook(workflows.review, 'GET', '/webhook/mctb-r?t=missing-token', env);
+  assert.equal(missing.matched, true);
   assert.equal(missing.responses[0].statusCode, 404);
 
   psql('mctb_test', `
@@ -296,6 +312,25 @@ test('health endpoint, hourly admin alert, and recovery notice', () => {
   assert.equal(repeat.emailLog.length, 0);
 });
 
+test('a :param webhook is served only under its webhook id', () => {
+  const live = workflows.review.nodes.find((node) => node.name === 'Review Click');
+  assert.equal(live.parameters.path, 'mctb-r');
+  assert.equal(matchWebhook(workflows.review, 'GET', '/webhook/mctb-r').node.name, 'Review Click');
+  assert.equal(matchWebhook(workflows.review, 'GET', '/webhook/' + live.webhookId + '/mctb-r/tok'), null);
+
+  const dynamic = {
+    nodes: [{
+      name: 'Review Click',
+      type: 'n8n-nodes-base.webhook',
+      webhookId: 'mctb-review-hook',
+      parameters: { httpMethod: 'GET', path: 'mctb-r/:token' },
+    }],
+  };
+  assert.equal(matchWebhook(dynamic, 'GET', '/webhook/mctb-r/tok123'), null);
+  const underId = matchWebhook(dynamic, 'GET', '/webhook/mctb-review-hook/mctb-r/tok123');
+  assert.equal(underId.params.token, 'tok123');
+});
+
 test('backup scripts dump the mctb schema and keep 14 days', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mctb-backup-'));
   const stub = path.join(dir, 'docker');
@@ -305,8 +340,10 @@ test('backup scripts dump the mctb schema and keep 14 days', () => {
   const keptFile = path.join(dir, 'mctb-kept.sql');
   fs.writeFileSync(oldFile, 'old');
   fs.writeFileSync(keptFile, 'kept');
-  execFileSync('touch', ['-d', '15 days ago', oldFile]);
-  execFileSync('touch', ['-d', '3 days ago', keptFile]);
+  const oldTime = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+  const keptTime = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  fs.utimesSync(oldFile, oldTime, oldTime);
+  fs.utimesSync(keptFile, keptTime, keptTime);
   const output = execFileSync(path.join(root, 'scripts/backup.sh'), {
     encoding: 'utf8',
     env: Object.assign({}, process.env, {
@@ -333,7 +370,11 @@ test('backup scripts dump the mctb schema and keep 14 days', () => {
   assert.match(ps1, /pg_dump/);
   assert.match(ps1, /--schema=mctb/);
   assert.match(ps1, /docker exec/);
+  assert.match(ps1, /-f \$remote/);
+  assert.match(ps1, /docker cp/);
+  assert.match(ps1, /rm -f \$remote/);
   assert.match(ps1, /AddDays\(-14\)/);
+  assert.doesNotMatch(ps1, /WriteAllLines/);
   const runbook = fs.readFileSync(path.join(root, 'RUNBOOK.md'), 'utf8');
   assert.match(runbook, /Task Scheduler/);
   assert.match(runbook, /backup\.ps1/);

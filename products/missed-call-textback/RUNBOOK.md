@@ -353,7 +353,7 @@ HELP
 
 The phone in `REPLY`, `DONE`, and `REVIEW` is one token. `WON` and `LOST` use the estimate id on the dashboard.
 
-`WON` (text or the dashboard button), `DONE`, and `REVIEW` schedule a Google review text when `google_review_url` is an `https://` link. The customer gets it about two hours later, or at the end of quiet hours if that moment is overnight. One reminder goes out three days after the first text if they have not opened the link. The link in the text is `https://HOST/webhook/mctb-r/<token>`, which records the click and redirects to the Google URL. Nothing is sent when the link is empty, the number opted out, or that customer already had a request in the last 90 days.
+`WON` (text or the dashboard button), `DONE`, and `REVIEW` schedule a Google review text when `google_review_url` is an `https://` link. The customer gets it about two hours later, or at the end of quiet hours if that moment is overnight. One reminder goes out three days after the first text if they have not opened the link. The link in the text is `https://HOST/webhook/mctb-r?t=<token>`, which records the click and redirects to the Google URL. The path is static. A `:token` path is served by n8n only as `/webhook/<webhookId>/mctb-r/<token>`, so the short link would 404 and the customer would still get the reminder. Nothing is sent when the link is empty, the number opted out, or that customer already had a request in the last 90 days.
 
 ```sql
 UPDATE mctb.tenants
@@ -450,11 +450,11 @@ docker exec cloudos-n8n-1 printenv MCTB_ADMIN_PHONE
 
 Open `https://HOST/webhook/mctb-health`. You want HTTP 200. `ok` stays false until both the follow-up workflow and the revenue workflow have completed once.
 
-Set `google_review_url` for shops that want review texts. Leave it null and no review text is sent.
+Set `google_review_url` for shops that want review texts. Leave it null and no review text is sent. Re-import **BrightReach Review Link** so clicks hit `https://HOST/webhook/mctb-r?t=<token>`. Links already texted as `/webhook/mctb-r/<token>` 404 until that customer is sent a new request.
 
 ## 15. Backup
 
-`scripts/backup.sh` and `scripts/backup.ps1` run `pg_dump --schema=mctb` inside the Postgres container and write `mctb-YYYYMMDD-HHMMSS.sql`. Files older than 14 days are deleted. Nothing outside schema `mctb` is dumped.
+`scripts/backup.sh` and `scripts/backup.ps1` run `pg_dump --schema=mctb` inside the Postgres container and write `mctb-YYYYMMDD-HHMMSS.sql`. Files older than 14 days are deleted. Nothing outside schema `mctb` is dumped. The PowerShell script writes the dump with `pg_dump -f` inside the container and `docker cp`s it out, so names and comments stay UTF-8 with Unix line endings.
 
 Linux or the mini PC if Git Bash is available:
 

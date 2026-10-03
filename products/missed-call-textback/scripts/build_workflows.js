@@ -669,16 +669,17 @@ const reviewGraph = workflowBuilder('mctbrev1');
 reviewGraph.add(webhook(
   'Review Click',
   'GET',
-  'mctb-r/:token',
+  'mctb-r',
   'mctb-review-hook',
-  'Tracked Google review link. Logs the click, then redirects to the shop google_review_url.'
+  'Tracked Google review link. Logs the click, then redirects to the shop google_review_url. The path stays static: n8n only serves a :param path under the webhook id, which would 404 the URL in the text.'
 ));
 reviewGraph.add(code('Read Review Token', `
 const item = $input.first().json || {};
-const params = item.params || {};
-const token = String(params.token || '').trim();
+const query = item.query || {};
+const raw = query.t;
+const token = String(Array.isArray(raw) ? (raw[0] || '') : (raw || '')).trim();
 return [{ json: { token: token } }];
-`, 'Token from /webhook/mctb-r/<token>.'));
+`, 'Token from /webhook/mctb-r?t=<token>.'));
 reviewGraph.add(postgres(
   'Log Review Click',
   selectAs('mctb.review_click($1::text)', 'click'),

@@ -506,7 +506,8 @@ test('review sends use the tracked link, quiet hours, and opt-out', () => {
   const env = { MCTB_PUBLIC_BASE_URL: 'https://text.example' };
   const sent = engine.planOneReview(row, DAY, env);
   assert.equal(sent.send, true);
-  assert.match(sent.body, /https:\/\/text\.example\/webhook\/mctb-r\/tok123/);
+  assert.match(sent.body, /https:\/\/text\.example\/webhook\/mctb-r\?t=tok123/);
+  assert.doesNotMatch(sent.body, /\/webhook\/mctb-r\/tok123/);
   assert.match(sent.body, /STOP/);
   assert.doesNotMatch(sent.body, /placeid=abc/);
 

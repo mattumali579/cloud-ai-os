@@ -75,7 +75,7 @@ test('workflow files embed the engine and do not carry live credentials', () => 
     'mctb-followups-run',
     'mctb-health',
     'mctb-health-run',
-    'mctb-r/:token',
+    'mctb-r',
     'mctb-revenue-run',
     'mctb-sms',
     'mctb-voice',
