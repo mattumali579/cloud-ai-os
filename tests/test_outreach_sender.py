@@ -64,6 +64,7 @@ def cfg():
     c = _copy.deepcopy(c)
     c["pacing"].update(send_days=[0, 1, 2, 3, 4, 5, 6], window_start="00:00", window_end="23:59",
                        provider_daily_limit=1000, daily_limit=1000)
+    c["experiment"] = {"v3_share": 0.0, "v3_industries": []}      # existing tests pin the v2 control copy
     return c
 
 
@@ -151,6 +152,85 @@ def test_every_angle_is_one_offer_short_and_passes_qa(facts, tag):
     assert len(e.body.replace(ADDR, "").split()) <= 110
     assert "three ways" not in e.body and e.body.count("?") == 1
     assert e.subject[0].isupper() and len(e.subject) <= 60
+
+
+@pytest.mark.parametrize("facts", [{}, {"free_estimate_offer": True}, {"emergency_service": True},
+                                   {"google_reviews": 140, "google_rating": 4.9}])
+def test_v3_is_short_one_question_brand_signed_and_passes_qa(facts):
+    row = {"company_name": "Bayou Plumbing Co.", "industry": "plumbing", "city": "Metairie", "personalization": facts}
+    e = cw.first_touch(row, sender_name="Matt Umali", postal_address=ADDR, version=cw.V3)
+    assert e.variant.startswith("v3-") and cw.qa(e, postal_address=ADDR, company_name=row["company_name"]) == []
+    assert len(e.body.split("\n--\n")[0].split()) <= cw.V3_MAX_WORDS and e.body.count("?") == 1
+    assert "BrightReach Media" in e.body and "$" not in e.body and "http" not in e.body
+    for step in (1, 2):
+        f = cw.followup(row, step, e.subject, sender_name="Matt Umali", postal_address=ADDR, version=cw.V3)
+        assert f.variant == f"v3-fu{step}" and f.subject == f"Re: {e.subject}"
+        assert cw.qa(f, postal_address=ADDR, company_name=row["company_name"]) == []
+
+
+def test_v3_arm_is_deterministic_about_half_and_only_for_its_industries():
+    ids = [str(uuid.uuid4()) for _ in range(2000)]
+    arms = [cw.arm(i, "roofing", share=0.5, industries=["roofing"]) for i in ids]
+    assert arms == [cw.arm(i, "roofing", share=0.5, industries=["roofing"]) for i in ids]
+    assert 0.45 < arms.count("v3") / len(arms) < 0.55
+    assert cw.arm(ids[0], "salon", share=1.0, industries=["salon"]) == "v2"      # no v3 copy for salons
+    assert cw.arm(ids[0], "electrical", share=1.0, industries=["hvac", "plumbing", "roofing"]) == "v2"
+    assert cw.arm(ids[0], "HVAC", share=1.0, industries=["hvac", "plumbing", "roofing"]) == "v3"
+    assert cw.arm(ids[0], "roofing", share=0.0, industries=["roofing"]) == "v2"
+
+
+def test_v3_followups_stay_in_the_v3_arm(conn, cfg):
+    cfg["experiment"] = {"v3_share": 1.0, "v3_industries": ["roofing"]}
+    cid = company(conn)
+    sender.plan(conn, cfg)
+    assert q(conn, cid)["copy_variant"].startswith("v3-")
+    run(conn, cfg, FakeMailbox())
+    assert q(conn, cid, 1)["copy_variant"] == "v3-fu1"
+    assert conn.execute("SELECT copy_variant FROM outreach_messages WHERE company_id = %s", (cid,)
+                        ).fetchone()["copy_variant"].startswith("v3-")
+    conn.execute("UPDATE outreach_queue SET due_at = now() - interval '1 minute' WHERE company_id = %s AND step = 1",
+                 (cid,))
+    conn.commit()
+    run(conn, cfg, FakeMailbox())
+    assert q(conn, cid, 2)["copy_variant"] == "v3-fu2"      # touch 3 stays in the first touch's arm
+
+
+def test_industry_limit_is_off_by_default_and_filters_when_enabled(conn, cfg):
+    assert sender.load_config()["planning"]["industry_limit"]["enabled"] is False
+    assert sender.industry_limit(cfg) is None
+    roof = company(conn, "Top Roofing", "toproof.com", "a@toproof.com")
+    salon = company(conn, "Glow Salon", "glowsalon.com", "a@glowsalon.com")
+    conn.execute("UPDATE companies SET industry = 'salon' WHERE company_id = %s", (salon,))
+    conn.commit()
+    cfg["planning"]["industry_limit"] = {"enabled": True, "industries": ["hvac", "plumbing", "roofing"]}
+    assert sender.plan(conn, cfg)["queued"] == 1
+    assert q(conn, roof) is not None and q(conn, salon) is None
+    cfg["planning"]["industry_limit"]["enabled"] = False
+    assert sender.plan(conn, cfg)["queued"] == 1 and q(conn, salon) is not None
+
+
+def test_v3_share_zero_rewrites_unsent_first_touches_and_leaves_attempted(conn, cfg):
+    cfg["experiment"] = {"v3_share": 1.0, "v3_industries": ["hvac", "plumbing", "roofing"]}
+    waiting = company(conn, "Waiting HVAC", "waitinghvac.com", "a@waitinghvac.com")
+    started = company(conn, "Started Plumbing", "startedplumb.com", "a@startedplumb.com")
+    conn.execute("UPDATE companies SET industry = 'hvac' WHERE company_id = %s", (waiting,))
+    conn.execute("UPDATE companies SET industry = 'plumbing' WHERE company_id = %s", (started,))
+    conn.commit()
+    sender.plan(conn, cfg)
+    assert q(conn, waiting)["copy_variant"].startswith("v3-")
+    assert q(conn, started)["copy_variant"].startswith("v3-")
+    conn.execute("UPDATE outreach_queue SET attempts = 1 WHERE company_id = %s", (started,))
+    conn.commit()
+    kept = q(conn, started)["body"]
+    cfg["experiment"]["v3_share"] = 0
+    out = sender.plan(conn, cfg)
+    assert out["refreshed"]["rewritten"] == 1
+    rolled = q(conn, waiting)
+    assert rolled["copy_variant"].startswith("v2-") and "BrightReach Media" not in rolled["body"]
+    assert ADDR in rolled["body"] and '"stop"' in rolled["body"]
+    stayed = q(conn, started)
+    assert stayed["copy_variant"].startswith("v3-") and stayed["body"] == kept
+    assert sender.refresh_queued(conn, cfg) == {"rewritten": 0, "qa_failed": 0}
 
 
 def test_refresh_rewrites_old_wording_only_before_any_send_attempt(conn, cfg):
