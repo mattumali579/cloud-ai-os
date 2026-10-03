@@ -1,0 +1,9 @@
+{
+  "name": "brightreach-missed-call-textback",
+  "private": true,
+  "description": "Missed-call text-back and estimate follow-up workflows for BrightReach Media.",
+  "scripts": {
+    "build": "node scripts/build_workflows.js",
+    "test": "node --test --test-concurrency=1 tests/engine.test.js tests/product.test.js"
+  }
+}

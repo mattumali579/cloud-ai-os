@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BrightReach · Missed-call text-back</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<header class="top">
+  <p class="brand">BrightReach Media</p>
+  <p class="price">$1,500 once · the shop owns it · 30 days, it works or the money comes back</p>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>They called while you were on the roof. They still got an answer.</h1>
+    <p class="lede">An unanswered call turns into a text from the business, three short questions, and a note on the owner’s phone. Estimates get followed up the same day, two days later, and five days later, until the customer replies, you mark the job won or lost, or they text STOP.</p>
+  </section>
+
+  <section class="stage" aria-label="Sales simulation">
+    <article class="device customer">
+      <p class="device-label">Caller’s phone</p>
+      <div class="phone" id="customer-phone">
+        <div class="statusbar"><span>9:41</span><span>LTE</span></div>
+        <div id="call-screen" class="call-screen">
+          <p class="call-kicker">Mobile</p>
+          <h2>Northline Heating &amp; Air</h2>
+          <p class="call-status" id="call-status">Ready</p>
+          <button type="button" class="call-button" id="miss-call">Miss the call</button>
+        </div>
+        <div id="thread" class="thread hidden" aria-live="polite"></div>
+        <form id="composer" class="composer hidden">
+          <input id="draft" name="draft" autocomplete="off" placeholder="Reply as the caller">
+          <button type="submit">Send</button>
+        </form>
+      </div>
+      <div class="chips" id="chips"></div>
+    </article>
+
+    <article class="device owner">
+      <p class="device-label">Owner’s phone</p>
+      <div class="phone owner-phone">
+        <div class="statusbar"><span>9:41</span><span>Dana</span></div>
+        <div class="lock">
+          <p class="lock-time">2:14</p>
+          <p class="lock-date">On a job · Milwaukee</p>
+          <div id="owner-feed" class="owner-feed">
+            <p class="empty-note">Nothing yet. Miss the call on the left.</p>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <aside class="ticket" id="ticket">
+      <p class="ticket-kicker">Work order</p>
+      <h2>Northline Heating &amp; Air</h2>
+      <dl>
+        <div><dt>Caller</dt><dd id="t-phone">—</dd></div>
+        <div><dt>Need</dt><dd id="t-need">—</dd></div>
+        <div><dt>Address / ZIP</dt><dd id="t-place">—</dd></div>
+        <div><dt>Urgency</dt><dd id="t-urgency">—</dd></div>
+        <div><dt>Estimate</dt><dd id="t-estimate">Not logged</dd></div>
+      </dl>
+      <p class="ticket-foot">Fictional shop. This page sends nothing.</p>
+    </aside>
+  </section>
+
+  <section class="followups hidden" id="followups">
+    <h2>Estimate follow-up</h2>
+    <p>Same copy the scheduler sends: same day, two days later at 10:00 local, five days later at 10:00 local. A reply, a won/lost mark, or STOP ends it.</p>
+    <ol id="followup-list"></ol>
+  </section>
+
+  <section class="proof">
+    <h2>What the 30-day board counts</h2>
+    <div class="stats" id="stats"></div>
+    <p>On a real install this is a private page for that shop only. Two shops on one deployment cannot see each other’s calls.</p>
+  </section>
+</main>
+
+<footer>
+  <p>Simulation in the browser. No Twilio account, no text sent, no charge. Northline Heating &amp; Air is not a real company.</p>
+</footer>
+<script src="./engine.js"></script>
+<script src="./demo.js"></script>
+</body>
+</html>
