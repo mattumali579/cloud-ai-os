@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Attach a Postgres credential to the imported BrightReach workflows and activate them.
 // n8n's login API has changed across versions. If this fails, attach "BrightReach Postgres"
-// in the editor. The product still runs; this script only saves clicking 11 nodes.
+// in the editor. The product still runs; this script only saves clicking each Postgres node.
 
 const base = (process.env.N8N_BASE_URL || 'http://127.0.0.1:5679').replace(/\/$/, '');
 const email = process.env.N8N_EMAIL || '';
@@ -13,6 +13,9 @@ const names = [
   'BrightReach Estimate Follow-ups',
   'BrightReach Dashboard',
   'BrightReach Dashboard Actions',
+  'BrightReach Recovered Revenue',
+  'BrightReach Review Link',
+  'BrightReach Health',
 ];
 
 if (!email || !password) {
@@ -108,6 +111,6 @@ async function main() {
 
 main().catch((error) => {
   console.error(error.message);
-  console.error('Attach credential "BrightReach Postgres" to each Postgres node in the editor, then activate the six workflows.');
+  console.error('Attach credential "BrightReach Postgres" to each Postgres node in the editor, then activate the BrightReach workflows.');
   process.exit(1);
 });

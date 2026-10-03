@@ -12,6 +12,8 @@ BrightReach Media sells this to HVAC, plumbing, roofing, electrical, and similar
 - The owner logs an estimate (form or text). The customer gets a short follow-up the same day, two days later, and five days later. A reply, a won/lost mark, or STOP ends the sequence.
 - STOP, HELP, and START are honored. Opted-out numbers are not texted again. Follow-ups wait out quiet hours. Each shop has a daily text cap.
 - One running copy serves many shops. Each shop has its own number, wording, owner, and a private results page: missed calls, callers who replied, leads, estimates, and jobs marked won. That page is what you show for the guarantee.
+- Monday at 8am in the shop's time zone, the owner gets a short recovered-revenue text. The last morning of the month gets a month summary. The same numbers are on the dashboard under This week / This month. A shop can turn the text off.
+- When a job is marked won, or the owner texts DONE or REVIEW plus the customer phone, the customer gets one Google review request two hours later and one reminder three days later if they have not opened the link. Opted-out numbers are skipped. Each customer gets at most one request every 90 days.
 - A browser demo for sales calls. It does not need Twilio and it does not send a text.
 
 ## Run the demo
@@ -46,7 +48,9 @@ npm run build
 
 ## Install for a paying client
 
-Follow `RUNBOOK.md`. Short version: Postgres schema `mctb`, import the six files in `workflows/`, point the shop’s unanswered calls at a Twilio number, set four environment variables, open the dashboard link the setup script prints.
+Follow `RUNBOOK.md`. Short version: Postgres schema `mctb`, import the workflow files in `workflows/`, point the shop’s unanswered calls at a Twilio number, set the environment variables, open the dashboard link the setup script prints.
+
+Upgrading a mini PC that already has this installed: re-apply `sql/001_schema.sql` (it only adds tables and columns), then re-import the workflow JSON and activate the new workflows. The runbook has the commands.
 
 No Twilio account is required to develop or to show the demo. Real texting starts only when you put that client’s (or your) Twilio credentials in the environment. This repo does not contain those credentials and does not buy numbers.
 
@@ -55,12 +59,14 @@ No Twilio account is required to develop or to show the demo. Real texting start
 | Path | Role |
 |---|---|
 | `workflows/*.json` | Import these into n8n |
-| `logic/engine.js` | Wording, STOP rules, quiet hours, follow-up dates. The workflows embed this file. |
-| `sql/001_schema.sql` | Postgres schema `mctb` only. It does not touch outreach tables. |
+| `logic/engine.js` | Wording, STOP rules, quiet hours, follow-up dates, revenue texts, review timing. The workflows embed this file. |
+| `sql/001_schema.sql` | Postgres schema `mctb` only. It does not touch outreach tables. Re-running it is safe. |
 | `demo/` | Static sales page |
 | `scripts/setup_tenant.sh` | One command to add a shop |
 | `scripts/setup_tenant.ps1` | Same insert on Windows, through `docker exec` |
 | `scripts/install_into_n8n.sh` | Apply schema and import workflows |
+| `scripts/backup.sh` | `pg_dump` schema `mctb` through `docker exec`, keep 14 days |
+| `scripts/backup.ps1` | Same backup on Windows |
 | `docker-compose.yml` | Optional dedicated Postgres + n8n if you do not want to use the existing Cloud AI OS stack |
 
 ## Limits worth knowing before the first install

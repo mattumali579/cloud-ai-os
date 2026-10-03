@@ -4,7 +4,7 @@ Do this on the Windows mini PC that already runs Docker. You do not buy a server
 
 Two ways to host it:
 
-1. **Use the n8n and Postgres you already run** for Cloud AI OS. The product lives in schema `mctb` and in six new workflows. Outreach tables are not modified.
+1. **Use the n8n and Postgres you already run** for Cloud AI OS. The product lives in schema `mctb` and in its own workflows. Outreach tables are not modified.
 2. **Start a separate stack** from `products/missed-call-textback/docker-compose.yml` if you want this client’s data in its own Postgres. Host ports are 5680 (n8n) and 54329 (Postgres) so they do not take the Cloud AI OS ports 5679 and 5432.
 
 ## 0. What you will spend
@@ -69,11 +69,20 @@ TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 MCTB_PUBLIC_BASE_URL=https://your-tunnel-host
 OWNER_ALERT_WEBHOOK_URL=
+MCTB_ADMIN_PHONE=
+MCTB_ADMIN_EMAIL=
+N8N_SMTP_HOST=
+N8N_SMTP_PORT=
+N8N_SMTP_USER=
+N8N_SMTP_PASS=
+N8N_SMTP_SENDER=
 ```
 
 `N8N_BLOCK_ENV_ACCESS_IN_NODE` must stay false. The workflows read those variables with `$env`.
 
 `OWNER_ALERT_WEBHOOK_URL` is optional. Point it at the Cloud AI OS `owner-notify` webhook, a Discord webhook, or anything that accepts `{"severity","code","message","meta"}`. Owner SMS still happens through the business number.
+
+`MCTB_ADMIN_PHONE` and `MCTB_ADMIN_EMAIL` are optional. The health workflow texts the phone and emails the address when Postgres or a scheduled workflow stops answering, at most once an hour, and sends a recovery note when it comes back. The text goes out from the oldest active shop number, still respects that shop's quiet hours, and is not sent if that number has the admin phone opted out. Email is sent only when `N8N_SMTP_HOST` or `SMTP_HOST` is set. In n8n, create an SMTP credential named `BrightReach SMTP` with the same host, port, user, and password, and attach it to the Send Health Email node. `N8N_SMTP_SENDER` is the From address. Empty values leave mock installs quiet.
 
 n8n listens on port **5678 inside the container**. The host port is whatever the compose file publishes, and it is not the same on every machine. The Cloud AI OS stack on the mini PC publishes **5679**. The dedicated compose file in this folder publishes **5680**. Before you open the editor or start a tunnel, read the published port from `docker ps`. Do not assume 5678 on the host.
 
@@ -98,11 +107,14 @@ Files:
 - `workflows/mctb_voice.json` — unanswered call
 - `workflows/mctb_dial_status.json` — owner did not pick up
 - `workflows/mctb_inbound_sms.json` — replies, STOP/HELP/START, owner commands
-- `workflows/mctb_followups.json` — estimate sequence, once a minute
+- `workflows/mctb_followups.json` — estimate sequence, review texts, and queued SMS, once a minute
 - `workflows/mctb_dashboard.json` — private results page
 - `workflows/mctb_actions.json` — log an estimate, text a customer, mark won/lost
+- `workflows/mctb_revenue.json` — Monday 8am and month-end recovered-revenue texts
+- `workflows/mctb_review_click.json` — tracked Google review link
+- `workflows/mctb_health.json` — public heartbeat and admin alerts
 
-UI: n8n → Workflows → Import from File. Repeat for all six. Leave them inactive until the Postgres credential is attached.
+UI: n8n → Workflows → Import from File. Repeat for every file. Leave them inactive until the Postgres credential is attached.
 
 CLI, from the repo root, with the Cloud AI OS compose project:
 
@@ -128,7 +140,7 @@ n8n does not import database passwords from git. In n8n: Credentials → New →
 
 The host name `db` works only inside the compose network. From the Windows host it is `localhost`.
 
-Open each imported workflow. Every node that says Postgres needs this credential. There are 11 of them. Save.
+Open each imported workflow. Every node that says Postgres needs this credential. Save.
 
 If you already created an n8n owner login, this can click them for you:
 
@@ -143,9 +155,9 @@ MCTB_PG_PASSWORD='the postgres password' \
 node products/missed-call-textback/scripts/assign_postgres_credential.mjs
 ```
 
-Use port 5680 if you started the dedicated compose file. The script creates the credential, writes its id onto the Postgres nodes, and activates the six BrightReach workflows. If the n8n API shape does not match, it prints the error and you attach the credential by hand. That is a linking step, not a product bug.
+Use port 5680 if you started the dedicated compose file. The script creates the credential, writes its id onto the Postgres nodes, and activates the BrightReach workflows. If the n8n API shape does not match, it prints the error and you attach the credential by hand. That is a linking step, not a product bug.
 
-Activate all six workflows. Production webhook URLs do not exist until the workflow is active. The editor “test URL” (`/webhook-test/...`) is the wrong URL to paste into Twilio.
+Activate every BrightReach workflow, including Recovered Revenue, Review Link, and Health. Production webhook URLs do not exist until the workflow is active. The editor “test URL” (`/webhook-test/...`) is the wrong URL to paste into Twilio.
 
 ## 4. Expose the webhooks
 
@@ -173,8 +185,37 @@ Paste these three URLs into the Twilio number. Method POST.
 | A call comes in | `https://HOST/webhook/mctb-voice` |
 | (dial mode only) the Dial action is set by the workflow from `MCTB_PUBLIC_BASE_URL` | `https://HOST/webhook/mctb-dial-status` |
 | A message comes in | `https://HOST/webhook/mctb-sms` |
+| Primary handler fails (voice) | TwiML Bin in the next section |
+| Primary handler fails (messaging) | TwiML Bin in the next section |
 
 Leave the status callback empty unless you want Twilio’s debugger as well.
+
+A free uptime check (UptimeRobot’s free plan is enough) can GET `https://HOST/webhook/mctb-health`. A live database returns HTTP 200 and `{"ok":true,"db":"ok","version":"mctb-engine-1"}`. `ok` is false when the follow-up or revenue workflow has not succeeded recently. A keyword check on `"ok":true` catches that. If Postgres itself is down, n8n returns a non-200 and the status check fires.
+
+### Twilio fallback when the primary handler fails
+
+Twilio TwiML Bins are free. They run when n8n does not answer. Create two bins in the Twilio console and paste the URLs into the number’s **Primary handler fails** fields.
+
+Voice bin. The caller hears one sentence. This does not replace the normal missed-call text; it only covers the moment the webhook itself fails.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Sorry we missed you, we'll text you right back.</Say>
+  <Hangup/>
+</Response>
+```
+
+Messaging bin. Replace the owner number with that shop’s owner phone. `{{From}}` and `{{Body}}` are filled in by Twilio.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message to="+14145550199">Text to this number did not reach the usual handler. From {{From}}: {{Body}}</Message>
+</Response>
+```
+
+One bin per shop, because the owner phone is baked into the XML. Bins do not look up the database.
 
 n8n’s own login protects the editor. It does not protect webhooks. The dashboard is protected by the random token from the setup script. Do not put the n8n editor on the public hostname if you can avoid it; a tunnel that only forwards `/webhook/` is tighter. A quick tunnel forwards the whole port, so use a strong n8n owner password.
 
@@ -304,11 +345,29 @@ From the owner’s mobile, text the Twilio number:
 ESTIMATE Jane Doe | 4145550199 | furnace | 4500
 WON 12
 LOST 12
+DONE +14145550199
+REVIEW +14145550199
 REPLY +14145550199 We can be there Thursday
 HELP
 ```
 
-The phone in `REPLY` is one token. `WON` and `LOST` use the estimate id on the dashboard.
+The phone in `REPLY`, `DONE`, and `REVIEW` is one token. `WON` and `LOST` use the estimate id on the dashboard.
+
+`WON` (text or the dashboard button), `DONE`, and `REVIEW` schedule a Google review text when `google_review_url` is an `https://` link. The customer gets it about two hours later, or at the end of quiet hours if that moment is overnight. One reminder goes out three days after the first text if they have not opened the link. The link in the text is `https://HOST/webhook/mctb-r/<token>`, which records the click and redirects to the Google URL. Nothing is sent when the link is empty, the number opted out, or that customer already had a request in the last 90 days.
+
+```sql
+UPDATE mctb.tenants
+SET google_review_url = 'https://search.google.com/local/writereview?placeid=YOUR_PLACE_ID'
+WHERE slug = 'northline';
+```
+
+The Monday 8am text and the month-end text (8am shop time on the last calendar day) go to the owner. They list missed calls, callers texted, conversations recovered, qualified leads, estimates sent, jobs won with the dollar amount, estimated revenue recovered, and the dashboard link. Estimated revenue recovered is the won amount for customers who were texted after a missed call and replied before the job was marked won. Each text is under 320 characters. Turn a shop off with:
+
+```sql
+UPDATE mctb.tenants SET revenue_report_enabled = false WHERE slug = 'northline';
+```
+
+The default is on. The dashboard shows the same figures for the current week and the current month, plus review requests sent and review links clicked.
 
 ## 10. Quiet hours, caps, STOP
 
@@ -330,10 +389,13 @@ If Pages was already pointed at another folder, don’t run that action until yo
 ## 12. Go-live checklist
 
 - [ ] Schema `mctb` applied
-- [ ] Six workflows imported, Postgres credential attached, workflows active
+- [ ] All BrightReach workflows imported, Postgres credential attached, workflows active
 - [ ] `MCTB_PUBLIC_BASE_URL` is the public https origin and n8n was restarted
 - [ ] Tunnel stays up when the laptop you sold from is closed (the mini PC is the host)
 - [ ] Twilio number’s voice and SMS webhooks point at `/webhook/mctb-voice` and `/webhook/mctb-sms`
+- [ ] Primary handler fails points at the TwiML Bins
+- [ ] `https://HOST/webhook/mctb-health` returns `{"ok":true,...}` after the follow-up and revenue workflows have run
+- [ ] Backup task is scheduled (section 14)
 - [ ] Shop added with `setup_tenant.sh` (or `setup_tenant.ps1` on Windows), dashboard link in the owner’s hands
 - [ ] Call forwarding is conditional, and a real missed call produced a real text
 - [ ] A2P brand and campaign submitted, number attached, campaign approved before you call the line “in production”
@@ -346,10 +408,68 @@ If Pages was already pointed at another folder, don’t run that action until yo
 |---|---|
 | Twilio debugger says 404 on the webhook | Workflow is not active, or the path is `/webhook-test/` |
 | Execution errors on every Postgres node | Credential not attached, or host `db` is wrong from that container |
-| Webhook execution is green, the response body is empty, and no row was written | Re-import the six workflows from this repo. Each Postgres query must be `SELECT fn(...) AS "ctx"` (or `work`, `snap`, `tenant_pack`, `result`). Real n8n returns that alias as the column name. A bare `jsonb_build_object(...)` column does not. |
+| Webhook execution is green, the response body is empty, and no row was written | Re-import the workflows from this repo. Each Postgres query must be `SELECT fn(...) AS "ctx"` (or `work`, `snap`, `tenant_pack`, `result`, `reports`, `health`, `click`). Real n8n returns that alias as the column name. A bare `jsonb_build_object(...)` column does not. |
 | `$env.TWILIO_MODE` is empty inside a node after you edited `.env` | The container was restarted, not recreated. Use `docker compose --env-file .env up -d --force-recreate n8n` and check `docker exec <n8n-container> printenv TWILIO_MODE`. |
 | Call hits voicemail, workflow never runs | Ring time is longer than the carrier voicemail timer, or forwarding was not actually saved |
 | Text shows in `outbound_log` as `twiml` but the phone stays empty | The webhook response was not returned as XML to Twilio, or the A2P campaign is not approved |
 | Follow-up row sits at `next_send_at` in the past | `mctb_followups` workflow is inactive, or it is waiting for quiet hours |
 | Owner reply from the dashboard is `mock_sent` | `TWILIO_MODE` is not `live`, or the SID/token is empty. Missed-call texts can still be real, because those use TwiML rather than the REST API. |
 | Dashboard says the link is not valid | Token typo, or the tenant row is `active = false` |
+| Health text or email never arrives | `MCTB_ADMIN_PHONE` / `MCTB_ADMIN_EMAIL` is empty, SMTP host env is empty, or the BrightReach SMTP credential is not on the email node. Alerts also wait out the shop’s quiet hours and skip an opted-out admin phone. |
+| Uptime check is red but the dashboard loads | The follow-up or revenue workflow has not stamped a success in the last 10 minutes or hour. Activate those two workflows. A brand-new shop waits about 20 minutes before that counts as a failure. |
+
+## 14. Upgrade an install that is already running
+
+Do this on the mini PC. You do not buy anything. Re-applying the schema only adds columns and tables.
+
+```bash
+docker compose -f infra/docker/docker-compose.yml exec -T db \
+  psql -U cloudos -d cloudos -v ON_ERROR_STOP=1 \
+  < products/missed-call-textback/sql/001_schema.sql
+```
+
+Dedicated stack, from `products/missed-call-textback`:
+
+```bash
+docker compose exec -T db psql -U mctb -d mctb -v ON_ERROR_STOP=1 < sql/001_schema.sql
+```
+
+Re-import the workflow JSON. From the repo root, with the Cloud AI OS compose project:
+
+```bash
+products/missed-call-textback/scripts/install_into_n8n.sh
+```
+
+Or in the n8n UI: Workflows → Import from File, for every file in `workflows/`. Importing the same workflow id updates the existing one. Attach **BrightReach Postgres** to any new Postgres node (Recovered Revenue, Review Link, Health, and the new stamp nodes on Follow-ups). Attach **BrightReach SMTP** to Send Health Email if you set the SMTP env vars. Activate the new workflows.
+
+Then recreate n8n if you added `MCTB_ADMIN_PHONE`, `MCTB_ADMIN_EMAIL`, or the SMTP variables, the same way section 2 recreates the container. Confirm:
+
+```bash
+docker exec cloudos-n8n-1 printenv MCTB_ADMIN_PHONE
+```
+
+Open `https://HOST/webhook/mctb-health`. You want HTTP 200. `ok` stays false until both the follow-up workflow and the revenue workflow have completed once.
+
+Set `google_review_url` for shops that want review texts. Leave it null and no review text is sent.
+
+## 15. Backup
+
+`scripts/backup.sh` and `scripts/backup.ps1` run `pg_dump --schema=mctb` inside the Postgres container and write `mctb-YYYYMMDD-HHMMSS.sql`. Files older than 14 days are deleted. Nothing outside schema `mctb` is dumped.
+
+Linux or the mini PC if Git Bash is available:
+
+```bash
+CONTAINER=cloudos-db-1 PGUSER=cloudos PGDATABASE=cloudos \
+  OUT_DIR=/var/backups/mctb \
+  products/missed-call-textback/scripts/backup.sh
+```
+
+Dedicated stack: `CONTAINER=brightreach-mctb-db-1 PGUSER=mctb PGDATABASE=mctb`.
+
+Windows Task Scheduler, once a day at 2:00am. PowerShell as the user who can run Docker:
+
+```text
+schtasks /Create /TN "MCTB Postgres backup" /SC DAILY /ST 02:00 /RL LIMITED /F /TR "powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\to\products\missed-call-textback\scripts\backup.ps1 -Container cloudos-db-1 -PgUser cloudos -PgDatabase cloudos -OutDir C:\mctb-backups"
+```
+
+Confirm the container name with `docker ps`. The task does not need the laptop you sell from. It needs the mini PC on, which it already is. Restore with `docker exec -i cloudos-db-1 psql -U cloudos -d cloudos -v ON_ERROR_STOP=1` and the dump file on stdin. Take a fresh dump before you restore over a live schema.

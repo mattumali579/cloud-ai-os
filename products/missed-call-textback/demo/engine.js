@@ -539,6 +539,8 @@ function createEngine() {
     if (/^(HELP|COMMANDS)$/i.test(trimmed)) return { type: 'help' };
     const won = /^(WON|LOST)\s+(\d+)\s*$/i.exec(trimmed);
     if (won) return { type: won[1].toLowerCase(), id: Number(won[2]) };
+    const review = /^(DONE|REVIEW)\s+(\S+)\s*$/i.exec(trimmed);
+    if (review) return { type: review[1].toLowerCase(), phone: review[2] };
     const reply = /^REPLY\s+(\S+)\s+([\s\S]+)$/i.exec(trimmed);
     if (reply) return { type: 'reply', phone: reply[1], message: reply[2].trim() };
     if (/^ESTIMATE\b/i.test(trimmed)) {
@@ -553,7 +555,7 @@ function createEngine() {
   }
 
   function commandHelp() {
-    return 'Commands: ESTIMATE Name | phone | job | amount · WON 12 · LOST 12 · REPLY +15551212 your message · HELP';
+    return 'Commands: ESTIMATE Name | phone | job | amount · WON 12 · LOST 12 · DONE +15551212 · REVIEW +15551212 · REPLY +15551212 your message · HELP';
   }
 
   function findEstimate(ctx, id) {
@@ -562,6 +564,45 @@ function createEngine() {
       if (Number(estimates[i].id) === Number(id)) return estimates[i];
     }
     return null;
+  }
+
+  function reviewUrlOk(tenant) {
+    return typeof (tenant && tenant.google_review_url) === 'string' && /^https:\/\//i.test(String(tenant.google_review_url).trim());
+  }
+
+  function reviewedRecently(ctx, phone) {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return false;
+    const listed = (ctx && ctx.recentReviewPhones) || [];
+    for (let i = 0; i < listed.length; i += 1) {
+      if (normalizePhone(listed[i]) === normalized) return true;
+    }
+    return false;
+  }
+
+  function reviewSendAt(nowIso, tenant) {
+    const target = new Date(new Date(nowIso).getTime() + 2 * 60 * 60 * 1000);
+    if (inQuietHours(target, tenant.timezone, tenant.quiet_start, tenant.quiet_end)) {
+      return nextWindowOpen(target, tenant.timezone, tenant.quiet_start, tenant.quiet_end).toISOString();
+    }
+    return target.toISOString();
+  }
+
+  function maybeScheduleReview(ctx, phone, estimateId) {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return { request: null, reason: 'phone' };
+    if (!reviewUrlOk(ctx.tenant)) return { request: null, reason: 'no_url' };
+    if (isOptedOut(ctx, normalized)) return { request: null, reason: 'opted_out' };
+    if (reviewedRecently(ctx, normalized)) return { request: null, reason: 'recent' };
+    const id = estimateId == null || estimateId === '' ? null : Number(estimateId);
+    return {
+      request: {
+        phone: normalized,
+        estimate_id: id,
+        send_at: reviewSendAt(ctx.now, ctx.tenant),
+      },
+      reason: 'scheduled',
+    };
   }
 
   function initialNextSendAt(nowIso, tenant) {
@@ -621,6 +662,7 @@ function createEngine() {
       outbound: details.outbound || [],
       new_estimate: details.new_estimate || null,
       estimate_update: details.estimate_update || null,
+      review_request: details.review_request || null,
       owner_notification: notification,
     }, notification ? ownerWebhook(tenant, notification.body, details.webhookCode || 'MCTB_SMS') : null);
   }
@@ -674,12 +716,46 @@ function createEngine() {
         outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, 'No estimate ' + parsed.id + ' on this business.', 'owner_confirm', delivery, null));
         return finishSms(ctx, { inbound_purpose: 'owner_command', outbound: outbound });
       }
-      outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, 'Estimate ' + parsed.id + ' marked ' + parsed.type + '.', 'owner_confirm', delivery, null));
+      let review = null;
+      let extra = '';
+      if (parsed.type === 'won') {
+        const scheduled = maybeScheduleReview(ctx, estimate.phone, estimate.id);
+        if (scheduled.reason === 'scheduled') {
+          review = scheduled.request;
+          extra = ' Review text scheduled.';
+        }
+      }
+      const confirm = 'Estimate ' + parsed.id + ' marked ' + parsed.type + '.' + extra;
+      outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, confirm, 'owner_confirm', delivery, null));
       return finishSms(ctx, {
         inbound_purpose: 'owner_command',
         outbound: outbound,
         estimate_update: { id: Number(parsed.id), status: parsed.type },
-        owner_notification: { channel: 'sms', body: 'Estimate ' + parsed.id + ' marked ' + parsed.type + '.' },
+        review_request: review,
+        owner_notification: { channel: 'sms', body: confirm },
+      });
+    }
+    if (parsed.type === 'done' || parsed.type === 'review') {
+      const phone = normalizePhone(parsed.phone);
+      if (!phone) {
+        const help = 'Need a mobile number. DONE +15551212 or REVIEW +15551212';
+        outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, help, 'owner_help', delivery, null));
+        return finishSms(ctx, { inbound_purpose: 'owner_command', outbound: outbound });
+      }
+      const match = (ctx.estimates || []).find((estimate) => normalizePhone(estimate.phone) === phone);
+      const scheduled = maybeScheduleReview(ctx, phone, match ? match.id : null);
+      let text;
+      if (scheduled.reason === 'scheduled') text = 'Review request scheduled for ' + phone + '.';
+      else if (scheduled.reason === 'no_url') text = 'No Google review link is set for ' + tenant.business_name + '. Add one, then send REVIEW ' + phone + '.';
+      else if (scheduled.reason === 'opted_out') text = optedOutNotice(phone);
+      else if (scheduled.reason === 'recent') text = 'A review request already went to ' + phone + ' in the last 90 days.';
+      else text = 'Need a mobile number. DONE +15551212 or REVIEW +15551212';
+      outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, text, 'owner_confirm', delivery, null));
+      return finishSms(ctx, {
+        inbound_purpose: 'owner_command',
+        outbound: outbound,
+        review_request: scheduled.request,
+        owner_notification: { channel: 'sms', body: text },
       });
     }
     if (parsed.type === 'reply') {
@@ -986,7 +1062,22 @@ function createEngine() {
         }),
       };
     }
-    if (!canText(tenant, Number(row.sent_today || 0), Number(row.sent_to_today || 0))) {
+    const purpose = String(row.purpose || '');
+    const healthAlert = purpose.indexOf('health_') === 0;
+    const revenueReport = purpose.indexOf('revenue_report') === 0;
+    const allowed = healthAlert
+      ? true
+      : revenueReport
+        ? canTextOwner(
+          {
+            daily_sms_limit: row.daily_sms_limit,
+            owner_daily_sms_limit: row.owner_daily_sms_limit || 60,
+          },
+          Number(row.sent_today || 0),
+          Number(row.sent_to_today || 0)
+        )
+        : canText(tenant, Number(row.sent_today || 0), Number(row.sent_to_today || 0));
+    if (!allowed) {
       return {
         send: false,
         mark: Object.assign({}, base, {
@@ -996,6 +1087,77 @@ function createEngine() {
       };
     }
     return { send: true, body: row.body, mark: Object.assign({}, base, { status: 'mock_sent', next_send_at: null }) };
+  }
+
+  function reviewBody(businessName, link, reminder) {
+    if (reminder) {
+      return 'Reminder from ' + businessName + ': a short Google review still helps neighbors find us. ' + link + ' Reply STOP to opt out.';
+    }
+    return 'Thanks for choosing ' + businessName + '. If we earned it, a Google review helps neighbors find us: ' + link + ' Reply STOP to opt out.';
+  }
+
+  function planOneReview(row, nowIso, env) {
+    const purpose = row.kind === 'reminder' ? 'review_reminder' : 'review_request';
+    const base = {
+      kind: 'review',
+      review_id: row.review_id,
+      tenant_id: row.tenant_id,
+      to: row.phone,
+      from: row.twilio_number,
+      purpose: purpose,
+    };
+    if (row.suppressed) {
+      return { send: false, mark: Object.assign({}, base, { status: 'suppressed', next_send_at: null, body: '' }) };
+    }
+    if (!row.google_review_url || !/^https:\/\//i.test(String(row.google_review_url))) {
+      return { send: false, mark: Object.assign({}, base, { status: 'skipped', next_send_at: null, body: '' }) };
+    }
+    const now = new Date(nowIso);
+    const tenant = {
+      timezone: row.timezone,
+      quiet_start: row.quiet_start,
+      quiet_end: row.quiet_end,
+      daily_sms_limit: row.daily_sms_limit,
+      per_number_daily_limit: row.per_number_daily_limit,
+    };
+    if (inQuietHours(now, tenant.timezone, tenant.quiet_start, tenant.quiet_end)) {
+      return {
+        send: false,
+        mark: Object.assign({}, base, {
+          status: 'deferred',
+          next_send_at: nextWindowOpen(now, tenant.timezone, tenant.quiet_start, tenant.quiet_end).toISOString(),
+          body: '',
+        }),
+      };
+    }
+    if (!canText(tenant, Number(row.sent_today || 0), Number(row.sent_to_today || 0))) {
+      return {
+        send: false,
+        mark: Object.assign({}, base, {
+          status: 'rate_limited',
+          next_send_at: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
+          body: '',
+        }),
+      };
+    }
+    const origin = String((env && env.MCTB_PUBLIC_BASE_URL) || '').replace(/\/$/, '');
+    if (!origin || !row.token) {
+      return {
+        send: false,
+        mark: Object.assign({}, base, {
+          status: 'deferred',
+          next_send_at: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
+          body: '',
+        }),
+      };
+    }
+    const link = origin + '/webhook/mctb-r/' + row.token;
+    const body = reviewBody(row.business_name || 'us', link, row.kind === 'reminder');
+    return {
+      send: true,
+      body: body,
+      mark: Object.assign({}, base, { status: 'mock_sent', next_send_at: null, body: body }),
+    };
   }
 
   function basicAuth(env) {
@@ -1009,6 +1171,7 @@ function createEngine() {
     const source = work || {};
     const followups = source.followups || [];
     const queued = source.queued || [];
+    const reviews = source.reviews || [];
     const live = Boolean(env && env.TWILIO_MODE === 'live' && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN);
     const auth = live ? basicAuth(env) : '';
     const sentAdjust = {};
@@ -1064,6 +1227,24 @@ function createEngine() {
         mark: planned.mark,
       });
     });
+
+    reviews.forEach((row) => {
+      const counts = adjusted(row, row.phone);
+      const planned = planOneReview(Object.assign({}, row, counts), nowIso, env);
+      if (!planned || !planned.mark) return;
+      if (planned.send) {
+        planned.mark.status = live ? 'sent' : 'mock_sent';
+        bump(row, row.phone);
+      }
+      items.push({
+        live: Boolean(live && planned.send),
+        from: row.twilio_number,
+        to: row.phone,
+        body: planned.body || '',
+        auth: auth,
+        mark: planned.mark,
+      });
+    });
     return items;
   }
 
@@ -1097,6 +1278,7 @@ function createEngine() {
     const outbound = [];
     let newEstimate = null;
     let estimateUpdate = null;
+    let reviewRequest = null;
     let note = 'Nothing changed.';
     const ownerPhone = normalizePhone(tenant.owner_phone);
 
@@ -1148,6 +1330,13 @@ function createEngine() {
       } else {
         estimateUpdate = { id: Number(estimate.id), status: action };
         note = 'Estimate ' + estimate.id + ' marked ' + action + '.';
+        if (action === 'won') {
+          const scheduled = maybeScheduleReview(ctx, estimate.phone, estimate.id);
+          if (scheduled.reason === 'scheduled') {
+            reviewRequest = scheduled.request;
+            note += ' Review text scheduled.';
+          }
+        }
       }
     } else {
       note = 'Unknown action.';
@@ -1167,6 +1356,7 @@ function createEngine() {
       outbound: outbound,
       new_estimate: newEstimate,
       estimate_update: estimateUpdate,
+      review_request: reviewRequest,
       owner_notification: notification,
     } : null;
 
@@ -1188,6 +1378,29 @@ function createEngine() {
 
   function stat(label, value) {
     return '<div class="stat"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>';
+  }
+
+  function periodValue(stats, key, money) {
+    const value = stats && stats[key] != null ? stats[key] : 0;
+    return escapeHtml(money ? formatMoney(value) : value);
+  }
+
+  function periodTable(periods) {
+    const week = (periods && periods.week) || {};
+    const month = (periods && periods.month) || {};
+    const rows = [
+      ['Missed calls', 'missed_calls', false],
+      ['Callers texted', 'callers_texted', false],
+      ['Conversations recovered', 'recovered', false],
+      ['Qualified leads', 'qualified_leads', false],
+      ['Estimates sent', 'estimates_sent', false],
+      ['Jobs won', 'jobs_won', false],
+      ['Won', 'won_cents', true],
+      ['Estimated revenue recovered', 'recovered_revenue_cents', true],
+    ];
+    return '<h2>This week / This month</h2><table><thead><tr><th></th><th>This week</th><th>This month</th></tr></thead><tbody>' +
+      rows.map((row) => '<tr><td>' + row[0] + '</td><td>' + periodValue(week, row[1], row[2]) + '</td><td>' + periodValue(month, row[1], row[2]) + '</td></tr>').join('') +
+      '</tbody></table>';
   }
 
   function renderDashboard(snap, token) {
@@ -1226,7 +1439,10 @@ function createEngine() {
       stat('Jobs won, 30 days', stats.jobs_won_30d || 0) +
       stat('Won amount, 30 days', formatMoney(stats.won_cents_30d || 0)) +
       stat('Opt-outs', stats.opt_outs || 0) +
-      '</section><div class="grid"><section class="card"><h2>Log an estimate</h2><form method="post" action="/webhook/mctb-action">' + hidden +
+      stat('Review requests sent', stats.reviews_sent || 0) +
+      stat('Review links clicked', stats.reviews_clicked || 0) +
+      '</section>' + periodTable(stats.periods) +
+      '<div class="grid"><section class="card"><h2>Log an estimate</h2><form method="post" action="/webhook/mctb-action">' + hidden +
       '<input type="hidden" name="action" value="estimate"><label>Name</label><input name="customer_name" required><label>Phone</label><input name="phone" required>' +
       '<label>Job</label><input name="job" required><label>Amount (dollars)</label><input name="amount" required><button type="submit">Save and schedule follow-up</button></form></section>' +
       '<section class="card"><h2>Text a customer</h2><form method="post" action="/webhook/mctb-action">' + hidden +
@@ -1250,6 +1466,7 @@ function createEngine() {
       outbound: [],
       sentToday: 0,
       sentToNumber: {},
+      recentReviewPhones: [],
     };
   }
 
@@ -1266,6 +1483,7 @@ function createEngine() {
       outbound: state.outbound.slice(),
       sentToday: state.sentToday,
       sentToNumber: Object.assign({}, state.sentToNumber),
+      recentReviewPhones: (state.recentReviewPhones || []).slice(),
     };
     if (!record) return next;
     if (record.conversation) next.conversation = Object.assign({}, record.conversation);
@@ -1317,6 +1535,10 @@ function createEngine() {
         }
       });
     }
+    if (record.review_request && record.review_request.phone) {
+      const reviewed = normalizePhone(record.review_request.phone);
+      if (reviewed && next.recentReviewPhones.indexOf(reviewed) === -1) next.recentReviewPhones.push(reviewed);
+    }
     if (record.owner_notification) next.notifications.push(record.owner_notification);
     return next;
   }
@@ -1362,6 +1584,7 @@ function createEngine() {
       conversation: state.conversation,
       openEstimate: open[0] || null,
       estimates: state.estimates,
+      recentReviewPhones: (state.recentReviewPhones || []).slice(),
       sentToday: state.sentToday,
       sentToToday: state.sentToNumber[from] || 0,
       sentToOwnerToday: state.sentToNumber[normalizePhone(tenant.owner_phone)] || 0,
@@ -1397,6 +1620,7 @@ function createEngine() {
       conversation: packLoaded.conversation || null,
       openEstimate: packLoaded.open_estimate || null,
       estimates: packLoaded.estimates || [],
+      recentReviewPhones: Array.isArray(packLoaded.recent_review_phones) ? packLoaded.recent_review_phones : [],
       sentToday: Number(packLoaded.sent_today || 0),
       sentToToday: Number(packLoaded.sent_to_today || 0),
       sentToOwnerToday: Number(packLoaded.sent_to_owner_today || 0),
@@ -1453,8 +1677,225 @@ function createEngine() {
       daily_sms_limit: 200,
       per_number_daily_limit: 12,
       owner_daily_sms_limit: 60,
+      revenue_report_enabled: true,
+      google_review_url: null,
       active: true,
     }, overrides || {});
+  }
+
+  function countOf(value) {
+    const number = Number(value || 0);
+    return Number.isFinite(number) ? String(number) : '0';
+  }
+
+  function formatRevenueReport(spec) {
+    const input = spec || {};
+    const stats = input.stats || {};
+    const link = String(input.dashboardUrl || '');
+    const period = input.period === 'month' ? 'This month' : 'Last week';
+    const name = clip(input.businessName || 'Shop', 24);
+    const won = formatMoney(stats.won_cents || 0);
+    const recovered = formatMoney(stats.recovered_revenue_cents || 0);
+    const full = [
+      name + ' ' + period,
+      'Missed ' + countOf(stats.missed_calls) + ', texted ' + countOf(stats.callers_texted),
+      'Recovered ' + countOf(stats.recovered) + ', leads ' + countOf(stats.qualified_leads),
+      'Estimates ' + countOf(stats.estimates_sent) + ', won ' + countOf(stats.jobs_won) + ' (' + won + ')',
+      'Est. recovered ' + recovered,
+    ];
+    const short = [
+      period,
+      'Missed ' + countOf(stats.missed_calls) + ' texted ' + countOf(stats.callers_texted) + ' recovered ' + countOf(stats.recovered),
+      'Leads ' + countOf(stats.qualified_leads) + ' est ' + countOf(stats.estimates_sent) + ' won ' + countOf(stats.jobs_won) + ' ' + won,
+      'Est. recovered ' + recovered,
+    ];
+    function join(lines) {
+      const copy = lines.slice();
+      if (link) copy.push(link);
+      return copy.join('\n');
+    }
+    const candidates = [join(full), join(short)];
+    for (let i = 0; i < candidates.length; i += 1) {
+      if (candidates[i].length <= 320) return candidates[i];
+    }
+    const tail = link ? '\n' + link : '';
+    const budget = 320 - tail.length;
+    if (budget >= 24) return short.join('\n').slice(0, budget) + tail;
+    return (link || short.join('\n')).slice(0, 320);
+  }
+
+  function planRevenueReports(rows, nowIso, env) {
+    const list = Array.isArray(rows) ? rows : [];
+    const base = String((env && env.MCTB_PUBLIC_BASE_URL) || '').replace(/\/$/, '');
+    return list.map((row) => {
+      const owner = normalizePhone(row.owner_phone);
+      const dashboardUrl = base && row.dashboard_token
+        ? base + '/webhook/mctb-dashboard?token=' + row.dashboard_token
+        : '';
+      const body = formatRevenueReport({
+        businessName: row.business_name,
+        period: row.period,
+        stats: row.stats || {},
+        dashboardUrl: dashboardUrl,
+      });
+      const common = {
+        tenant_id: row.tenant_id,
+        period: row.period,
+        period_key: row.period_key,
+        body: body,
+        to: owner || '',
+        from: row.twilio_number,
+        purpose: 'revenue_report_' + (row.period || 'week'),
+      };
+      if (!owner) return Object.assign({}, common, { status: 'skipped', send_at: null });
+      if (row.suppressed) return Object.assign({}, common, { status: 'suppressed', send_at: null });
+      const now = new Date(nowIso);
+      let sendAt = now.toISOString();
+      if (inQuietHours(now, row.timezone, row.quiet_start, row.quiet_end)) {
+        sendAt = nextWindowOpen(now, row.timezone, row.quiet_start, row.quiet_end).toISOString();
+      }
+      return Object.assign({}, common, { status: 'queued', send_at: sendAt });
+    });
+  }
+
+  const FOLLOWUPS_STALE_SECONDS = 600;
+  const REVENUE_STALE_SECONDS = 3600;
+  const HEALTH_STARTUP_GRACE_SECONDS = 1200;
+  const HEALTH_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
+
+  function healthProblems(row) {
+    const problems = [];
+    if (!row || row.db !== 'ok') {
+      problems.push('Postgres is not answering');
+      return problems;
+    }
+    const tenants = Number(row.active_tenants || 0);
+    if (tenants === 0) return problems;
+    const young = row.oldest_tenant_age_seconds == null || Number(row.oldest_tenant_age_seconds) < HEALTH_STARTUP_GRACE_SECONDS;
+    const followupsMissing = row.followups_age_seconds == null;
+    const revenueMissing = row.revenue_age_seconds == null;
+    if (!(young && followupsMissing) && (followupsMissing || Number(row.followups_age_seconds) >= FOLLOWUPS_STALE_SECONDS)) {
+      problems.push('Follow-up workflow has not succeeded in the last 10 minutes');
+    }
+    if (!(young && revenueMissing) && (revenueMissing || Number(row.revenue_age_seconds) >= REVENUE_STALE_SECONDS)) {
+      problems.push('Revenue report workflow has not succeeded in the last hour');
+    }
+    return problems;
+  }
+
+  function heartbeatOk(row) {
+    return healthProblems(row).length === 0 && Boolean(row && row.db === 'ok');
+  }
+
+  function planHealthAlert(facts, staticState, nowIso, env) {
+    const now = new Date(nowIso);
+    const fact = facts && facts.db ? facts : { db: 'down' };
+    const stored = staticState || {};
+    const dbOk = fact.db === 'ok';
+    const state = dbOk && fact.state ? fact.state : {
+      status: stored.status || 'ok',
+      alert_open: Boolean(stored.alertOpen),
+      last_alert_at: stored.lastAlertAt || null,
+    };
+    const problems = healthProblems(fact);
+    const healthy = problems.length === 0;
+    const detail = problems.join('. ');
+    const lastAlertMs = state.last_alert_at ? new Date(state.last_alert_at).getTime() : 0;
+    const cooled = !lastAlertMs || (now.getTime() - lastAlertMs) >= HEALTH_ALERT_COOLDOWN_MS;
+    let action = 'none';
+    if (!healthy && cooled) action = 'alert';
+    else if (healthy && state.alert_open) action = 'recovery';
+
+    const environment = env || {};
+    const adminPhone = normalizePhone(environment.MCTB_ADMIN_PHONE);
+    const adminEmail = String(environment.MCTB_ADMIN_EMAIL || '').trim();
+    const smtpHost = String(environment.N8N_SMTP_HOST || environment.SMTP_HOST || '').trim();
+    const sender = fact.sender || stored.sender || null;
+    const quiet = Boolean(sender && inQuietHours(now, sender.timezone, sender.quiet_start, sender.quiet_end));
+    const suppressed = Boolean(sender && sender.suppressed);
+    const live = Boolean(environment.TWILIO_MODE === 'live' && environment.TWILIO_ACCOUNT_SID && environment.TWILIO_AUTH_TOKEN);
+
+    function buildSms(kind) {
+      if (!adminPhone || !sender || !sender.twilio_number || suppressed) return null;
+      const body = kind === 'alert'
+        ? 'BrightReach alert: ' + detail
+        : 'BrightReach recovered. Postgres and the scheduled workflows are answering again.';
+      const purpose = kind === 'alert' ? 'health_alert' : 'health_recovery';
+      if (quiet) {
+        return {
+          delivery: 'queue',
+          tenant_id: sender.tenant_id,
+          to: adminPhone,
+          from: sender.twilio_number,
+          body: body,
+          purpose: purpose,
+          send_at: nextWindowOpen(now, sender.timezone, sender.quiet_start, sender.quiet_end).toISOString(),
+        };
+      }
+      return {
+        delivery: live ? 'twilio' : 'mock',
+        tenant_id: sender.tenant_id,
+        to: adminPhone,
+        from: sender.twilio_number,
+        body: body,
+        purpose: purpose,
+        send_at: now.toISOString(),
+      };
+    }
+
+    function buildEmail(kind) {
+      if (!adminEmail || !smtpHost) return null;
+      return {
+        to: adminEmail,
+        subject: kind === 'alert' ? 'BrightReach alert' : 'BrightReach recovered',
+        body: kind === 'alert'
+          ? detail
+          : 'Postgres and the scheduled workflows are answering again.',
+      };
+    }
+
+    const sms = action === 'none' ? null : buildSms(action);
+    const email = action === 'none' ? null : buildEmail(action);
+    if (action !== 'none' && !sms && !email) action = 'none';
+
+    let alertOpen = Boolean(state.alert_open);
+    let lastAlertAt = state.last_alert_at || null;
+    if (action === 'alert') {
+      alertOpen = true;
+      lastAlertAt = now.toISOString();
+    } else if (action === 'recovery') {
+      alertOpen = false;
+    }
+
+    const rememberedSender = (dbOk && fact.sender) ? fact.sender : (stored.sender || null);
+    return {
+      action: action,
+      save: action === 'none' ? 'no' : 'yes',
+      live_sms: sms && sms.delivery === 'twilio' ? 'yes' : 'no',
+      send_email: email ? 'yes' : 'no',
+      auth: sms && sms.delivery === 'twilio' ? basicAuth(environment) : '',
+      record: {
+        status: healthy ? 'ok' : 'alerted',
+        alert_open: alertOpen,
+        last_alert_at: lastAlertAt,
+        detail: action === 'recovery' ? 'recovered' : (detail || state.last_detail || ''),
+        sms: action === 'none' ? null : sms,
+        email: action === 'none' ? null : email,
+      },
+      staticPatch: {
+        status: alertOpen ? 'alerted' : 'ok',
+        alertOpen: alertOpen,
+        lastAlertAt: lastAlertAt,
+        sender: rememberedSender,
+      },
+    };
+  }
+
+  function fallbackTwiml(ownerPhone) {
+    const owner = normalizePhone(ownerPhone) || '';
+    const voice = '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Sorry we missed you, we\'ll text you right back.</Say><Hangup/></Response>';
+    const sms = '<?xml version="1.0" encoding="UTF-8"?><Response><Message to="' + xmlEscape(owner || '+1OWNERNUMBER') + '">Text to this number did not reach the usual handler. From {{From}}: {{Body}}</Message></Response>';
+    return { voice: voice, sms: sms };
   }
 
   return {
@@ -1480,7 +1921,15 @@ function createEngine() {
     parseOwnerCommand: parseOwnerCommand,
     planOneFollowup: planOneFollowup,
     planOneQueued: planOneQueued,
+    planOneReview: planOneReview,
     planWork: planWork,
+    reviewSendAt: reviewSendAt,
+    formatRevenueReport: formatRevenueReport,
+    planRevenueReports: planRevenueReports,
+    healthProblems: healthProblems,
+    heartbeatOk: heartbeatOk,
+    planHealthAlert: planHealthAlert,
+    fallbackTwiml: fallbackTwiml,
     previewFollowupSequence: previewFollowupSequence,
     followupBody: followupBody,
     initialNextSendAt: initialNextSendAt,
