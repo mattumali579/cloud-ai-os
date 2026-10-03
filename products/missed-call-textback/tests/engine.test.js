@@ -352,6 +352,52 @@ test('manual sends to opted-out numbers are refused', () => {
   assert.match(refused.html, /Do not text them/);
 });
 
+test('owner alerts are not cut off by the customer per-number cap', () => {
+  const tenant = engine.exampleTenant({ per_number_daily_limit: 1 });
+  const state = engine.freshState();
+  state.sentToday = 12;
+  state.sentToNumber[tenant.owner_phone] = 12;
+  const decision = engine.handleVoice(engine.voiceContext(state, tenant, {
+    now: DAY,
+    from: caller(),
+    callSid: 'CA-owner-cap',
+    publicBaseUrl: 'https://text.example',
+  }));
+  assert.equal(decision.record.outbound.some((item) => item.to === tenant.owner_phone && item.purpose === 'owner_notify'), true);
+  assert.equal(decision.record.outbound.some((item) => item.purpose === 'owner_cap_notice'), false);
+});
+
+test('owner cap sends one pause text and then stays quiet', () => {
+  const tenant = engine.exampleTenant({
+    owner_daily_sms_limit: 2,
+    dashboard_path: '/webhook/mctb-dashboard?token=abc',
+  });
+  let state = engine.freshState();
+  function ring(sid, from) {
+    const decision = engine.handleVoice(engine.voiceContext(state, tenant, {
+      now: DAY,
+      from: from,
+      callSid: sid,
+      publicBaseUrl: 'https://text.example',
+    }));
+    state = engine.project(state, decision.record);
+    return decision;
+  }
+  assert.equal(ring('CA-p1', '+14145550141').record.outbound.filter((item) => item.purpose === 'owner_notify').length, 1);
+  assert.equal(ring('CA-p2', '+14145550142').record.outbound.filter((item) => item.purpose === 'owner_notify').length, 1);
+  const paused = ring('CA-p3', '+14145550143');
+  assert.equal(paused.record.outbound.some((item) => item.purpose === 'owner_notify'), false);
+  const notice = paused.record.outbound.find((item) => item.purpose === 'owner_cap_notice');
+  assert.ok(notice);
+  assert.equal(notice.to, tenant.owner_phone);
+  assert.equal(notice.body, 'Alerts paused for today, see your dashboard: https://text.example/webhook/mctb-dashboard?token=abc');
+  assert.equal(paused.record.owner_notification.channel, 'dashboard');
+  assert.match(paused.record.owner_notification.body, /Missed call/);
+  const quiet = ring('CA-p4', '+14145550144');
+  assert.equal(quiet.record.outbound.some((item) => item.to === tenant.owner_phone), false);
+  assert.equal(quiet.record.owner_notification.channel, 'dashboard');
+});
+
 test('Chicago winter and summer offsets', () => {
   const winter = engine.zonedTimeToUtc(2026, 1, 15, 10, 0, 'America/Chicago');
   const summer = engine.zonedTimeToUtc(2026, 7, 15, 10, 0, 'America/Chicago');

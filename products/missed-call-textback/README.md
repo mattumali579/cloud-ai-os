@@ -36,7 +36,7 @@ Node 22 and local Postgres admin access (`sudo -u postgres`) are what the suite 
 - applies `sql/001_schema.sql` to a throwaway database `mctb_test`
 - posts simulated Twilio voice and SMS webhooks through the workflow graph and reads the rows back
 
-`npm test` writes a plain-language transcript to `/opt/cursor/artifacts/missed-call-e2e.txt` when that folder exists.
+`npm test` writes a plain-language transcript to `$MCTB_ARTIFACT_DIR/missed-call-e2e.txt`. When that variable is unset, the file goes in the system temp directory.
 
 Rebuild the workflow JSON after any edit to `logic/engine.js`:
 
