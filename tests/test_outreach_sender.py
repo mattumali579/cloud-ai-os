@@ -742,3 +742,106 @@ def test_planner_state_reads_live_tables(conn, cfg):
               "replied_total", "interested_total", "suppressed_total", "target_remaining", "next_action"):
         assert k in s
     assert s["queued"] == 1 and s["claimed"] == 0
+
+
+# ------------------------------------------------------------------ v4: Missed-Call Rescue
+@pytest.mark.parametrize("facts", [{}, {"free_estimate_offer": True}, {"emergency_service": True},
+                                   {"google_reviews": 140, "google_rating": 4.9}, {"since_year": 1988}])
+@pytest.mark.parametrize("industry", ["hvac", "plumbing", "roofing"])
+def test_v4_four_touches_pass_qa_no_link_first_demo_link_second(facts, industry):
+    row = {"company_id": str(uuid.uuid4()), "company_name": "BAYOU PLUMBING & DRAIN, LLC", "industry": industry,
+           "city": "Metairie", "personalization": facts}
+    e = cw.first_touch(row, sender_name="Matt Umali", postal_address=ADDR, version=cw.V4)
+    assert e.variant.startswith("v4-") and cw.qa(e, postal_address=ADDR, company_name=row["company_name"]) == []
+    assert ADDR in e.body and "{postal" not in e.body and "{" not in e.body
+    assert "http" not in e.body and "BrightReach Media" in e.body and "5 missed callers" in e.body
+    assert len(e.body.split("\n--\n")[0].split()) <= cw.V4_MAX_WORDS and e.body.count("?") == 1
+    bodies = []
+    for step in (1, 2, 3):
+        f = cw.followup(row, step, e.subject, sender_name="Matt Umali", postal_address=ADDR, version=cw.V4)
+        assert f.variant == f"v4-fu{step}" and f.subject == f"Re: {e.subject}"
+        assert cw.qa(f, postal_address=ADDR, company_name=row["company_name"]) == []
+        bodies.append(f.body)
+    assert cw.demo_url(row) in bodies[0]
+    assert "?biz=Bayou%20Plumbing%20%26%20Drain&trade=" + industry in bodies[0]
+    assert "LocaliQ" in bodies[1] and "http" not in bodies[1] + bodies[2]
+
+
+def test_v4_qa_ignores_the_demo_path_but_still_blocks_tech_words():
+    row = {"company_id": "x", "company_name": "Acme Roofing", "industry": "roofing", "city": "Houston", "personalization": {}}
+    f = cw.followup(row, 1, "Missed calls at Acme Roofing", sender_name="Matt Umali", postal_address=ADDR, version=cw.V4)
+    assert "office-agent-demo" in f.body and cw.qa(f, postal_address=ADDR, company_name="Acme Roofing") == []
+    bad = cw.Email(f.subject, f.body.replace("Takes about a minute.", "Our AI agent does it."), f.variant)
+    assert any("technology" in p for p in cw.qa(bad, postal_address=ADDR, company_name="Acme Roofing"))
+    linked = cw.first_touch(row, sender_name="Matt Umali", postal_address=ADDR, version=cw.V4)
+    linked = cw.Email(linked.subject, linked.body.replace("Just reply", "See https://example.com or reply"), linked.variant)
+    assert "link in v4 first touch" in cw.qa(linked, postal_address=ADDR, company_name="Acme Roofing")
+
+
+def test_v4_arm_takes_its_share_first_and_only_its_industries():
+    ids = [str(uuid.uuid4()) for _ in range(2000)]
+    kw = dict(share=0.5, industries=["hvac", "plumbing", "roofing"], v4_industries=["hvac", "plumbing", "roofing"])
+    assert all(cw.arm(i, "plumbing", v4_share=1.0, **kw) == "v4" for i in ids[:50])
+    arms = [cw.arm(i, "roofing", v4_share=0.25, **kw) for i in ids]
+    assert 0.20 < arms.count("v4") / 2000 < 0.30 and 0.45 < arms.count("v3") / 2000 < 0.55
+    assert cw.arm(ids[0], "electrical", v4_share=1.0, share=0.0, industries=[], v4_industries=["electrical"]) == "v2"
+    assert cw.arm(ids[0], "salon", v4_share=1.0, **kw) == "v2"
+    assert cw.arm(ids[0], "hvac", share=0.0, industries=[]) == "v2"          # v4 off by default
+
+
+def test_v4_is_a_four_touch_sequence_on_its_own_cadence(conn, cfg):
+    cfg["experiment"] = {"v4_share": 1.0, "v4_industries": ["roofing"], "v4_followup_days": [2, 3, 4],
+                         "v3_share": 0.0, "v3_industries": []}
+    cid = company(conn)
+    sender.plan(conn, cfg)
+    assert q(conn, cid)["copy_variant"].startswith("v4-")
+    for step in (1, 2, 3):
+        run(conn, cfg, FakeMailbox())
+        nxt = q(conn, cid, step)
+        assert nxt["copy_variant"] == f"v4-fu{step}"
+        conn.execute("UPDATE outreach_queue SET due_at = now() - interval '1 minute' WHERE company_id = %s AND step = %s",
+                     (cid, step))
+        conn.commit()
+    run(conn, cfg, FakeMailbox())
+    assert q(conn, cid, 4) is None                                  # 4 touches, then stop
+    assert conn.execute("SELECT count(*) n FROM outreach_queue WHERE company_id = %s AND state = 'sent'",
+                        (cid,)).fetchone()["n"] == 4
+    assert "office-agent-demo/missed-call/?biz=" in q(conn, cid, 1)["body"]
+
+
+def test_v4_switch_rewrites_unsent_trade_first_touches(conn, cfg):
+    cfg["experiment"] = {"v3_share": 1.0, "v3_industries": ["hvac", "plumbing", "roofing"]}
+    waiting = company(conn, "Waiting HVAC", "waitinghvac.com", "a@waitinghvac.com")
+    conn.execute("UPDATE companies SET industry = 'hvac' WHERE company_id = %s", (waiting,))
+    conn.commit()
+    sender.plan(conn, cfg)
+    assert q(conn, waiting)["copy_variant"].startswith("v3-")
+    cfg["experiment"].update(v3_share=0.0, v4_share=1.0, v4_industries=["hvac", "plumbing", "roofing"])
+    assert sender.plan(conn, cfg)["refreshed"]["rewritten"] == 1
+    assert q(conn, waiting)["copy_variant"].startswith("v4-") and "5 missed callers" in q(conn, waiting)["body"]
+
+
+def test_checked_in_config_sends_v4_to_trades_and_v2_to_other_industries():
+    """outreach-send.yml checks out master and plans from this file. Trades are v4; everyone else stays v2."""
+    real = sender.load_config()
+    x = real["experiment"]
+    assert x["v4_share"] == 1.0
+    assert x["v4_industries"] == ["hvac", "plumbing", "roofing"]
+    assert x["v4_followup_days"] == [2, 3, 4]
+    assert float(x["v3_share"]) == 0.0
+    assert real["planning"]["industry_limit"]["enabled"] is False
+    ids = [str(uuid.uuid4()) for _ in range(40)]
+    for ind in ("hvac", "plumbing", "roofing", "HVAC"):
+        assert all(sender.copy_arm({"company_id": i, "industry": ind}, real) == cw.V4 for i in ids), ind
+    for ind in ("electrical", "salon", "dentist", "gym", "remodeling", ""):
+        assert all(sender.copy_arm({"company_id": i, "industry": ind}, real) == cw.COPY_VERSION for i in ids), ind
+    assert sender.followup_days(real, cw.V4) == [2, 3, 4]
+    assert sender.followup_days(real, cw.COPY_VERSION) == real["sequence"]["followup_days"]
+    row = {"company_id": ids[0], "company_name": "Acme Plumbing", "industry": "plumbing", "city": "Baton Rouge",
+           "personalization": {}}
+    e = cw.first_touch(row, sender_name="Matt Umali", postal_address=ADDR, version=sender.copy_arm(row, real))
+    assert e.variant.startswith("v4-") and ADDR in e.body.split("\n--\n", 1)[-1]
+    assert "{postal address}" not in e.body
+    blank = cw.first_touch(row, sender_name="Matt Umali", postal_address="", version=cw.V4)
+    assert "{postal address}" not in blank.body
+    assert "no postal address" in cw.qa(blank, postal_address="", company_name=row["company_name"])
