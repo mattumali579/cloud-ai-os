@@ -11,7 +11,8 @@ sender:
 
 pacing:
   timezone: America/Chicago
-  send_days: [0, 1, 2, 3, 4]      # Monday..Friday
+  send_days: [0, 1, 2, 3, 4, 5, 6]   # Monday..Sunday (same 08:00-17:30 window)
+  business_days: [0, 1, 2, 3, 4]  # follow-ups still land Mon-Fri; weekends are send days only
   window_start: "08:00"           # local time; nothing is sent outside the window
   window_end: "17:30"
   min_gap_seconds: 55             # between two sends - never a burst
@@ -31,8 +32,8 @@ sequence:                         # a restrained 3-touch sequence; replies/unsub
 
 planning:
   queue_ahead: 400                # first touches kept prepared (copy written, QA passed) ahead of sending
-  industry_limit:                 # optional: prepare NEW first touches only for these industries
-    enabled: false                # false = all industries in config/lead_engine.yaml (current behaviour)
+  industry_limit:                 # prepare NEW first touches only for these industries
+    enabled: true                 # trades only; already-queued other industries are left as they are
     industries: [hvac, plumbing, roofing]   # alternate: electrical
 
 experiment:                       # first-touch copy arms. One hash bucket: [0,v4_share) v4, then v3_share v3, rest v2

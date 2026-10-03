@@ -3,7 +3,7 @@ name: Outreach Send
 # BrightReach Hostinger sender. Every 10 minutes (started by the Ticker chain):
 # stop follow-ups for anyone who replied, prepare first emails for Ready leads,
 # read Hostinger replies, send what is due - paced, capped, only 8:00-17:30
-# Central on weekdays - then AgentMail notices and the Airtable update.
+# Central every day - then AgentMail notices and the Airtable update.
 # Without the Hostinger password it still prepares everything and sends nothing.
 # PUBLIC repo: logs are counts only - never names, emails or message text.
 
