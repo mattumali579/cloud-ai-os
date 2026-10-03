@@ -6,7 +6,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const test = require('node:test');
-const { psql, psqlJson, resetDatabase, quoteJson, runWorkflow } = require('./sim');
+const { psql, psqlJson, resetDatabase, quoteJson, runWorkflow, columnKey, postgresItem } = require('./sim');
 
 const root = path.join(__dirname, '..');
 const engineSource = fs.readFileSync(path.join(root, 'logic', 'engine.js'), 'utf8');
@@ -85,6 +85,78 @@ test('workflow files embed the engine and do not carry live credentials', () => 
   assert.match(demoJs, /handleInboundSms/);
 });
 
+function codeTail(node) {
+  const code = (node.parameters && node.parameters.jsCode) || '';
+  const marker = '/*MCTB_ENGINE_END*/';
+  const at = code.lastIndexOf(marker);
+  return at >= 0 ? code.slice(at + marker.length) : code;
+}
+
+function inputKeysRead(workflow, startName) {
+  const nodes = {};
+  workflow.nodes.forEach((node) => {
+    nodes[node.name] = node;
+  });
+  const keys = [];
+  const seen = new Set();
+  function walk(name) {
+    if (seen.has(name)) return;
+    seen.add(name);
+    const node = nodes[name];
+    if (!node) return;
+    if (node.type === 'n8n-nodes-base.code') {
+      const re = /\$input\.first\(\)\.json\.([A-Za-z_][A-Za-z0-9_]*)/g;
+      const tail = codeTail(node);
+      let match = re.exec(tail);
+      while (match) {
+        keys.push(match[1]);
+        match = re.exec(tail);
+      }
+      return;
+    }
+    const branches = (workflow.connections[name] && workflow.connections[name].main) || [];
+    branches.forEach((edges) => {
+      (edges || []).forEach((edge) => walk(edge.node));
+    });
+  }
+  const branches = (workflow.connections[startName] && workflow.connections[startName].main) || [];
+  branches.forEach((edges) => {
+    (edges || []).forEach((edge) => walk(edge.node));
+  });
+  return keys;
+}
+
+test('postgres queries use the column alias real n8n returns', () => {
+  const bare = postgresItem("SELECT jsonb_build_object('ctx', '{}'::jsonb)", '{"ctx":{"tenant":null}}');
+  assert.deepEqual(Object.keys(bare.json), ['jsonb_build_object']);
+  assert.equal(bare.json.ctx, undefined);
+  assert.equal(columnKey('SELECT mctb.due_work()'), 'due_work');
+  const aliased = postgresItem('SELECT mctb.load_voice_context($1::text, $2::text, $3::text) AS "ctx"', '{"tenant":{"business_name":"Northline"}}');
+  assert.deepEqual(Object.keys(aliased.json), ['ctx']);
+  assert.equal(aliased.json.ctx.tenant.business_name, 'Northline');
+  assert.equal(postgresItem('SELECT mctb.dashboard_snapshot($1::text) AS "snap"', '').json.snap, null);
+
+  let count = 0;
+  Object.entries(workflows).forEach(([name, workflow]) => {
+    workflow.nodes.forEach((node) => {
+      if (node.type !== 'n8n-nodes-base.postgres') return;
+      count += 1;
+      const query = node.parameters.query.trim();
+      const alias = query.match(/\bAS\s+"([^"]+)"\s*$/);
+      assert.ok(alias, name + ' / ' + node.name + ' has no AS "alias": ' + query);
+      assert.equal(columnKey(query), alias[1], node.name);
+      assert.doesNotMatch(query, /jsonb_build_object\s*\(/);
+      inputKeysRead(workflow, node.name).forEach((key) => {
+        assert.equal(alias[1], key, name + ' / ' + node.name + ' alias ' + alias[1] + ' but the next code reads ' + key);
+      });
+    });
+  });
+  assert.equal(count, 11);
+  const helper = fs.readFileSync(path.join(root, 'scripts/setup_tenant.ps1'), 'utf8');
+  assert.match(helper, /docker exec/);
+  assert.match(helper, /mctb\.tenants/);
+});
+
 test('simulated Twilio webhooks recover a missed call, qualify it, and follow an estimate', () => {
   resetDatabase(path.join(root, 'sql', '001_schema.sql'));
   const northline = psql('mctb_test', `
@@ -115,6 +187,12 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
     CallSid: 'CA100',
     CallStatus: 'no-answer',
   }), env);
+  const loaded = missed.outputs['Load Voice Context'][0].json;
+  assert.deepEqual(Object.keys(loaded), ['ctx']);
+  assert.equal(loaded.ctx.tenant.business_name, 'Northline Heating & Air');
+  const applied = missed.outputs['Apply Voice'][0].json;
+  assert.equal(applied.ok, undefined);
+  assert.equal(applied.result.ok, true);
   const twiml = missed.responses[0].body;
   assert.match(twiml, /Northline Heating &amp; Air/);
   assert.match(twiml, /Reply STOP to opt out/);
@@ -200,6 +278,9 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
     now: '2026-10-03T02:30:00.000Z',
   }), env);
   assert.equal(night.httpLog.length, 0);
+  const due = night.outputs['Load Due Work'][0].json;
+  assert.ok(Array.isArray(due.work.followups));
+  assert.equal(due.jsonb_build_object, undefined);
   const deferred = one("SELECT jsonb_build_object('status', status, 'step', step_index) FROM mctb.estimates WHERE customer_name = 'Jane Doe'");
   assert.equal(deferred.status, 'open');
   assert.equal(Number(deferred.step), 0);
@@ -265,6 +346,30 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
   assert.doesNotMatch(afterStop.responses[0].body, /Sorry we missed your call/);
   assert.match(afterStop.httpLog[0].body, /opted out/);
   say('STOP received. Later missed call was logged and not texted.');
+
+  const stillLead = one('SELECT mctb.dashboard_snapshot(' + quoteJson('token-northline') + ')');
+  assert.ok(Number(stillLead.stats.leads_30d) >= 1);
+  const opted = one("SELECT jsonb_build_object('state', state, 'qualified', qualified_at IS NOT NULL) FROM mctb.conversations WHERE phone = '+14145550123'");
+  assert.equal(opted.state, 'opted_out');
+  assert.equal(opted.qualified, true);
+  say('Qualified lead still counts after STOP. State is opted_out.');
+
+  const dashReply = runWorkflow(workflows.actions, 'Action Webhook', envelope({
+    token: 'token-northline',
+    action: 'reply',
+    phone: '+14145550123',
+    message: 'We can still come by',
+  }), env);
+  assert.match(dashReply.responses[0].body, /opted out/);
+  assert.match(dashReply.responses[0].body, /Do not text them/);
+  const ownerReply = sms('+14145550199', 'REPLY +14145550123 Still on the way');
+  assert.match(ownerReply.responses[0].body, /opted out/);
+  assert.doesNotMatch(ownerReply.responses[0].body, /<Message to="\+14145550123">/);
+  const leaked = one("SELECT jsonb_build_object('log', (SELECT count(*) FROM mctb.outbound_log WHERE to_number = '+14145550123' AND purpose = 'owner_reply'), 'queued', (SELECT count(*) FROM mctb.outbound_queue WHERE to_number = '+14145550123'), 'msgs', (SELECT count(*) FROM mctb.messages WHERE to_number = '+14145550123' AND purpose = 'owner_reply'))");
+  assert.equal(Number(leaked.log), 0);
+  assert.equal(Number(leaked.queued), 0);
+  assert.equal(Number(leaked.msgs), 0);
+  say('Dashboard text and owner REPLY to the opted-out number were refused and not logged as sent.');
 
   const dial = runWorkflow(workflows.voice, 'Voice Webhook', envelope({
     From: '+14145550333',

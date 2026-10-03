@@ -75,7 +75,21 @@ OWNER_ALERT_WEBHOOK_URL=
 
 `OWNER_ALERT_WEBHOOK_URL` is optional. Point it at the Cloud AI OS `owner-notify` webhook, a Discord webhook, or anything that accepts `{"severity","code","message","meta"}`. Owner SMS still happens through the business number.
 
-Restart n8n after changing the environment.
+n8n listens on port **5678 inside the container**. The host port is whatever the compose file publishes, and it is not the same on every machine. The Cloud AI OS stack on the mini PC publishes **5679**. The dedicated compose file in this folder publishes **5680**. Before you open the editor or start a tunnel, read the published port from `docker ps`. Do not assume 5678 on the host.
+
+Those Twilio variables have to be in the n8n process environment. Writing them into `.env` does not change a container that is already running, and `docker restart` keeps the old environment. Recreate the container so Docker loads the file:
+
+```bash
+docker compose --env-file .env -f infra/docker/docker-compose.yml up -d --force-recreate n8n
+```
+
+Run that from the repo root for the existing Cloud AI OS n8n. For the dedicated stack, run it from `products/missed-call-textback` and drop the `-f` path. If this n8n was started with `docker run` instead of compose, stop and remove that container and start it again with the same volume and `--env-file .env`. Then confirm the process can see the mode:
+
+```bash
+docker exec cloudos-n8n-1 printenv TWILIO_MODE
+```
+
+The container name comes from `docker ps`. On the mini PC it is usually `cloudos-n8n-1`.
 
 ## 3. Import the workflows
 
@@ -210,6 +224,28 @@ products/missed-call-textback/scripts/setup_tenant.sh \
 
 The script prints the dashboard URL. That URL is the password. Text it to the owner. Do not commit it.
 
+On the Windows mini PC, bash and a host `psql` are often missing. The same insert can run inside the Postgres container. From PowerShell, in the repo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File products\missed-call-textback\scripts\setup_tenant.ps1 `
+  -Slug northline `
+  -BusinessName "Northline Heating & Air" `
+  -TwilioNumber "+14145550100" `
+  -OwnerName Dana `
+  -OwnerPhone "+14145550199" `
+  -OwnerEmail dana@northline.example `
+  -Hours "Mon-Sat 7am-7pm" `
+  -BookingLink "https://northline.example/book" `
+  -Timezone America/Chicago `
+  -CallMode forward `
+  -PublicBaseUrl "https://HOST" `
+  -Container cloudos-db-1 `
+  -PgUser cloudos `
+  -PgDatabase cloudos
+```
+
+`cloudos-db-1` is the usual container name for the Cloud AI OS compose project. Dedicated stack: `-Container brightreach-mctb-db-1 -PgUser mctb -PgDatabase mctb`. Confirm the name with `docker ps`. The script pipes the insert through `docker exec` into `psql` in that container. It does not need bash or a Postgres client on Windows.
+
 Templates can stay on the defaults. To change wording later:
 
 ```sql
@@ -280,6 +316,8 @@ The phone in `REPLY` is one token. `WON` and `LOST` use the estimate id on the d
 - Default cap: 200 outbound texts per shop per rolling 24 hours, and 12 to any one number. STOP, HELP, and START confirmations still go out over the cap. Those are the compliance replies.
 - STOP / STOPALL / UNSUBSCRIBE / CANCEL / END / QUIT must be the whole message. “Stop by tomorrow” is a normal reply.
 - A later missed call from an opted-out number is stored and the owner is told to call them. They are not texted.
+- Dashboard “Text a customer” and an owner `REPLY` to an opted-out number are refused. The owner sees that the number opted out. The text is not sent and is not written to `outbound_log` as sent.
+- Qualified leads stay on the 30-day count after that person replies STOP. The count is people who finished qualification in the last 30 days, not people whose thread is still open.
 
 ## 11. Sales demo on GitHub Pages
 
@@ -296,7 +334,7 @@ If Pages was already pointed at another folder, don’t run that action until yo
 - [ ] `MCTB_PUBLIC_BASE_URL` is the public https origin and n8n was restarted
 - [ ] Tunnel stays up when the laptop you sold from is closed (the mini PC is the host)
 - [ ] Twilio number’s voice and SMS webhooks point at `/webhook/mctb-voice` and `/webhook/mctb-sms`
-- [ ] Shop added with `setup_tenant.sh`, dashboard link in the owner’s hands
+- [ ] Shop added with `setup_tenant.sh` (or `setup_tenant.ps1` on Windows), dashboard link in the owner’s hands
 - [ ] Call forwarding is conditional, and a real missed call produced a real text
 - [ ] A2P brand and campaign submitted, number attached, campaign approved before you call the line “in production”
 - [ ] `TWILIO_MODE=live` only after the SID and token are in the environment, not in git
@@ -308,6 +346,8 @@ If Pages was already pointed at another folder, don’t run that action until yo
 |---|---|
 | Twilio debugger says 404 on the webhook | Workflow is not active, or the path is `/webhook-test/` |
 | Execution errors on every Postgres node | Credential not attached, or host `db` is wrong from that container |
+| Webhook execution is green, the response body is empty, and no row was written | Re-import the six workflows from this repo. Each Postgres query must be `SELECT fn(...) AS "ctx"` (or `work`, `snap`, `tenant_pack`, `result`). Real n8n returns that alias as the column name. A bare `jsonb_build_object(...)` column does not. |
+| `$env.TWILIO_MODE` is empty inside a node after you edited `.env` | The container was restarted, not recreated. Use `docker compose --env-file .env up -d --force-recreate n8n` and check `docker exec <n8n-container> printenv TWILIO_MODE`. |
 | Call hits voicemail, workflow never runs | Ring time is longer than the carrier voicemail timer, or forwarding was not actually saved |
 | Text shows in `outbound_log` as `twiml` but the phone stays empty | The webhook response was not returned as XML to Twilio, or the A2P campaign is not approved |
 | Follow-up row sits at `next_send_at` in the past | `mctb_followups` workflow is inactive, or it is waiting for quiet hours |

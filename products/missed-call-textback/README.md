@@ -59,6 +59,7 @@ No Twilio account is required to develop or to show the demo. Real texting start
 | `sql/001_schema.sql` | Postgres schema `mctb` only. It does not touch outreach tables. |
 | `demo/` | Static sales page |
 | `scripts/setup_tenant.sh` | One command to add a shop |
+| `scripts/setup_tenant.ps1` | Same insert on Windows, through `docker exec` |
 | `scripts/install_into_n8n.sh` | Apply schema and import workflows |
 | `docker-compose.yml` | Optional dedicated Postgres + n8n if you do not want to use the existing Cloud AI OS stack |
 
