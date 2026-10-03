@@ -42,6 +42,10 @@ gh workflow run outreach-send.yml -R mattumali579/cloud-ai-os -f mode=status
 python outreach_sender.py status        # locally, with DATABASE_URL
 ```
 
+## Copy experiment
+
+`experiment` in `config/outreach_sender.yaml` writes v3 for half of HVAC, plumbing, and roofing companies. The arm is a hash of `company_id`, so a company stays on the same copy. Touch 2 and 3 stay in the first touch's arm. Set `experiment.v3_share` to `0` and the next plan run rewrites queued, never-attempted v3 first touches back to v2. Copy and rationale: `experiments/v3_copy_proposal.md`. Read-only per-arm reply queries: `experiments/v3_measure.sql` (do not apply it as a migration).
+
 ## Guarantees and where they are proven
 
 `tests/test_outreach_sender.py` (real Postgres) and `tests/test_outreach_transport.py`

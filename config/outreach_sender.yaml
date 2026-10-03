@@ -3,7 +3,7 @@ sender:
   from_email_env: HOSTINGER_EMAIL          # mailbox address (secret); login user is the same address
   password_env: HOSTINGER_EMAIL_PASSWORD   # mailbox password (secret, never committed)
   from_name_env: SENDER_NAME           # the name prospects see and the signature (secret: public repo)
-  from_name_default: Matt
+  from_name_default: Matt Umali       # used when the SENDER_NAME secret is unset/empty
   smtp_host: smtp.hostinger.com
   smtp_port: 465
   imap_host: imap.hostinger.com
@@ -31,6 +31,13 @@ sequence:                         # a restrained 3-touch sequence; replies/unsub
 
 planning:
   queue_ahead: 400                # first touches kept prepared (copy written, QA passed) ahead of sending
+  industry_limit:                 # optional: prepare NEW first touches only for these industries
+    enabled: false                # false = all industries in config/lead_engine.yaml (current behaviour)
+    industries: [hvac, plumbing, roofing]   # alternate: electrical
+
+experiment:                       # first-touch copy A/B: v2 = control, v3 = challenger (experiments/v3_copy_proposal.md)
+  v3_share: 0.5                   # share of eligible companies written with v3; 0 = v3 off
+  v3_industries: [hvac, plumbing, roofing]   # v3 copy exists only for these; everyone else stays on v2
 
 airtable:
   monthly_call_budget: 700        # free plan = 1,000 calls/month per workspace; other jobs use some

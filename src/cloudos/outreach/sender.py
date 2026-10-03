@@ -58,6 +58,19 @@ def postal_address() -> str:
     return (os.environ.get("SENDER_POSTAL_ADDRESS") or "").strip()
 
 
+def industry_limit(cfg: dict) -> list[str] | None:
+    """Industries new first touches are limited to, or None (= all) while the limit is disabled."""
+    lim = (cfg.get("planning") or {}).get("industry_limit") or {}
+    return list(lim.get("industries") or []) or None if lim.get("enabled") else None
+
+
+def copy_arm(row: dict, cfg: dict) -> str:
+    """'v3' or 'v2' for this company (config: experiment). Deterministic, so it never flips."""
+    x = cfg.get("experiment") or {}
+    return copywriter.arm(str(row["company_id"]), row.get("industry") or "",
+                          share=float(x.get("v3_share") or 0), industries=x.get("v3_industries") or [])
+
+
 # ------------------------------------------------------------------ pacing
 def local_now(cfg: dict, now: datetime | None = None) -> datetime:
     return (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(cfg["pacing"]["timezone"]))
@@ -97,7 +110,7 @@ def daily_cap(conn, cfg: dict) -> int:
 
 
 # ----------------------------------------------------------------- planning
-def _candidates(conn, limit: int) -> list[dict]:
+def _candidates(conn, limit: int, industries: list[str] | None = None) -> list[dict]:
     return conn.execute(
         f"""
         SELECT c.company_id::text, c.company_name, c.domain, c.normalized_domain, c.industry, c.city, c.state,
@@ -109,9 +122,10 @@ def _candidates(conn, limit: int) -> list[dict]:
         WHERE c.outreach_status IN ('outreach_ready', 'handed_off') AND c.first_contacted_at IS NULL AND c.active
           AND c.qualification_status IN ('HIGH', 'MEDIUM')
           AND NOT EXISTS (SELECT 1 FROM outreach_queue q WHERE q.company_id = c.company_id)
+          AND (%s::text[] IS NULL OR c.industry = ANY(%s::text[]))
         ORDER BY (c.qualification_status = 'HIGH') DESC, c.ready_at NULLS LAST, c.discovered_at
         LIMIT %s
-        """, (limit,)).fetchall()
+        """, (industries or None, industries or None, limit)).fetchall()
 
 
 def _duplicate_in_queue(conn, email: str, company_id: str, exclude_queue_id: int | None = None) -> bool:
@@ -139,8 +153,8 @@ def _duplicate_in_queue(conn, email: str, company_id: str, exclude_queue_id: int
 
 
 def refresh_queued(conn, cfg: dict) -> dict:
-    """Rewrite first touches that were prepared with older wording and never touched by a send
-    attempt (no claim, no Message-ID). Anything already attempted keeps its exact text."""
+    """Rewrite first touches that were prepared with older wording (or for the other copy arm) and
+    never touched by a send attempt (no claim, no Message-ID). Anything attempted keeps its exact text."""
     out = {"rewritten": 0, "qa_failed": 0}
     addr = postal_address()
     if not addr:
@@ -148,13 +162,15 @@ def refresh_queued(conn, cfg: dict) -> dict:
     name = sender_name(cfg)
     rows = conn.execute(
         """
-        SELECT q.queue_id, c.company_name, c.industry, c.city, c.personalization
+        SELECT q.queue_id, q.company_id::text, q.copy_variant, c.company_name, c.industry, c.city, c.personalization
         FROM outreach_queue q JOIN companies c USING (company_id)
         WHERE q.step = 0 AND q.state = 'queued' AND q.attempts = 0 AND q.message_id_header IS NULL
-          AND coalesce(q.copy_variant, '') NOT LIKE %s
-        """, (copywriter.COPY_VERSION + "-%",)).fetchall()
+        """).fetchall()
     for r in rows:
-        e = copywriter.first_touch(dict(r), sender_name=name, postal_address=addr)
+        version = copy_arm(r, cfg)
+        if (r["copy_variant"] or "").startswith(version + "-"):
+            continue                                   # already written with the wording this company gets
+        e = copywriter.first_touch(dict(r), sender_name=name, postal_address=addr, version=version)
         problems = copywriter.qa(e, postal_address=addr, company_name=r["company_name"])
         state, stop = ("queued", None) if not problems else ("cancelled", "qa: " + "; ".join(problems))
         cur = conn.execute(
@@ -185,7 +201,7 @@ def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
         # a missing setting is not the lead's fault: prepare nothing, cancel nothing
         out["stopped"] = "SENDER_POSTAL_ADDRESS is not set - nothing prepared"
         return out
-    for row in _candidates(conn, space * 2):
+    for row in _candidates(conn, space * 2, industry_limit(cfg)):
         if out["queued"] >= space:
             break
         email = (row["email"] or "").strip().lower()
@@ -212,7 +228,7 @@ def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
                          (row["company_id"],))
             conn.commit()
             continue
-        e = copywriter.first_touch(row, sender_name=name, postal_address=addr)
+        e = copywriter.first_touch(row, sender_name=name, postal_address=addr, version=copy_arm(row, cfg))
         problems = copywriter.qa(e, postal_address=addr, company_name=row["company_name"])
         state, stop = ("queued", None) if not problems else ("cancelled", "qa: " + "; ".join(problems))
         conn.execute("INSERT INTO outreach_queue (company_id, step, recipient, subject, body, copy_variant, state, stop_reason) "
@@ -283,11 +299,13 @@ def record_sent(conn, item: dict, cfg: dict, *, from_email: str, sent_at: dateti
     days = cfg["sequence"]["followup_days"]
     if item["step"] < len(days):
         company = store.company(conn, str(item["company_id"]))
-        first_subject = item["subject"] if item["step"] == 0 else (conn.execute(
-            "SELECT subject FROM outreach_queue WHERE company_id = %s AND step = 0", (item["company_id"],)).fetchone()
-            or {"subject": item["subject"]})["subject"]
-        e = copywriter.followup(dict(company), item["step"] + 1, first_subject,
-                                sender_name=sender_name(cfg), postal_address=postal_address())
+        first = item if item["step"] == 0 else (conn.execute(
+            "SELECT subject, copy_variant FROM outreach_queue WHERE company_id = %s AND step = 0",
+            (item["company_id"],)).fetchone() or item)
+        version = (first["copy_variant"] or "").split("-")[0]      # follow-ups stay in the first touch's arm
+        e = copywriter.followup(dict(company), item["step"] + 1, first["subject"],
+                                sender_name=sender_name(cfg), postal_address=postal_address(),
+                                version=copywriter.V3 if version == copywriter.V3 else copywriter.COPY_VERSION)
         problems = copywriter.qa(e, postal_address=postal_address(), company_name=company["company_name"])
         conn.execute("INSERT INTO outreach_queue (company_id, step, recipient, subject, body, copy_variant, thread_root, "
                      "due_at, state, stop_reason) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "

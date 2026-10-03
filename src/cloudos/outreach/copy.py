@@ -7,6 +7,7 @@ automation, bots, software, scraping). qa() refuses any email that breaks this.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -112,11 +113,62 @@ def observation(row: dict) -> tuple[str, str]:
 # with an older version are rewritten before they go out (sender.refresh_queued).
 COPY_VERSION = "v2"
 
+# v3 = A/B challenger to v2 (config: experiment.v3_share / experiment.v3_industries).
+# Shorter (<= 90 words above the footer), one concrete outcome for trades, signed with the brand.
+V3 = "v3"
+V3_MAX_WORDS = 90
+V3_BRAND = "BrightReach Media"
+V3_TRADE = {"hvac": "HVAC company", "plumbing": "plumber", "roofing": "roofer", "electrical": "electrician"}
 
-def first_touch(row: dict, *, sender_name: str, postal_address: str) -> Email:
+
+def arm(company_id: str, industry: str, *, share: float, industries) -> str:
+    """Which copy a company gets: 'v3' or 'v2'. Deterministic per company (same answer on every
+    run, so a rewrite never flips a lead between arms); only industries v3 has copy for."""
+    ind = (industry or "").strip().lower()
+    if share <= 0 or ind not in V3_TRADE or ind not in set(industries or ()):
+        return COPY_VERSION
+    bucket = int(hashlib.sha256(str(company_id).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+    return V3 if bucket < share else COPY_VERSION
+
+
+def _v3_signature(sender_name: str) -> list[str]:
+    return [sender_name] if V3_BRAND.lower() in sender_name.lower() else [sender_name, V3_BRAND]
+
+
+def first_touch_v3(row: dict, *, sender_name: str, postal_address: str) -> Email:
+    """One outcome, no price: every missed call gets a text back fast / every estimate gets a
+    same-day follow-up (recovery_build deliverables in config/brightreach_offers.yaml)."""
+    name = display_name(row.get("company_name", ""))
+    trade = V3_TRADE.get((row.get("industry") or "").strip().lower(), "company")
+    _, tag = observation(row)
+    short = len(name) <= 28
+    if tag == "estimates":
+        lines = [f"I saw {name} offers free estimates. Most estimates that end with \"let me think about it\" "
+                 "never get a second follow-up, and the job goes to whoever checks back first.",
+                 "",
+                 "I make sure every estimate gets a same-day follow-up until it's a clear yes or no."]
+        subject = f"Estimates at {name}" if short else "Quiet estimates"
+    else:
+        first = (f"I saw {name} takes emergency calls. When one of those goes to voicemail" if tag == "emergency"
+                 else f"When a call to {name} goes to voicemail")
+        lines = [f"{first}, most people just call the next {trade} on the list.",
+                 "",
+                 "I set it up so every missed call gets a text back within a minute, so more of those callers "
+                 "book with you instead."]
+        subject = f"Missed calls at {name}" if short else "Missed calls"
+    body = "\n".join([f"Hi {name} team,", "", *lines, "",
+                      "Worth a short outline of how it would work for you? A yes or no is fine.", "",
+                      *_v3_signature(sender_name), "", "--", postal_address,
+                      "If you'd rather not hear from me, reply \"stop\" and I won't email you again."])
+    return Email(subject=subject, body=body, variant=f"{V3}-{'estimates' if tag == 'estimates' else 'missed'}")
+
+
+def first_touch(row: dict, *, sender_name: str, postal_address: str, version: str = COPY_VERSION) -> Email:
     """One offer per email, chosen by the strongest true fact we have about the business:
     long track record -> reactivate old leads; free estimates -> follow-up on quotes;
     emergency calls -> speed of reply; strong reviews -> new leads; nothing -> reactivation."""
+    if version == V3:
+        return first_touch_v3(row, sender_name=sender_name, postal_address=postal_address)
     name = display_name(row.get("company_name", ""))
     new, old, booked = INDUSTRY.get((row.get("industry") or "").strip().lower(), DEFAULT)
     obs, tag = observation(row)
@@ -167,9 +219,26 @@ def first_touch(row: dict, *, sender_name: str, postal_address: str) -> Email:
     return Email(subject=subject, body=body, variant=f"{COPY_VERSION}-{tag}")
 
 
-def followup(row: dict, step: int, first_subject: str, *, sender_name: str, postal_address: str) -> Email:
+def followup(row: dict, step: int, first_subject: str, *, sender_name: str, postal_address: str,
+             version: str = COPY_VERSION) -> Email:
     name = display_name(row.get("company_name", ""))
     new, old, booked = INDUSTRY.get((row.get("industry") or "").strip().lower(), DEFAULT)
+    subj = first_subject if first_subject.lower().startswith("re:") else f"Re: {first_subject}"
+    if version == V3:
+        if step == 1:     # touch 2: the existing price and the existing 30-day guarantee, nothing new
+            lines = [f"Hi {name} team,", "",
+                     "Quick follow-up. It's one build that texts back every missed call and follows up every "
+                     "estimate the same day - $1,500 one time, and you own it.", "",
+                     "If it isn't texting back missed calls and booking jobs within 30 days of going live, "
+                     "I keep working free until it does, or you get your money back.", "",
+                     f"Want the one-page outline for {name}? A yes or no is fine."]
+        else:
+            lines = [f"Hi {name} team,", "",
+                     f"Last note from me. If missed calls or quiet estimates ever cost {name} a job, "
+                     "reply \"outline\" and I'll send it over."]
+        body = "\n".join(lines + ["", *_v3_signature(sender_name), "", "--", postal_address,
+                                  "Reply \"stop\" and you won't hear from me again."])
+        return Email(subject=subj, body=body, variant=f"{V3}-fu{step}")
     if step == 1:
         lines = [
             f"Hi {name} team,",
@@ -188,7 +257,6 @@ def followup(row: dict, step: int, first_subject: str, *, sender_name: str, post
         ]
     body = "\n".join(lines + ["", sender_name, "", "--", postal_address,
                               "Reply \"stop\" and you won't hear from me again."])
-    subj = first_subject if first_subject.lower().startswith("re:") else f"Re: {first_subject}"
     return Email(subject=subj, body=body, variant=f"fu{step}")
 
 
@@ -217,4 +285,6 @@ def qa(e: Email, *, postal_address: str, company_name: str = "") -> list[str]:
         problems.append("no opt-out line")
     if len(e.body.split()) > 170:
         problems.append("too long")
+    if (e.variant or "").startswith(V3 + "-") and len(e.body.split("\n--\n")[0].split()) > V3_MAX_WORDS:
+        problems.append("too long for v3")
     return problems
