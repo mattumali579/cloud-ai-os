@@ -18,6 +18,9 @@ const workflows = {
   followups: requireJson('mctb_followups.json'),
   dashboard: requireJson('mctb_dashboard.json'),
   actions: requireJson('mctb_actions.json'),
+  revenue: requireJson('mctb_revenue.json'),
+  review: requireJson('mctb_review_click.json'),
+  health: requireJson('mctb_health.json'),
 };
 
 function requireJson(name) {
@@ -70,6 +73,10 @@ test('workflow files embed the engine and do not carry live credentials', () => 
     'mctb-dashboard',
     'mctb-dial-status',
     'mctb-followups-run',
+    'mctb-health',
+    'mctb-health-run',
+    'mctb-r/:token',
+    'mctb-revenue-run',
     'mctb-sms',
     'mctb-voice',
   ]);
@@ -152,7 +159,7 @@ test('postgres queries use the column alias real n8n returns', () => {
       });
     });
   });
-  assert.equal(count, 11);
+  assert.equal(count, 19);
   const helper = fs.readFileSync(path.join(root, 'scripts/setup_tenant.ps1'), 'utf8');
   assert.match(helper, /docker exec/);
   assert.match(helper, /mctb\.tenants/);

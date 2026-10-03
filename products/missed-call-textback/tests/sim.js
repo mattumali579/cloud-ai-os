@@ -4,6 +4,17 @@ const { execFileSync } = require('child_process');
 const vm = require('node:vm');
 
 const DATABASE = process.env.MCTB_TEST_DATABASE || 'mctb_test';
+const staticStores = new Map();
+
+function resetWorkflowStaticData() {
+  staticStores.clear();
+}
+
+function staticBag(workflow) {
+  const id = (workflow && (workflow.id || workflow.name)) || 'workflow';
+  if (!staticStores.has(id)) staticStores.set(id, { global: {}, node: {} });
+  return staticStores.get(id);
+}
 
 function psql(database, sql) {
   return execFileSync(
@@ -117,7 +128,7 @@ function queryParams(expr, item, env, outputs, index) {
   return params;
 }
 
-function runCode(node, items, env, outputs, index) {
+function runCode(node, items, env, outputs, index, workflow) {
   const jsCode = node.parameters.jsCode;
   const script = new vm.Script('(function(){\n' + jsCode + '\n})()', { filename: node.name + '.js' });
   const sandbox = {
@@ -136,6 +147,10 @@ function runCode(node, items, env, outputs, index) {
     String: String,
     console: console,
     encodeURIComponent: encodeURIComponent,
+    $getWorkflowStaticData: (scope) => {
+      const bag = staticBag(workflow);
+      return scope === 'node' ? bag.node : bag.global;
+    },
   };
   const result = script.runInNewContext(sandbox, { timeout: 8000 });
   if (!Array.isArray(result)) throw new Error(node.name + ' must return an array of items');
@@ -149,6 +164,7 @@ function runWorkflow(workflow, triggerName, inputJson, env) {
   });
   const outputs = {};
   const httpLog = [];
+  const emailLog = [];
   const responses = [];
   const environment = env || {};
 
@@ -157,7 +173,7 @@ function runWorkflow(workflow, triggerName, inputJson, env) {
     if (!node) throw new Error('missing node ' + name);
     let outItems = [];
     if (node.type === 'n8n-nodes-base.code') {
-      outItems = runCode(node, items, environment, outputs, 0);
+      outItems = runCode(node, items, environment, outputs, 0, workflow);
     } else if (node.type === 'n8n-nodes-base.postgres') {
       const batch = node.parameters.options && node.parameters.options.queryBatching;
       const runOne = (item, index) => {
@@ -166,9 +182,23 @@ function runWorkflow(workflow, triggerName, inputJson, env) {
         const sql = bindQuery(node.parameters.query, params);
         return postgresItem(node.parameters.query, psql(DATABASE, sql));
       };
-      outItems = batch === 'independently'
-        ? items.map((item, index) => runOne(item, index))
-        : [runOne(items[0] || { json: {} }, 0)];
+      try {
+        if (environment.MCTB_SIM_DB_DOWN === '1') throw new Error('simulated database outage');
+        outItems = batch === 'independently'
+          ? items.map((item, index) => runOne(item, index))
+          : [runOne(items[0] || { json: {} }, 0)];
+      } catch (err) {
+        const message = String(err && err.message ? err.message : err);
+        if (node.onError === 'continueErrorOutput') {
+          const errorItems = [{ json: { error: message } }];
+          outputs[name] = errorItems;
+          const branches = (workflow.connections[name] && workflow.connections[name].main) || [];
+          (branches[1] || []).forEach((edge) => exec(edge.node, errorItems));
+          return;
+        }
+        if (node.onError === 'continueRegularOutput') outItems = [{ json: { error: message } }];
+        else throw err;
+      }
     } else if (node.type === 'n8n-nodes-base.if') {
       const truthy = [];
       const falsy = [];
@@ -197,11 +227,30 @@ function runWorkflow(workflow, triggerName, inputJson, env) {
         if (String(url).includes('api.twilio.com')) return { json: { sid: 'SM_TEST', status: 'queued' } };
         return { json: { ok: true } };
       });
+    } else if (node.type === 'n8n-nodes-base.emailSend') {
+      outItems = items.map((item, index) => {
+        const from = evalExpr(node.parameters.fromEmail, item, environment, outputs, index);
+        const to = evalExpr(node.parameters.toEmail, item, environment, outputs, index);
+        const subject = evalExpr(node.parameters.subject, item, environment, outputs, index);
+        const text = evalExpr(node.parameters.text || node.parameters.html, item, environment, outputs, index);
+        emailLog.push({ node: name, from: from, to: to, subject: subject, text: text });
+        return { json: { ok: true } };
+      });
     } else if (node.type === 'n8n-nodes-base.respondToWebhook') {
       const item = items[0] || { json: {} };
+      const options = node.parameters.options || {};
+      const entries = ((options.responseHeaders || {}).entries) || [];
+      const headers = {};
+      entries.forEach((entry) => {
+        headers[entry.name] = evalExpr(entry.value, item, environment, outputs, 0);
+      });
+      const rawCode = options.responseCode == null ? 200 : options.responseCode;
+      const statusCode = typeof rawCode === 'number' ? rawCode : Number(evalExpr(String(rawCode), item, environment, outputs, 0));
       responses.push({
         body: evalExpr(node.parameters.responseBody, item, environment, outputs, 0),
-        contentType: (((node.parameters.options || {}).responseHeaders || {}).entries || []).map((entry) => entry.value).join('; '),
+        statusCode: statusCode,
+        headers: headers,
+        contentType: headers['Content-Type'] || '',
       });
       outputs[name] = items;
       return;
@@ -217,7 +266,7 @@ function runWorkflow(workflow, triggerName, inputJson, env) {
   outputs[triggerName] = [{ json: inputJson }];
   const next = (workflow.connections[triggerName] && workflow.connections[triggerName].main[0]) || [];
   next.forEach((edge) => exec(edge.node, outputs[triggerName]));
-  return { outputs: outputs, httpLog: httpLog, responses: responses };
+  return { outputs: outputs, httpLog: httpLog, emailLog: emailLog, responses: responses };
 }
 
 module.exports = {
@@ -229,4 +278,5 @@ module.exports = {
   columnKey: columnKey,
   postgresItem: postgresItem,
   runWorkflow: runWorkflow,
+  resetWorkflowStaticData: resetWorkflowStaticData,
 };

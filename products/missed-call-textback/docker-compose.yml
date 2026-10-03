@@ -43,6 +43,13 @@ services:
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       MCTB_PUBLIC_BASE_URL: ${MCTB_PUBLIC_BASE_URL:-http://localhost:5680}
       OWNER_ALERT_WEBHOOK_URL: ${OWNER_ALERT_WEBHOOK_URL:-}
+      MCTB_ADMIN_PHONE: ${MCTB_ADMIN_PHONE:-}
+      MCTB_ADMIN_EMAIL: ${MCTB_ADMIN_EMAIL:-}
+      N8N_SMTP_HOST: ${N8N_SMTP_HOST:-}
+      N8N_SMTP_PORT: ${N8N_SMTP_PORT:-}
+      N8N_SMTP_USER: ${N8N_SMTP_USER:-}
+      N8N_SMTP_PASS: ${N8N_SMTP_PASS:-}
+      N8N_SMTP_SENDER: ${N8N_SMTP_SENDER:-}
     volumes:
       - mctb-n8n:/home/node/.n8n
     depends_on:

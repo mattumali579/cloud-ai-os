@@ -78,11 +78,11 @@ function selectAs(expression, alias) {
   return 'SELECT ' + expression + ' AS "' + alias + '"';
 }
 
-function postgres(name, query, replacement, notes, batch) {
+function postgres(name, query, replacement, notes, batch, hooks) {
   const options = {};
   if (replacement) options.queryReplacement = replacement;
   if (batch) options.queryBatching = batch;
-  return {
+  const spec = {
     name: name,
     type: 'n8n-nodes-base.postgres',
     typeVersion: 2.5,
@@ -94,6 +94,8 @@ function postgres(name, query, replacement, notes, batch) {
       options: options,
     },
   };
+  if (hooks && hooks.onError) spec.onError = hooks.onError;
+  return spec;
 }
 
 function ifYes(name, expression, notes) {
@@ -141,7 +143,9 @@ function webhook(name, method, webhookPath, webhookId, notes, responseMode) {
   };
 }
 
-function respond(name, bodyExpr, contentType) {
+function respond(name, bodyExpr, contentType, extra) {
+  const entries = [{ name: 'Content-Type', value: contentType }];
+  ((extra && extra.headers) || []).forEach((header) => entries.push(header));
   return {
     name: name,
     type: 'n8n-nodes-base.respondToWebhook',
@@ -150,10 +154,8 @@ function respond(name, bodyExpr, contentType) {
       respondWith: 'text',
       responseBody: bodyExpr,
       options: {
-        responseCode: 200,
-        responseHeaders: {
-          entries: [{ name: 'Content-Type', value: contentType }],
-        },
+        responseCode: extra && extra.code ? extra.code : 200,
+        responseHeaders: { entries: entries },
       },
     },
   };
@@ -426,7 +428,8 @@ const now = $('Capture Now').first().json.now;
 const fanout = engine.planWork(work, now, {
   TWILIO_MODE: $env.TWILIO_MODE || '',
   TWILIO_ACCOUNT_SID: $env.TWILIO_ACCOUNT_SID || '',
-  TWILIO_AUTH_TOKEN: $env.TWILIO_AUTH_TOKEN || ''
+  TWILIO_AUTH_TOKEN: $env.TWILIO_AUTH_TOKEN || '',
+  MCTB_PUBLIC_BASE_URL: $env.MCTB_PUBLIC_BASE_URL || ''
 });
 return [{ json: { count: fanout.length, fanout: fanout } }];
 `, 'Quiet hours, rate limits, STOP suppression, and the 3-step estimate sequence. Always returns one item so the webhook can respond even when nothing is due.'));
@@ -487,11 +490,18 @@ followGraph.add(postgres(
   'Writes the send, deferral, suppression, or rate-limit result.',
   'independently'
 ));
+followGraph.add(postgres(
+  'Stamp Followups',
+  selectAs("mctb.stamp_heartbeat('followups')", 'result'),
+  '',
+  'Records that this pass reached the planner. The health check treats a stale stamp as a failed run.'
+));
 followGraph.link('Every Minute', 'Capture Now');
 followGraph.link('Run Follow-ups Webhook', 'Capture Now');
 followGraph.link('Capture Now', 'Load Due Work');
 followGraph.link('Load Due Work', 'Plan Sends');
 followGraph.link('Plan Sends', 'Expand Sends');
+followGraph.link('Plan Sends', 'Stamp Followups');
 followGraph.link('Expand Sends', 'Use Twilio REST');
 followGraph.link('Use Twilio REST', 'Send Twilio SMS', 0);
 followGraph.link('Use Twilio REST', 'Mark Outbound', 1);
@@ -591,6 +601,266 @@ actionGraph.link('Apply Action', 'Prepare Action Response');
 actionGraph.link('Prepare Action Response', 'Respond Action');
 const actions = finish(actionGraph, 'BrightReach Dashboard Actions', 'mctbActions');
 
+const CAPTURE_NOW = `
+const current = $input.first().json || {};
+const body = current.body || {};
+const simulated = ($env.TWILIO_MODE || '') !== 'live' && body.now ? String(body.now) : '';
+return [{ json: { now: simulated || new Date().toISOString() } }];
+`;
+
+const revenueGraph = workflowBuilder('mctbrev0');
+revenueGraph.add({
+  name: 'Every 15 Minutes',
+  type: 'n8n-nodes-base.scheduleTrigger',
+  typeVersion: 1.2,
+  notes: 'Looks for a Monday 8am weekly report and a last-day-of-month summary in each shop time zone.',
+  parameters: { rule: { interval: [{ field: 'minutes', minutesInterval: 15 }] } },
+});
+revenueGraph.add(webhook(
+  'Run Revenue Webhook',
+  'POST',
+  'mctb-revenue-run',
+  'mctb-revenue-hook',
+  'Test trigger. body.now is honored only when TWILIO_MODE is not live.',
+  'onReceived'
+));
+revenueGraph.add(code('Capture Revenue Now', CAPTURE_NOW, 'Clock for the shop-local Monday and month-end checks.'));
+revenueGraph.add(postgres(
+  'Load Due Reports',
+  selectAs('mctb.due_revenue_reports($1::timestamptz)', 'reports'),
+  '={{ $json.now }}',
+  'Shops with the report toggle on, once per week and once per month.'
+));
+revenueGraph.add(code('Plan Reports', `
+const reports = $input.first().json.reports || [];
+const now = $('Capture Revenue Now').first().json.now;
+const fanout = engine.planRevenueReports(reports, now, {
+  MCTB_PUBLIC_BASE_URL: $env.MCTB_PUBLIC_BASE_URL || ''
+});
+return [{ json: { count: fanout.length, fanout: fanout } }];
+`, 'Builds the SMS, skips opted-out owners, and waits out quiet hours. Each text stays under 320 characters.'));
+revenueGraph.add(code('Expand Reports', `
+const fanout = $input.first().json.fanout || [];
+return fanout.map((item) => ({ json: item }));
+`, 'One item per report.'));
+revenueGraph.add(postgres(
+  'Apply Report',
+  selectAs('mctb.apply_revenue_report($1::jsonb)', 'result'),
+  '={{ JSON.stringify($json) }}',
+  'Records the period and queues the owner SMS. The follow-up pass sends the queue.',
+  'independently'
+));
+revenueGraph.add(postgres(
+  'Stamp Revenue',
+  selectAs("mctb.stamp_heartbeat('revenue')", 'result'),
+  '',
+  'Health check uses this stamp. A shop with no report due still counts as a successful run.'
+));
+revenueGraph.link('Every 15 Minutes', 'Capture Revenue Now');
+revenueGraph.link('Run Revenue Webhook', 'Capture Revenue Now');
+revenueGraph.link('Capture Revenue Now', 'Load Due Reports');
+revenueGraph.link('Load Due Reports', 'Plan Reports');
+revenueGraph.link('Load Due Reports', 'Stamp Revenue');
+revenueGraph.link('Plan Reports', 'Expand Reports');
+revenueGraph.link('Expand Reports', 'Apply Report');
+const revenue = finish(revenueGraph, 'BrightReach Recovered Revenue', 'mctbRevenue');
+
+const reviewGraph = workflowBuilder('mctbrev1');
+reviewGraph.add(webhook(
+  'Review Click',
+  'GET',
+  'mctb-r/:token',
+  'mctb-review-hook',
+  'Tracked Google review link. Logs the click, then redirects to the shop google_review_url.'
+));
+reviewGraph.add(code('Read Review Token', `
+const item = $input.first().json || {};
+const params = item.params || {};
+const token = String(params.token || '').trim();
+return [{ json: { token: token } }];
+`, 'Token from /webhook/mctb-r/<token>.'));
+reviewGraph.add(postgres(
+  'Log Review Click',
+  selectAs('mctb.review_click($1::text)', 'click'),
+  '={{ $json.token }}',
+  'Sets clicked_at and returns the stored https review URL. Unknown tokens do not redirect.'
+));
+reviewGraph.add(code('Decide Review Redirect', `
+const click = $input.first().json.click || {};
+const location = typeof click.location === 'string' ? click.location : '';
+const ok = click.ok === true && /^https:\\/\\//i.test(location);
+return [{ json: { redirect: ok ? 'yes' : 'no', location: ok ? location : '', body: ok ? '' : 'Unknown review link' } }];
+`, 'Only the URL stored on the shop is used.'));
+reviewGraph.add(ifYes('Review Found', '={{ $json.redirect }}', 'Unknown or non-https links get a 404.'));
+reviewGraph.add(respond('Redirect Review', '={{ $json.body }}', 'text/plain; charset=utf-8', {
+  code: 302,
+  headers: [{ name: 'Location', value: '={{ $json.location }}' }],
+}));
+reviewGraph.add(respond('Missing Review', '={{ $json.body }}', 'text/plain; charset=utf-8', { code: 404 }));
+reviewGraph.link('Review Click', 'Read Review Token');
+reviewGraph.link('Read Review Token', 'Log Review Click');
+reviewGraph.link('Log Review Click', 'Decide Review Redirect');
+reviewGraph.link('Decide Review Redirect', 'Review Found');
+reviewGraph.link('Review Found', 'Redirect Review', 0);
+reviewGraph.link('Review Found', 'Missing Review', 1);
+const reviewClick = finish(reviewGraph, 'BrightReach Review Link', 'mctbReview');
+
+const healthGraph = workflowBuilder('mctbhlth');
+healthGraph.add(webhook(
+  'Health Webhook',
+  'GET',
+  'mctb-health',
+  'mctb-health-hook',
+  'Public heartbeat for a free uptime monitor. 200 JSON when Postgres answers. ok is false when scheduled workflows are stale.'
+));
+healthGraph.add(postgres(
+  'Load Heartbeat',
+  selectAs('mctb.heartbeat()', 'health'),
+  '',
+  'Database reachability and the age of the last successful follow-up and revenue runs.'
+));
+healthGraph.add(code('Render Heartbeat', `
+const row = $input.first().json.health || {};
+const body = {
+  ok: engine.heartbeatOk(row),
+  db: row.db || 'error',
+  version: engine.ENGINE_VERSION
+};
+return [{ json: { body: JSON.stringify(body) } }];
+`, 'UptimeRobot can watch the HTTP status, or the JSON ok field.'));
+healthGraph.add(respond('Respond Heartbeat', '={{ $json.body }}', 'application/json; charset=utf-8'));
+healthGraph.add({
+  name: 'Every 5 Minutes',
+  type: 'n8n-nodes-base.scheduleTrigger',
+  typeVersion: 1.2,
+  notes: 'Alerts MCTB_ADMIN_PHONE and MCTB_ADMIN_EMAIL at most once an hour, then sends a recovery notice.',
+  parameters: { rule: { interval: [{ field: 'minutes', minutesInterval: 5 }] } },
+});
+healthGraph.add(webhook(
+  'Run Health Webhook',
+  'POST',
+  'mctb-health-run',
+  'mctb-health-run-hook',
+  'Test trigger for the alert pass. body.now is honored only when TWILIO_MODE is not live.',
+  'onReceived'
+));
+healthGraph.add(code('Prep Health', `
+const current = $input.first().json || {};
+const body = current.body || {};
+const simulated = ($env.TWILIO_MODE || '') !== 'live' && body.now ? String(body.now) : '';
+return [{
+  json: {
+    now: simulated || new Date().toISOString(),
+    admin_phone: engine.normalizePhone($env.MCTB_ADMIN_PHONE || '') || ''
+  }
+}];
+`, 'Normalizes the admin phone before the database probe.'));
+healthGraph.add(postgres(
+  'Probe Health',
+  selectAs('mctb.health_snapshot($1::text)', 'health'),
+  '={{ $json.admin_phone }}',
+  'Postgres, heartbeat ages, and the shop line used to text the admin.',
+  null,
+  { onError: 'continueErrorOutput' }
+));
+healthGraph.add(code('Read Health', `
+const row = $input.first().json.health || null;
+return [{ json: { facts: row || { db: 'down' } } }];
+`, 'A failed probe becomes db down so the alert can still go out by email.'));
+healthGraph.add(code('Decide Health', `
+const facts = $input.first().json.facts || { db: 'down' };
+const now = $('Prep Health').first().json.now;
+const store = $getWorkflowStaticData('global');
+const decision = engine.planHealthAlert(facts, store, now, {
+  MCTB_ADMIN_PHONE: $env.MCTB_ADMIN_PHONE || '',
+  MCTB_ADMIN_EMAIL: $env.MCTB_ADMIN_EMAIL || '',
+  N8N_SMTP_HOST: $env.N8N_SMTP_HOST || '',
+  SMTP_HOST: $env.SMTP_HOST || '',
+  TWILIO_MODE: $env.TWILIO_MODE || '',
+  TWILIO_ACCOUNT_SID: $env.TWILIO_ACCOUNT_SID || '',
+  TWILIO_AUTH_TOKEN: $env.TWILIO_AUTH_TOKEN || ''
+});
+const patch = decision.staticPatch || {};
+store.status = patch.status;
+store.alertOpen = patch.alertOpen;
+store.lastAlertAt = patch.lastAlertAt;
+if (patch.sender) store.sender = patch.sender;
+return [{ json: decision }];
+`, 'At most one alert per hour. Quiet hours queue the SMS. Opted-out admin numbers are not texted. Email uses the n8n SMTP credential when N8N_SMTP_HOST or SMTP_HOST is set.'));
+healthGraph.add(ifYes('Alerting', '={{ $json.save }}', 'Healthy checks with nothing open do not notify.'));
+healthGraph.add(ifYes('Live Health SMS', '={{ $json.live_sms }}', 'Live mode posts to Twilio. Mock mode records the text in Postgres.'));
+healthGraph.add({
+  name: 'Send Health SMS',
+  type: 'n8n-nodes-base.httpRequest',
+  typeVersion: 4.2,
+  onError: 'continueRegularOutput',
+  notes: 'Direct Twilio send so an outage in the follow-up workflow cannot block the alert.',
+  parameters: {
+    method: 'POST',
+    url: '={{ \'https://api.twilio.com/2010-04-01/Accounts/\' + $env.TWILIO_ACCOUNT_SID + \'/Messages.json\' }}',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [{ name: 'Authorization', value: '={{ $json.auth }}' }],
+    },
+    sendBody: true,
+    contentType: 'form-urlencoded',
+    bodyParameters: {
+      parameters: [
+        { name: 'From', value: '={{ $json.record.sms.from }}' },
+        { name: 'To', value: '={{ $json.record.sms.to }}' },
+        { name: 'Body', value: '={{ $json.record.sms.body }}' },
+      ],
+    },
+    options: { timeout: 30000 },
+  },
+});
+healthGraph.add(ifYes('Email Health', '={{ $json.send_email }}', 'Skipped unless MCTB_ADMIN_EMAIL and an SMTP host env var are both set.'));
+healthGraph.add({
+  name: 'Send Health Email',
+  type: 'n8n-nodes-base.emailSend',
+  typeVersion: 2.1,
+  onError: 'continueRegularOutput',
+  notes: 'Uses the n8n SMTP credential. Fill it from N8N_SMTP_HOST, N8N_SMTP_PORT, N8N_SMTP_USER, N8N_SMTP_PASS, and N8N_SMTP_SENDER.',
+  credentials: {
+    smtp: {
+      id: 'BRIGHTREACH_SMTP_CREDENTIAL_ID',
+      name: 'BrightReach SMTP',
+    },
+  },
+  parameters: {
+    fromEmail: '={{ $env.N8N_SMTP_SENDER || $env.SMTP_FROM || \'missed-call@localhost\' }}',
+    toEmail: '={{ $json.record.email.to }}',
+    subject: '={{ $json.record.email.subject }}',
+    emailFormat: 'text',
+    text: '={{ $json.record.email.body }}',
+    options: {},
+  },
+});
+healthGraph.add(postgres(
+  'Record Health',
+  selectAs('mctb.record_health_alert($1::jsonb)', 'result'),
+  '={{ JSON.stringify($json.record) }}',
+  'Stores the alert latch. Mock texts are logged here. Quiet-hours texts are queued.',
+  null,
+  { onError: 'continueRegularOutput' }
+));
+healthGraph.link('Health Webhook', 'Load Heartbeat');
+healthGraph.link('Load Heartbeat', 'Render Heartbeat');
+healthGraph.link('Render Heartbeat', 'Respond Heartbeat');
+healthGraph.link('Every 5 Minutes', 'Prep Health');
+healthGraph.link('Run Health Webhook', 'Prep Health');
+healthGraph.link('Prep Health', 'Probe Health');
+healthGraph.link('Probe Health', 'Read Health', 0);
+healthGraph.link('Probe Health', 'Read Health', 1);
+healthGraph.link('Read Health', 'Decide Health');
+healthGraph.link('Decide Health', 'Alerting');
+healthGraph.link('Alerting', 'Live Health SMS', 0);
+healthGraph.link('Alerting', 'Email Health', 0);
+healthGraph.link('Alerting', 'Record Health', 0);
+healthGraph.link('Live Health SMS', 'Send Health SMS', 0);
+healthGraph.link('Email Health', 'Send Health Email', 0);
+const health = finish(healthGraph, 'BrightReach Health', 'mctbHealth');
+
 const outDir = path.join(root, 'workflows');
 fs.mkdirSync(outDir, { recursive: true });
 const files = [
@@ -600,6 +870,9 @@ const files = [
   ['mctb_followups.json', followups],
   ['mctb_dashboard.json', dashboard],
   ['mctb_actions.json', actions],
+  ['mctb_revenue.json', revenue],
+  ['mctb_review_click.json', reviewClick],
+  ['mctb_health.json', health],
 ];
 files.forEach(([name, value]) => {
   fs.writeFileSync(path.join(outDir, name), JSON.stringify(value, null, 2) + '\n');
