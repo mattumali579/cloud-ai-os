@@ -1,6 +1,7 @@
-# v3 copy experiment (PROPOSED, awaiting Matt's approval)
-Drafted 2026-10-02 23:17 PT. Draft only: nothing pushed, no workflow dispatched, nothing sent, no live DB writes.
-Files: `experiments/v3.patch` (code/config diff, NOT applied) and `experiments/v3_measure.sql` (read-only queries).
+# v3 copy experiment
+Copy and rationale for the v3 A/B on this branch. This file does not send mail and does not write a database.
+Drafted 2026-10-02 23:17 PT. Measurement queries: `experiments/v3_measure.sql` (read-only; not a migration).
+The code described in section 6 is the implementation on this branch (originally `experiments/v3.patch` against `6f8bac1`).
 
 ## 1. Why test copy now
 - Sends so far: about 388 (188 historical + about 200 Hostinger, Oct 1-2). Human replies: 0. Spam folder: empty. Bounces: 12.
