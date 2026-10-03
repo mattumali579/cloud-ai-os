@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from urllib.parse import quote
 
 # industry -> (what a new customer is called, what old leads are, how they say "a booked job")
 INDUSTRY = {
@@ -120,15 +121,110 @@ V3_MAX_WORDS = 90
 V3_BRAND = "BrightReach Media"
 V3_TRADE = {"hvac": "HVAC company", "plumbing": "plumber", "roofing": "roofer", "electrical": "electrician"}
 
+# v4 = Missed-Call Rescue (revenue-operator/sales/offer.md): a no-risk guarantee + a reply-for-demo CTA.
+# Touch 1 has NO link (deliverability); touches 2-4 carry the personalized demo URL / free check / close.
+V4 = "v4"
+V4_MAX_WORDS = 120
+V4_TRADE = {"hvac": "HVAC company", "plumbing": "plumber", "roofing": "roofer"}
+V4_TRADE_PLURAL = {"hvac": "HVAC companies", "plumbing": "plumbers", "roofing": "roofers"}
+# LocaliQ 2025 cost per lead (research/competitor_analysis.md section 3, via skygnosis.com)
+V4_LEAD_COST = {"hvac": ("an A/C", "$128"), "plumbing": ("a plumbing", "$129"), "roofing": ("a roofing", "$228")}
+DEMO_URL = "https://mattumali579.github.io/office-agent-demo/missed-call/"
+_URL = re.compile(r"https?://\S+")
 
-def arm(company_id: str, industry: str, *, share: float, industries) -> str:
-    """Which copy a company gets: 'v3' or 'v2'. Deterministic per company (same answer on every
-    run, so a rewrite never flips a lead between arms); only industries v3 has copy for."""
+
+def demo_url(row: dict) -> str:
+    """Personalized demo link: ?biz=<display name>&trade=<industry>, URL-encoded (demo.js reads both)."""
+    ind = (row.get("industry") or "").strip().lower()
+    return f"{DEMO_URL}?biz={quote(display_name(row.get('company_name', '')), safe='')}&trade={quote(ind, safe='')}"
+
+
+def _v4_variant_b(company_id: str) -> bool:
+    """Deterministic subject A/B inside the v4 arm (independent of the arm hash: uses a salt)."""
+    return int(hashlib.sha256(f"subj:{company_id}".encode()).hexdigest()[:8], 16) % 2 == 1
+
+
+def first_touch_v4(row: dict, *, sender_name: str, postal_address: str) -> Email:
+    name = display_name(row.get("company_name", ""))
+    ind = (row.get("industry") or "").strip().lower()
+    trade = V4_TRADE.get(ind, "company")
+    city = (row.get("city") or "").strip()
+    _, tag = observation(row)
+    short = len(name) <= 28
+    who = f"most people in {city}" if city and len(city) <= 20 else "most people"
+    ref = name if short else "your shop"          # long names: greet with it once, then keep it short
+    if tag == "emergency":
+        first = (f"I saw {'you take' if not short else name + ' takes'} emergency calls. When one of those goes to "
+                 f"voicemail, {who} just call the next {trade} on the list.")
+    elif tag == "estimates":
+        first = (f"I saw {'you offer' if not short else name + ' offers'} free estimates. When a call goes to voicemail, "
+                 f"or an estimate goes quiet, {who} just go with the next {trade}.")
+    else:
+        first = f"When a call to {ref} goes to voicemail, {who} just call the next {trade} on the list."
+    lines = [first, "",
+             "I fix that: every missed caller gets a text from your business within seconds, it asks what they need, "
+             "and you get the lead on your phone. Quotes that go quiet get three follow-up texts.", "",
+             "If it doesn't bring back at least 5 missed callers in your first 30 days, you don't pay. No contract.", "",
+             "Want a 1-minute demo with your company name on it? Just reply \"yes\"."]
+    b = _v4_variant_b(str(row.get("company_id", name)))
+    if b:
+        subject = f"Quick question about {name}" if short else "Quick question about your missed calls"
+    else:
+        subject = f"Missed calls at {name}" if short else "Missed calls"
+    body = "\n".join([f"Hi {name} team,", "", *lines, "", *_v3_signature(sender_name), "", "--", postal_address,
+                      "If you'd rather not hear from me, reply \"stop\" and I won't email you again."])
+    return Email(subject=subject, body=body, variant=f"{V4}-{tag}{'-b' if b else ''}")
+
+
+def followup_v4(row: dict, step: int, first_subject: str, *, sender_name: str, postal_address: str) -> Email:
+    name = display_name(row.get("company_name", ""))
+    ind = (row.get("industry") or "").strip().lower()
+    city = (row.get("city") or "").strip()
+    subj = first_subject if first_subject.lower().startswith("re:") else f"Re: {first_subject}"
+    if step == 1:      # touch 2: the personalized demo link
+        lines = [f"Hi {name} team,", "",
+                 f"I built a quick demo with your name on it: {demo_url(row)}", "",
+                 "Tap to miss the call, then watch the text conversation and the lead land on the owner's phone. "
+                 "Takes about a minute.", "",
+                 "Same deal: at least 5 missed callers brought back in your first 30 days, or you pay nothing.", "",
+                 "Want it live for your shop? Reply \"yes\" and I'll set up a 10-minute call."]
+    elif step == 2:    # touch 3: ROI math + free missed-call check
+        kind, cost = V4_LEAD_COST.get(ind, ("", ""))
+        math = (f"Quick math: {kind} lead costs about {cost} in ads (LocaliQ, 2025). "
+                "Every unanswered call is that money handed to the next company.") if cost else \
+               "Every unanswered call is a lead you already paid for, handed to the next company."
+        lines = [f"Hi {name} team,", "", math, "",
+                 "Want a free missed-call check? Pull up your phone's recent calls and in 10 minutes I'll count "
+                 "how many callers you missed last week. Nothing to install, nothing to buy.", "",
+                 "Reply \"check\" with a good time."]
+    else:              # touch 4: scarcity + close the loop
+        where = f" in {city}" if city else " per area"
+        lines = [f"Hi {name} team,", "",
+                 f"Last note. I'm keeping this to 3 {V4_TRADE_PLURAL.get(ind, 'shops')}{where} so the shops I work with "
+                 "aren't competing for the same callers.", "",
+                 "If missed calls ever cost you a job, reply \"rescue\". You pay nothing unless it brings back "
+                 "5 missed callers in 30 days."]
+    body = "\n".join(lines + ["", *_v3_signature(sender_name), "", "--", postal_address,
+                              "Reply \"stop\" and you won't hear from me again."])
+    return Email(subject=subj, body=body, variant=f"{V4}-fu{step}")
+
+
+
+def arm(company_id: str, industry: str, *, share: float, industries,
+        v4_share: float = 0.0, v4_industries=()) -> str:
+    """Which copy a company gets: 'v4', 'v3' or 'v2'. Deterministic per company (same answer on every
+    run, so a rewrite never flips a lead between arms); only industries the arm has copy for.
+    One hash bucket: [0, v4_share) -> v4, [v4_share, v4_share + share) -> v3, rest -> v2."""
     ind = (industry or "").strip().lower()
-    if share <= 0 or ind not in V3_TRADE or ind not in set(industries or ()):
+    if ind not in V3_TRADE:
         return COPY_VERSION
     bucket = int(hashlib.sha256(str(company_id).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-    return V3 if bucket < share else COPY_VERSION
+    v4 = v4_share if ind in V4_TRADE and ind in set(v4_industries or ()) else 0.0
+    if bucket < v4:
+        return V4
+    if share > 0 and ind in set(industries or ()) and bucket < v4 + share:
+        return V3
+    return COPY_VERSION
 
 
 def _v3_signature(sender_name: str) -> list[str]:
@@ -167,6 +263,8 @@ def first_touch(row: dict, *, sender_name: str, postal_address: str, version: st
     """One offer per email, chosen by the strongest true fact we have about the business:
     long track record -> reactivate old leads; free estimates -> follow-up on quotes;
     emergency calls -> speed of reply; strong reviews -> new leads; nothing -> reactivation."""
+    if version == V4:
+        return first_touch_v4(row, sender_name=sender_name, postal_address=postal_address)
     if version == V3:
         return first_touch_v3(row, sender_name=sender_name, postal_address=postal_address)
     name = display_name(row.get("company_name", ""))
@@ -224,6 +322,8 @@ def followup(row: dict, step: int, first_subject: str, *, sender_name: str, post
     name = display_name(row.get("company_name", ""))
     new, old, booked = INDUSTRY.get((row.get("industry") or "").strip().lower(), DEFAULT)
     subj = first_subject if first_subject.lower().startswith("re:") else f"Re: {first_subject}"
+    if version == V4:
+        return followup_v4(row, step, first_subject, sender_name=sender_name, postal_address=postal_address)
     if version == V3:
         if step == 1:     # touch 2: the existing price and the existing 30-day guarantee, nothing new
             lines = [f"Hi {name} team,", "",
@@ -274,6 +374,7 @@ def qa(e: Email, *, postal_address: str, company_name: str = "") -> list[str]:
         words = words.replace(n, " ")
     if postal_address.strip():
         words = words.replace(postal_address.strip(), " ")
+    words = _URL.sub(" ", words)          # a link's path ('office-agent-demo') is not a pitch about technology
     hit = BANNED.search(words)
     if hit:
         problems.append(f"mentions the technology ('{hit.group(0)}')")
@@ -287,4 +388,8 @@ def qa(e: Email, *, postal_address: str, company_name: str = "") -> list[str]:
         problems.append("too long")
     if (e.variant or "").startswith(V3 + "-") and len(e.body.split("\n--\n")[0].split()) > V3_MAX_WORDS:
         problems.append("too long for v3")
+    if (e.variant or "").startswith(V4 + "-") and len(e.body.split("\n--\n")[0].split()) > V4_MAX_WORDS:
+        problems.append("too long for v4")
+    if (e.variant or "") .startswith(V4 + "-") and not (e.variant or "").startswith(V4 + "-fu") and _URL.search(e.body):
+        problems.append("link in v4 first touch")
     return problems

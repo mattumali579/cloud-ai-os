@@ -35,8 +35,11 @@ planning:
     enabled: false                # false = all industries in config/lead_engine.yaml (current behaviour)
     industries: [hvac, plumbing, roofing]   # alternate: electrical
 
-experiment:                       # first-touch copy A/B: v2 = control, v3 = challenger (experiments/v3_copy_proposal.md)
-  v3_share: 0.5                   # share of eligible companies written with v3; 0 = v3 off
+experiment:                       # first-touch copy arms. One hash bucket: [0,v4_share) v4, then v3_share v3, rest v2
+  v4_share: 1.0                   # v4 = Missed-Call Rescue (5 leads or free); 0 = v4 off
+  v4_industries: [hvac, plumbing, roofing]
+  v4_followup_days: [2, 3, 4]     # v4 is a 4-touch sequence: business days after the previous touch
+  v3_share: 0.0                   # retired before it sent (merged Sat Oct 3); kept for rollback
   v3_industries: [hvac, plumbing, roofing]   # v3 copy exists only for these; everyone else stays on v2
 
 airtable:

@@ -65,10 +65,19 @@ def industry_limit(cfg: dict) -> list[str] | None:
 
 
 def copy_arm(row: dict, cfg: dict) -> str:
-    """'v3' or 'v2' for this company (config: experiment). Deterministic, so it never flips."""
+    """'v4', 'v3' or 'v2' for this company (config: experiment). Deterministic, so it never flips."""
     x = cfg.get("experiment") or {}
     return copywriter.arm(str(row["company_id"]), row.get("industry") or "",
-                          share=float(x.get("v3_share") or 0), industries=x.get("v3_industries") or [])
+                          share=float(x.get("v3_share") or 0), industries=x.get("v3_industries") or [],
+                          v4_share=float(x.get("v4_share") or 0), v4_industries=x.get("v4_industries") or [])
+
+
+def followup_days(cfg: dict, version: str) -> list:
+    """Business days between touches for this copy arm. v4 has its own (4-touch) cadence."""
+    x = cfg.get("experiment") or {}
+    if version == copywriter.V4 and x.get("v4_followup_days"):
+        return list(x["v4_followup_days"])
+    return list(cfg["sequence"]["followup_days"])
 
 
 # ------------------------------------------------------------------ pacing
@@ -296,16 +305,16 @@ def record_sent(conn, item: dict, cfg: dict, *, from_email: str, sent_at: dateti
                  "updated_at = now() WHERE queue_id = %s", (sent_at, note[:200], mid, item["queue_id"]))
     conn.execute("UPDATE companies SET outreach_status = 'contacted', updated_at = now() WHERE company_id = %s "
                  "AND outreach_status IN ('outreach_ready','handed_off')", (item["company_id"],))
-    days = cfg["sequence"]["followup_days"]
+    first = item if item["step"] == 0 else (conn.execute(
+        "SELECT subject, copy_variant FROM outreach_queue WHERE company_id = %s AND step = 0",
+        (item["company_id"],)).fetchone() or item)
+    version = (first["copy_variant"] or "").split("-")[0]          # follow-ups stay in the first touch's arm
+    version = version if version in (copywriter.V3, copywriter.V4) else copywriter.COPY_VERSION
+    days = followup_days(cfg, version)
     if item["step"] < len(days):
         company = store.company(conn, str(item["company_id"]))
-        first = item if item["step"] == 0 else (conn.execute(
-            "SELECT subject, copy_variant FROM outreach_queue WHERE company_id = %s AND step = 0",
-            (item["company_id"],)).fetchone() or item)
-        version = (first["copy_variant"] or "").split("-")[0]      # follow-ups stay in the first touch's arm
         e = copywriter.followup(dict(company), item["step"] + 1, first["subject"],
-                                sender_name=sender_name(cfg), postal_address=postal_address(),
-                                version=copywriter.V3 if version == copywriter.V3 else copywriter.COPY_VERSION)
+                                sender_name=sender_name(cfg), postal_address=postal_address(), version=version)
         problems = copywriter.qa(e, postal_address=postal_address(), company_name=company["company_name"])
         conn.execute("INSERT INTO outreach_queue (company_id, step, recipient, subject, body, copy_variant, thread_root, "
                      "due_at, state, stop_reason) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "

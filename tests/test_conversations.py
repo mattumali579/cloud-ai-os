@@ -165,11 +165,11 @@ def test_chain1_price_question(conn):
     assert chk["allowed"] is False and "reply_received" in chk["reasons"]
     assert len(out.sent) == 1                                       # notified
     text = out.texts[0]
-    for needle in ("ABC Roofing", "john@abcroofing.com", "EMAILED → INTERESTED", "How much?", "$1,500 one-time",
+    for needle in ("ABC Roofing", "john@abcroofing.com", "EMAILED → INTERESTED", "How much?", "$0 to start",
                    "Approve the prepared pricing reply", "airtable.com/appQNVOTVqdIYjSho/tblggJQ6ttPCvXygu/recABC0000000001"):
         assert needle in text, needle
     d = conn.execute("SELECT * FROM outreach_drafts WHERE company_id = %s", (cid,)).fetchall()
-    assert [x["kind"] for x in d] == ["pricing"] and "$1,500 one-time" in d[0]["body"] and d[0]["state"] == "awaiting_approval"
+    assert [x["kind"] for x in d] == ["pricing"] and "$0 to start" in d[0]["body"] and d[0]["state"] == "awaiting_approval"
     msgs = store.thread(conn, cid)
     assert [m["direction"] for m in msgs] == ["outbound", "inbound"]   # conversation stored
     assert conn.execute("SELECT classification FROM reply_analyses").fetchone()["classification"] == "PRICE_QUESTION"
@@ -544,7 +544,7 @@ def test_gmail_sync_end_to_end(conn, monkeypatch):
     assert state(conn, cid)["current_status"] == "interested"
     assert len(FakeIMAP.appended) == 1
     draft = FakeIMAP.appended[0][1]
-    assert b"$1,500" in draft and b"In-Reply-To: <reply-9@abcroofing.com>" in draft
+    assert b"$0 to start" in draft and b"In-Reply-To: <reply-9@abcroofing.com>" in draft
     # second run: nothing new, nothing repeated
     res2 = gmail_sync.sync(conn, send=out, imap_factory=FakeIMAP, repair_emailed_at=False)
     assert res2["scanned"] == 0 and len(FakeIMAP.appended) == 1

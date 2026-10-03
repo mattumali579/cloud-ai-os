@@ -3,9 +3,26 @@
 # (the same $1,500 / $400 figures the live Gmail reply engine is limited to).
 # Nothing outside this file may be quoted to a prospect. Change prices HERE.
 
-default_offer: recovery_build
+default_offer: missed_call_rescue   # v4 (revenue-operator/sales/offer.md); recovery_build kept as the 'own it' anchor
 
 offers:
+  missed_call_rescue:
+    name: Missed-Call Rescue
+    setup_usd: 497
+    monthly_usd: 49
+    price_text: "$0 to start, then $497 once only after your dashboard shows 5 recovered callers"
+    deliverables:
+      - Every missed call gets a text from your business within seconds
+      - A short text conversation that asks what they need, their ZIP and how soon, then texts you the lead
+      - Three follow-up texts on every estimate until they answer
+      - A private dashboard showing recovered callers and the jobs you mark won
+      - Setup and carrier registration done for you; the phone number is yours
+    timeline: "Registration is filed on day 1; go-live when the carrier approves (days to a few weeks)"
+    guarantee: "If your dashboard doesn't show at least 5 recovered callers in your first 30 days after go-live, you pay nothing and I keep it running free until it does."
+    client_responsibilities:
+      - Business details for carrier registration (legal name, EIN, address, website)
+      - Turn on no-answer call forwarding on your business line (one code; I walk you through it)
+      - Hours, service area and booking link
   recovery_build:
     name: Missed-Call Revenue Recovery Build
     setup_usd: 1500
@@ -13,7 +30,7 @@ offers:
     price_text: "$1,500 one-time"
     deliverables:
       - Instant text-back on every missed call
-      - Self-serve booking straight into your calendar
+      - A booking link in every text conversation
       - Same-day automated quote follow-ups
       - Runs 24/7; you own it
     timeline: null            # not in the offer sheet - proposals say "to confirm"
@@ -23,16 +40,16 @@ offers:
       - Calendar access (Google or Outlook) for booking
       - One kickoff conversation to confirm services, hours and service area
   hosted:
-    name: Hosted + Maintained
+    name: Care Plan
     setup_usd: null
-    monthly_usd: 400
-    price_text: "$400/month, month to month"
+    monthly_usd: 49
+    price_text: "$49/month after the first 2 months free, month to month"
     deliverables:
       - Hosting and monitoring
       - Tweaks and changes as needed
       - Monthly report (calls caught, texts sent, jobs booked)
     timeline: "Starts after the build is live"
-    guarantee: "Month to month. No contract. Cancel anytime and you keep the agent."
+    guarantee: "Month to month. No contract. Cancel anytime and you keep your number."
     client_responsibilities: []
   lead_pack:
     name: Lead Pack
