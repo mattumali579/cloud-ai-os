@@ -390,6 +390,6 @@ def qa(e: Email, *, postal_address: str, company_name: str = "") -> list[str]:
         problems.append("too long for v3")
     if (e.variant or "").startswith(V4 + "-") and len(e.body.split("\n--\n")[0].split()) > V4_MAX_WORDS:
         problems.append("too long for v4")
-    if (e.variant or "") .startswith(V4 + "-") and not (e.variant or "").startswith(V4 + "-fu") and _URL.search(e.body):
+    if (e.variant or "").startswith(V4 + "-") and not (e.variant or "").startswith(V4 + "-fu") and _URL.search(e.body):
         problems.append("link in v4 first touch")
     return problems

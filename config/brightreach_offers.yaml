@@ -1,6 +1,5 @@
 # BrightReach offer catalog used by pricing replies, audits and proposals.
-# Source of truth: AI-Second-Brain/leadgen-pipeline/close-kit/OFFER_ONE_PAGER.md
-# (the same $1,500 / $400 figures the live Gmail reply engine is limited to).
+# Default is Missed-Call Rescue (v4). recovery_build ($1,500) stays as the own-it anchor.
 # Nothing outside this file may be quoted to a prospect. Change prices HERE.
 
 default_offer: missed_call_rescue   # v4 (revenue-operator/sales/offer.md); recovery_build kept as the 'own it' anchor

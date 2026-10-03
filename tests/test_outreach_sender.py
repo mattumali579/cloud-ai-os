@@ -753,6 +753,7 @@ def test_v4_four_touches_pass_qa_no_link_first_demo_link_second(facts, industry)
            "city": "Metairie", "personalization": facts}
     e = cw.first_touch(row, sender_name="Matt Umali", postal_address=ADDR, version=cw.V4)
     assert e.variant.startswith("v4-") and cw.qa(e, postal_address=ADDR, company_name=row["company_name"]) == []
+    assert ADDR in e.body and "{postal" not in e.body and "{" not in e.body
     assert "http" not in e.body and "BrightReach Media" in e.body and "5 missed callers" in e.body
     assert len(e.body.split("\n--\n")[0].split()) <= cw.V4_MAX_WORDS and e.body.count("?") == 1
     bodies = []
@@ -818,3 +819,29 @@ def test_v4_switch_rewrites_unsent_trade_first_touches(conn, cfg):
     cfg["experiment"].update(v3_share=0.0, v4_share=1.0, v4_industries=["hvac", "plumbing", "roofing"])
     assert sender.plan(conn, cfg)["refreshed"]["rewritten"] == 1
     assert q(conn, waiting)["copy_variant"].startswith("v4-") and "5 missed callers" in q(conn, waiting)["body"]
+
+
+def test_checked_in_config_sends_v4_to_trades_and_v2_to_other_industries():
+    """outreach-send.yml checks out master and plans from this file. Trades are v4; everyone else stays v2."""
+    real = sender.load_config()
+    x = real["experiment"]
+    assert x["v4_share"] == 1.0
+    assert x["v4_industries"] == ["hvac", "plumbing", "roofing"]
+    assert x["v4_followup_days"] == [2, 3, 4]
+    assert float(x["v3_share"]) == 0.0
+    assert real["planning"]["industry_limit"]["enabled"] is False
+    ids = [str(uuid.uuid4()) for _ in range(40)]
+    for ind in ("hvac", "plumbing", "roofing", "HVAC"):
+        assert all(sender.copy_arm({"company_id": i, "industry": ind}, real) == cw.V4 for i in ids), ind
+    for ind in ("electrical", "salon", "dentist", "gym", "remodeling", ""):
+        assert all(sender.copy_arm({"company_id": i, "industry": ind}, real) == cw.COPY_VERSION for i in ids), ind
+    assert sender.followup_days(real, cw.V4) == [2, 3, 4]
+    assert sender.followup_days(real, cw.COPY_VERSION) == real["sequence"]["followup_days"]
+    row = {"company_id": ids[0], "company_name": "Acme Plumbing", "industry": "plumbing", "city": "Baton Rouge",
+           "personalization": {}}
+    e = cw.first_touch(row, sender_name="Matt Umali", postal_address=ADDR, version=sender.copy_arm(row, real))
+    assert e.variant.startswith("v4-") and ADDR in e.body.split("\n--\n", 1)[-1]
+    assert "{postal address}" not in e.body
+    blank = cw.first_touch(row, sender_name="Matt Umali", postal_address="", version=cw.V4)
+    assert "{postal address}" not in blank.body
+    assert "no postal address" in cw.qa(blank, postal_address="", company_name=row["company_name"])
