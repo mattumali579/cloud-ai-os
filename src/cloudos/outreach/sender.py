@@ -68,6 +68,11 @@ def industry_limit(cfg: dict) -> list[str] | None:
     return list(lim.get("industries") or []) or None if lim.get("enabled") else None
 
 
+def v4_industries(cfg: dict) -> list[str]:
+    x = cfg.get("experiment") or {}
+    return [str(i).strip().lower() for i in (x.get("v4_industries") or []) if str(i).strip()]
+
+
 def copy_arm(row: dict, cfg: dict) -> str:
     """'v4', 'v3' or 'v2' for this company (config: experiment). Deterministic, so it never flips."""
     x = cfg.get("experiment") or {}
@@ -260,19 +265,76 @@ def refresh_queued(conn, cfg: dict) -> dict:
     return out
 
 
+def queue_first_touch_counts(conn) -> tuple[int, int]:
+    """(all queued first touches, those already on v4 copy)."""
+    row = conn.execute(
+        "SELECT count(*) n, count(*) FILTER (WHERE copy_variant LIKE %s) v4 "
+        "FROM outreach_queue WHERE state = 'queued' AND step = 0", ("v4-%",)).fetchone()
+    return int(row["n"]), int(row["v4"])
+
+
+def plan_slots(cfg: dict, have: int, have_v4: int, limit: int | None) -> tuple[int, int]:
+    """(other_slots, v4_slots) this call may prepare.
+
+    v4_queue_ahead is its own budget: a full general queue does not block new v4 first
+    touches, and v4 rows do not consume the general budget. An explicit limit keeps the
+    single shared budget (manual plan and tests)."""
+    if limit is not None:
+        return max(int(limit) - have, 0), 0
+    planning = cfg.get("planning") or {}
+    other = max(int(planning.get("queue_ahead") or 0) - (have - have_v4), 0)
+    v4_budget = int(planning.get("v4_queue_ahead") or 0)
+    v4 = max(v4_budget - have_v4, 0) if v4_budget else 0
+    return other, v4
+
+
+def trade_ready_counts(conn, cfg: dict) -> dict:
+    """Counts only. Ready, usable-email, not suppressed, never-contacted companies in the v4 industries."""
+    industries = v4_industries(cfg)
+    by = {ind: {"ready": 0, "unqueued": 0} for ind in industries}
+    queued_v4 = queue_first_touch_counts(conn)[1] if industries else 0
+    if not industries:
+        return {"ready": 0, "unqueued": 0, "queued_v4": 0, "by_industry": by}
+    rows = conn.execute(
+        f"""
+        SELECT lower(btrim(c.industry)) AS industry, count(*) AS ready,
+               count(*) FILTER (WHERE NOT EXISTS (
+                   SELECT 1 FROM outreach_queue q WHERE q.company_id = c.company_id)) AS unqueued
+        FROM companies c
+        JOIN LATERAL (SELECT email FROM contacts WHERE company_id = c.company_id AND {_USABLE_CONTACT}
+                      ORDER BY (email_status = 'validated') DESC, (role = 'generic') DESC, discovered_at
+                      LIMIT 1) ct ON true
+        WHERE c.outreach_status IN ('outreach_ready', 'handed_off') AND c.first_contacted_at IS NULL AND c.active
+          AND c.qualification_status IN ('HIGH', 'MEDIUM')
+          AND lower(btrim(c.industry)) = ANY(%s::text[])
+          AND NOT EXISTS (
+              SELECT 1 FROM email_suppressions s
+              WHERE (s.email IS NOT NULL AND outreach_norm_email(s.email) = outreach_norm_email(ct.email))
+                 OR (coalesce(s.domain, '') <> '' AND s.domain = split_part(lower(trim(ct.email)), '@', 2))
+                 OR s.company_id = c.company_id)
+        GROUP BY 1
+        """, (industries,)).fetchall()
+    for r in rows:
+        by[r["industry"]] = {"ready": int(r["ready"]), "unqueued": int(r["unqueued"])}
+    return {"ready": sum(v["ready"] for v in by.values()),
+            "unqueued": sum(v["unqueued"] for v in by.values()),
+            "queued_v4": queued_v4, "by_industry": by}
+
+
 def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
     """Prepare first touches for Ready companies. Nothing is sent here."""
     migrated = rerender_queued_v4(conn, cfg)
     refreshed = refresh_queued(conn, cfg)
-    want = (limit if limit is not None else int(cfg["planning"]["queue_ahead"]))
-    have = conn.execute("SELECT count(*) n FROM outreach_queue WHERE state = 'queued' AND step = 0").fetchone()["n"]
-    out = {"queued": 0, "blocked": {}, "qa_failed": 0, "already_waiting": have}
+    have, have_v4 = queue_first_touch_counts(conn)
+    other_slots, v4_slots = plan_slots(cfg, have, have_v4, limit)
+    v4_budget_on = limit is None and int((cfg.get("planning") or {}).get("v4_queue_ahead") or 0) > 0
+    out = {"queued": 0, "blocked": {}, "qa_failed": 0, "already_waiting": have, "v4_waiting": have_v4,
+           "trades": trade_ready_counts(conn, cfg)}
     if not migrated.get("skipped"):
         out["v4_rerender"] = migrated
     if refreshed["rewritten"] or refreshed["qa_failed"]:
         out["refreshed"] = refreshed
-    space = max(want - have, 0)
-    if space == 0:
+    if other_slots == 0 and v4_slots == 0:
         return out
     addr = postal_address()
     name = sender_name(cfg)
@@ -280,9 +342,17 @@ def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
         # a missing setting is not the lead's fault: prepare nothing, cancel nothing
         out["stopped"] = "SENDER_POSTAL_ADDRESS is not set - nothing prepared"
         return out
-    for row in _candidates(conn, space * 2, industry_limit(cfg)):
-        if out["queued"] >= space:
+    added_other = added_v4 = 0
+    for row in _candidates(conn, (other_slots + v4_slots) * 2, industry_limit(cfg)):
+        if added_v4 >= v4_slots and added_other >= other_slots:
             break
+        version = copy_arm(row, cfg)
+        use_v4 = v4_budget_on and version == copywriter.V4
+        if use_v4:
+            if added_v4 >= v4_slots:
+                continue                     # v4 does not consume the general budget
+        elif added_other >= other_slots:
+            continue
         email = (row["email"] or "").strip().lower()
         verdict = guard.check_fail_closed(conn, email, "cold", row["company_id"])
         if verdict.get("allowed") is not True:
@@ -307,7 +377,7 @@ def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
                          (row["company_id"],))
             conn.commit()
             continue
-        e = copywriter.first_touch(row, sender_name=name, postal_address=addr, version=copy_arm(row, cfg))
+        e = copywriter.first_touch(row, sender_name=name, postal_address=addr, version=version)
         problems = copywriter.qa(e, postal_address=addr, company_name=row["company_name"])
         state, stop = ("queued", None) if not problems else ("cancelled", "qa: " + "; ".join(problems))
         conn.execute("INSERT INTO outreach_queue (company_id, step, recipient, subject, body, copy_variant, state, stop_reason) "
@@ -318,6 +388,10 @@ def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
             out["qa_failed"] += 1
         else:
             out["queued"] += 1
+            if use_v4:
+                added_v4 += 1
+            else:
+                added_other += 1
     return out
 
 

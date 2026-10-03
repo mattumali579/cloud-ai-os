@@ -838,6 +838,9 @@ def test_checked_in_config_sends_v4_to_trades_and_v2_to_other_industries():
     assert x["v4_followup_days"] == [2, 3, 4]
     assert float(x["v3_share"]) == 0.0
     assert real["planning"]["industry_limit"]["enabled"] is True
+    assert real["planning"]["queue_ahead"] == 400
+    assert real["planning"]["v4_queue_ahead"] == 150
+    assert real["pacing"]["daily_limit"] == 100 and real["pacing"]["provider_daily_limit"] == 100
     ids = [str(uuid.uuid4()) for _ in range(40)]
     for ind in ("hvac", "plumbing", "roofing", "HVAC"):
         assert all(sender.copy_arm({"company_id": i, "industry": ind}, real) == cw.V4 for i in ids), ind
@@ -952,3 +955,71 @@ def test_claim_prefers_v4_trade_first_touches_over_other_due_rows(conn, cfg):
     conn.commit()
     claimed = [str(sender.claim(conn, "t")["company_id"]) for _ in range(3)]
     assert claimed == [trade, follow, salon]
+
+
+def test_v4_budget_prepares_trades_when_the_general_queue_is_full(conn, cfg):
+    """Non-trade rows stay queued. Trades still get v4 copy up to v4_queue_ahead."""
+    cfg["planning"]["queue_ahead"] = 2
+    cfg["planning"]["v4_queue_ahead"] = 2
+    cfg["planning"]["industry_limit"] = {"enabled": False}
+    cfg["experiment"] = {"v4_share": 1.0, "v4_industries": ["hvac", "plumbing", "roofing"],
+                         "v3_share": 0.0, "v3_industries": []}
+    salons = []
+    for i, (name, domain) in enumerate((("Glow Salon", "glowsalon.com"), ("Zen Salon", "zensalon.com"))):
+        cid = company(conn, name, domain, f"a@{domain}")
+        conn.execute("UPDATE companies SET industry = 'salon', discovered_at = %s WHERE company_id = %s",
+                     (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=i), cid))
+        salons.append(cid)
+    trades = []
+    for i in range(3):
+        cid = company(conn, f"Trade HVAC {i}", f"trade{i}.com", f"a@trade{i}.com")
+        conn.execute("UPDATE companies SET industry = 'hvac', discovered_at = %s WHERE company_id = %s",
+                     (datetime(2026, 1, 2, tzinfo=timezone.utc) + timedelta(minutes=i), cid))
+        trades.append(cid)
+    conn.commit()
+    out = sender.plan(conn, cfg)
+    assert out["queued"] == 4
+    for cid in salons:
+        row = q(conn, cid)
+        assert row["state"] == "queued" and row["copy_variant"].startswith("v2-")
+        assert "5 missed callers" not in row["body"]
+    queued_trades = [cid for cid in trades if q(conn, cid)]
+    assert len(queued_trades) == 2
+    for cid in queued_trades:
+        row = q(conn, cid)
+        assert row["state"] == "queued" and row["copy_variant"].startswith("v4-")
+        assert "5 missed callers" in row["body"] and ADDR in row["body"] and '"stop"' in row["body"]
+    assert q(conn, trades[2]) is None
+    kept = {cid: q(conn, cid)["body"] for cid in salons}
+    assert sender.plan(conn, cfg)["queued"] == 0
+    for cid, body in kept.items():
+        assert q(conn, cid)["state"] == "queued" and q(conn, cid)["body"] == body
+    assert q(conn, trades[2]) is None
+
+
+def test_trade_ready_counts_skip_suppressed_salon_and_already_contacted(conn, cfg):
+    cfg["experiment"] = {"v4_share": 1.0, "v4_industries": ["hvac", "plumbing", "roofing"],
+                         "v3_share": 0.0, "v3_industries": []}
+    hvac = company(conn, "Ready HVAC", "readyhvac.com", "a@readyhvac.com")
+    plumbing = company(conn, "Ready Plumbing", "readyplumb.com", "a@readyplumb.com")
+    salon = company(conn, "Glow Salon", "glowsalon.com", "a@glowsalon.com")
+    blocked = company(conn, "Blocked HVAC", "blockedhvac.com", "a@blockedhvac.com")
+    contacted = company(conn, "Old HVAC", "oldhvac.com", "a@oldhvac.com")
+    company(conn, "No Email HVAC", "noemailhvac.com", None, status_="outreach_ready")
+    conn.execute("UPDATE companies SET industry = 'hvac' WHERE company_id = ANY(%s::uuid[])",
+                 ([hvac, blocked, contacted],))
+    conn.execute("UPDATE companies SET industry = 'plumbing' WHERE company_id = %s", (plumbing,))
+    conn.execute("UPDATE companies SET industry = 'salon' WHERE company_id = %s", (salon,))
+    conn.execute("UPDATE companies SET first_contacted_at = now() WHERE company_id = %s", (contacted,))
+    conn.commit()
+    store.suppress(conn, reason="unsubscribe", email="a@blockedhvac.com")
+    counts = sender.trade_ready_counts(conn, cfg)
+    assert counts["ready"] == 2 and counts["unqueued"] == 2 and counts["queued_v4"] == 0
+    assert counts["by_industry"]["hvac"] == {"ready": 1, "unqueued": 1}
+    assert counts["by_industry"]["plumbing"] == {"ready": 1, "unqueued": 1}
+    assert counts["by_industry"]["roofing"] == {"ready": 0, "unqueued": 0}
+    cfg["planning"]["industry_limit"] = {"enabled": True, "industries": ["hvac", "plumbing", "roofing"]}
+    assert sender.plan(conn, cfg)["queued"] == 2
+    again = sender.trade_ready_counts(conn, cfg)
+    assert again["ready"] == 2 and again["unqueued"] == 0 and again["queued_v4"] == 2
+    assert q(conn, salon) is None and q(conn, blocked) is None and q(conn, contacted) is None

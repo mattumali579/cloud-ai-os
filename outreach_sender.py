@@ -5,6 +5,7 @@
     python outreach_sender.py status [--json]       today's numbers and what's blocking 300
     python outreach_sender.py plan                  prepare first emails for Ready leads (sends nothing)
     python outreach_sender.py queue-audit [--min 100]  count prepared first emails that pass every send check (read only)
+    python outreach_sender.py trade-count             Ready trade leads, counts only (read only)
     python outreach_sender.py selftest              one real email to the owner through Hostinger, then prove it
     python outreach_sender.py agentmail-selftest    one internal notice to the owner through AgentMail, once a day
     python outreach_sender.py airtable-selftest     count the Airtable rows (read only) and prove the count was saved
@@ -273,6 +274,7 @@ def main(argv=None) -> int:
     sub.add_parser("plan")
     qa = sub.add_parser("queue-audit")
     qa.add_argument("--min", type=int, default=100, help="exit 1 unless at least this many pass")
+    sub.add_parser("trade-count")
     sub.add_parser("selftest")
     sub.add_parser("agentmail-selftest")
     sub.add_parser("airtable-selftest")
@@ -300,6 +302,8 @@ def main(argv=None) -> int:
             print(public(out))
             if not out["meets_target"]:
                 return 1
+        elif a.cmd == "trade-count":
+            print(public(sender.trade_ready_counts(conn, cfg)))
         elif a.cmd == "selftest":
             mb = from_env(cfg)
             if mb is None:

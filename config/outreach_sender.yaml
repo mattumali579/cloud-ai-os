@@ -31,7 +31,8 @@ sequence:                         # a restrained 3-touch sequence; replies/unsub
                   negotiating, won, lost, not_now, do_not_contact, needs_review]
 
 planning:
-  queue_ahead: 400                # first touches kept prepared (copy written, QA passed) ahead of sending
+  queue_ahead: 400                # non-v4 first touches kept prepared (copy written, QA passed)
+  v4_queue_ahead: 150             # v4 trade first touches; prepared even when the general queue is full
   industry_limit:                 # prepare NEW first touches only for these industries
     enabled: true                 # trades only; already-queued other industries are left as they are
     industries: [hvac, plumbing, roofing]   # alternate: electrical
