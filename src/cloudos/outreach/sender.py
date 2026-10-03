@@ -15,6 +15,7 @@ Guarantees (tests/test_outreach_sender.py proves each one):
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
@@ -39,6 +40,9 @@ STALE_CLAIM = timedelta(minutes=15)
 _SUPPRESSED = {"email_suppressed", "domain_suppressed", "company_suppressed", "do_not_contact", "bounced"}
 _USABLE_CONTACT = "email_status IN ('validated','published')"     # the only contacts a first touch may go to
 _AUDIT_LABEL = re.compile(r"[a-z_]+")
+_WEEKDAYS = [0, 1, 2, 3, 4]
+# One-shot marker: unsent trade first touches are rewritten onto v4 once, then left alone.
+COPY_RERENDER_V4 = "copy_rerender:v4"
 
 
 def load_config(path: Path = CONFIG) -> dict:
@@ -94,14 +98,24 @@ def in_window(cfg: dict, now: datetime | None = None) -> bool:
     return p["window_start"] <= hm < p["window_end"]
 
 
+def business_days(cfg: dict) -> list[int]:
+    """Days follow-ups may land on. Independent of send_days, so a 7-day send window
+    still schedules follow-ups on Monday-Friday."""
+    raw = (cfg.get("pacing") or {}).get("business_days")
+    days = [int(d) for d in raw] if raw else list(_WEEKDAYS)
+    return days or list(_WEEKDAYS)
+
+
 def add_business_days(start: datetime, days: int, cfg: dict) -> datetime:
-    """start + N business days, landing at 9:00-11:00 local on a send day."""
+    """start + N business days, landing at 9:00-11:00 local. Weekends count only when
+    pacing.business_days says so — not merely because send_days includes them."""
     tz = ZoneInfo(cfg["pacing"]["timezone"])
+    allowed = set(business_days(cfg))
     d = start.astimezone(tz).date()
     added = 0
     while added < days:
         d += timedelta(days=1)
-        if d.weekday() in cfg["pacing"]["send_days"]:
+        if d.weekday() in allowed:
             added += 1
     minute = random.randint(0, 119)
     return datetime(d.year, d.month, d.day, 9 + minute // 60, minute % 60, tzinfo=tz).astimezone(timezone.utc)
@@ -161,6 +175,59 @@ def _duplicate_in_queue(conn, email: str, company_id: str, exclude_queue_id: int
     return row is not None
 
 
+def rerender_queued_v4(conn, cfg: dict) -> dict:
+    """Rewrite unsent, never-attempted first touches in v4 industries onto v4 copy. Once.
+
+    Runs on the next plan cycle, then records `copy_rerender:v4` so it does not run again.
+    Sent, claimed, attempted, follow-up, and already-contacted rows are never updated.
+    A missing postal address defers the pass (the flag stays unset) so the next cycle retries.
+    QA is the same gate as planning: a failure cancels that unsent row instead of sending it.
+    """
+    out = {"skipped": False, "rewritten": 0, "qa_failed": 0}
+    x = cfg.get("experiment") or {}
+    industries = [str(i).strip().lower() for i in (x.get("v4_industries") or []) if str(i).strip()]
+    if float(x.get("v4_share") or 0) <= 0 or not industries:
+        return {**out, "skipped": True, "reason": "v4_off"}
+    if conn.execute("SELECT 1 FROM airtable_state WHERE key = %s", (COPY_RERENDER_V4,)).fetchone():
+        return {**out, "skipped": True, "reason": "already_done"}
+    addr = postal_address()
+    if not addr:
+        return {**out, "deferred": "no_postal_address"}
+    name = sender_name(cfg)
+    rows = conn.execute(
+        """
+        SELECT q.queue_id, q.company_id::text, q.copy_variant, c.company_name, c.industry, c.city, c.personalization
+        FROM outreach_queue q JOIN companies c USING (company_id)
+        WHERE q.step = 0 AND q.state = 'queued' AND q.attempts = 0 AND q.message_id_header IS NULL
+          AND c.first_contacted_at IS NULL
+          AND lower(btrim(c.industry)) = ANY(%s::text[])
+          AND coalesce(q.copy_variant, '') NOT LIKE 'v4-%%'
+          AND NOT EXISTS (SELECT 1 FROM outreach_queue o WHERE o.company_id = q.company_id
+                          AND o.state IN ('sent', 'ambiguous', 'claimed'))
+          AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.company_id = q.company_id
+                          AND m.direction = 'outbound')
+        """, (industries,)).fetchall()
+    for r in rows:
+        if copy_arm(r, cfg) != copywriter.V4:
+            continue
+        e = copywriter.first_touch(dict(r), sender_name=name, postal_address=addr, version=copywriter.V4)
+        problems = copywriter.qa(e, postal_address=addr, company_name=r["company_name"])
+        state, stop = ("queued", None) if not problems else ("cancelled", "qa: " + "; ".join(problems))
+        cur = conn.execute(
+            "UPDATE outreach_queue SET subject = %s, body = %s, copy_variant = %s, state = %s, stop_reason = %s, "
+            "updated_at = now() WHERE queue_id = %s AND state = 'queued' AND step = 0 AND attempts = 0 "
+            "AND message_id_header IS NULL",
+            (e.subject, e.body, e.variant, state, stop, r["queue_id"]))
+        if cur.rowcount:
+            out["qa_failed" if problems else "rewritten"] += 1
+    conn.execute(
+        "INSERT INTO airtable_state (key, value) VALUES (%s, %s::jsonb) ON CONFLICT (key) DO NOTHING",
+        (COPY_RERENDER_V4, json.dumps({"version": copywriter.V4, "rewritten": out["rewritten"],
+                                       "qa_failed": out["qa_failed"]})))
+    conn.commit()
+    return out
+
+
 def refresh_queued(conn, cfg: dict) -> dict:
     """Rewrite first touches that were prepared with older wording (or for the other copy arm) and
     never touched by a send attempt (no claim, no Message-ID). Anything attempted keeps its exact text."""
@@ -195,10 +262,13 @@ def refresh_queued(conn, cfg: dict) -> dict:
 
 def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
     """Prepare first touches for Ready companies. Nothing is sent here."""
+    migrated = rerender_queued_v4(conn, cfg)
     refreshed = refresh_queued(conn, cfg)
     want = (limit if limit is not None else int(cfg["planning"]["queue_ahead"]))
     have = conn.execute("SELECT count(*) n FROM outreach_queue WHERE state = 'queued' AND step = 0").fetchone()["n"]
     out = {"queued": 0, "blocked": {}, "qa_failed": 0, "already_waiting": have}
+    if not migrated.get("skipped"):
+        out["v4_rerender"] = migrated
     if refreshed["rewritten"] or refreshed["qa_failed"]:
         out["refreshed"] = refreshed
     space = max(want - have, 0)
@@ -259,7 +329,9 @@ def claim(conn, who: str, *, followups: bool = True) -> dict | None:
                updated_at = now()
         WHERE queue_id = (SELECT queue_id FROM outreach_queue WHERE state = 'queued' AND due_at <= now()
                           AND (%s OR step = 0)
-                          ORDER BY step DESC, due_at, queue_id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                          ORDER BY (step = 0 AND copy_variant LIKE 'v4-%%') DESC,
+                                   step DESC, due_at, queue_id
+                          LIMIT 1 FOR UPDATE SKIP LOCKED)
         RETURNING *
         """, (who, followups)).fetchone()
     conn.commit()

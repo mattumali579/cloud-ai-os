@@ -195,9 +195,11 @@ def test_v3_followups_stay_in_the_v3_arm(conn, cfg):
     assert q(conn, cid, 2)["copy_variant"] == "v3-fu2"      # touch 3 stays in the first touch's arm
 
 
-def test_industry_limit_is_off_by_default_and_filters_when_enabled(conn, cfg):
-    assert sender.load_config()["planning"]["industry_limit"]["enabled"] is False
-    assert sender.industry_limit(cfg) is None
+def test_industry_limit_targets_trades_and_filters_when_enabled(conn, cfg):
+    real = sender.load_config()
+    assert real["planning"]["industry_limit"]["enabled"] is True
+    assert real["planning"]["industry_limit"]["industries"] == ["hvac", "plumbing", "roofing"]
+    assert sender.industry_limit(cfg) == ["hvac", "plumbing", "roofing"]
     roof = company(conn, "Top Roofing", "toproof.com", "a@toproof.com")
     salon = company(conn, "Glow Salon", "glowsalon.com", "a@glowsalon.com")
     conn.execute("UPDATE companies SET industry = 'salon' WHERE company_id = %s", (salon,))
@@ -522,13 +524,17 @@ def test_checked_in_cap_is_100_from_the_first_sending_day(monkeypatch):
     assert sender.daily_cap(None, real) == 40                  # a lower provider limit still lowers it
     monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "1000")
     assert sender.daily_cap(None, real) == 100                 # a higher one never raises it past 100
-    assert (p["window_start"], p["window_end"], p["send_days"]) == ("08:00", "17:30", [0, 1, 2, 3, 4])
+    assert (p["window_start"], p["window_end"], p["send_days"]) == ("08:00", "17:30", [0, 1, 2, 3, 4, 5, 6])
+    assert p["business_days"] == [0, 1, 2, 3, 4]
     assert (p["min_gap_seconds"], p["max_gap_seconds"], p["timezone"]) == (55, 110, "America/Chicago")
     central = lambda *a: datetime(*a, tzinfo=sender.ZoneInfo("America/Chicago"))  # noqa: E731
     assert sender.in_window(real, central(2026, 10, 1, 8, 0)) and sender.in_window(real, central(2026, 10, 1, 17, 29))
     assert not sender.in_window(real, central(2026, 10, 1, 7, 59))
     assert not sender.in_window(real, central(2026, 10, 1, 17, 30))
-    assert not sender.in_window(real, central(2026, 10, 3, 12, 0))          # Saturday
+    assert sender.in_window(real, central(2026, 10, 3, 12, 0))               # Saturday, inside the window
+    assert sender.in_window(real, central(2026, 10, 4, 8, 0))                # Sunday
+    assert not sender.in_window(real, central(2026, 10, 3, 7, 59))
+    assert not sender.in_window(real, central(2026, 10, 4, 17, 30))
 
 
 def test_run_waits_a_configured_gap_between_sends(conn, cfg):
@@ -817,7 +823,9 @@ def test_v4_switch_rewrites_unsent_trade_first_touches(conn, cfg):
     sender.plan(conn, cfg)
     assert q(conn, waiting)["copy_variant"].startswith("v3-")
     cfg["experiment"].update(v3_share=0.0, v4_share=1.0, v4_industries=["hvac", "plumbing", "roofing"])
-    assert sender.plan(conn, cfg)["refreshed"]["rewritten"] == 1
+    out = sender.plan(conn, cfg)
+    assert out["v4_rerender"]["rewritten"] == 1 and out["v4_rerender"]["qa_failed"] == 0
+    assert "refreshed" not in out
     assert q(conn, waiting)["copy_variant"].startswith("v4-") and "5 missed callers" in q(conn, waiting)["body"]
 
 
@@ -829,7 +837,7 @@ def test_checked_in_config_sends_v4_to_trades_and_v2_to_other_industries():
     assert x["v4_industries"] == ["hvac", "plumbing", "roofing"]
     assert x["v4_followup_days"] == [2, 3, 4]
     assert float(x["v3_share"]) == 0.0
-    assert real["planning"]["industry_limit"]["enabled"] is False
+    assert real["planning"]["industry_limit"]["enabled"] is True
     ids = [str(uuid.uuid4()) for _ in range(40)]
     for ind in ("hvac", "plumbing", "roofing", "HVAC"):
         assert all(sender.copy_arm({"company_id": i, "industry": ind}, real) == cw.V4 for i in ids), ind
@@ -845,3 +853,102 @@ def test_checked_in_config_sends_v4_to_trades_and_v2_to_other_industries():
     blank = cw.first_touch(row, sender_name="Matt Umali", postal_address="", version=cw.V4)
     assert "{postal address}" not in blank.body
     assert "no postal address" in cw.qa(blank, postal_address="", company_name=row["company_name"])
+
+
+def test_weekend_sends_keep_followups_on_business_days():
+    """Saturday is a send day. A follow-up counted from Friday still lands on Monday."""
+    real = sender.load_config()
+    central = sender.ZoneInfo("America/Chicago")
+    saturday = datetime(2026, 10, 3, 10, 50, tzinfo=central)
+    assert sender.in_window(real, saturday)
+    friday = datetime(2026, 10, 2, 16, 0, tzinfo=central)
+    nxt = sender.add_business_days(friday, 1, real).astimezone(central)
+    assert nxt.date().isoformat() == "2026-10-05" and nxt.weekday() == 0
+    assert 9 <= nxt.hour <= 10
+    two = sender.add_business_days(saturday, 2, real).astimezone(central)
+    assert two.date().isoformat() == "2026-10-06" and two.weekday() == 1
+    bare = {"pacing": {"timezone": "America/Chicago", "send_days": [0, 1, 2, 3, 4, 5, 6]}}
+    assert sender.business_days(bare) == [0, 1, 2, 3, 4]
+    assert sender.add_business_days(friday, 1, bare).astimezone(central).date().isoformat() == "2026-10-05"
+
+
+def test_v4_rerender_runs_once_and_never_touches_sent_or_contacted(conn, cfg, monkeypatch):
+    cfg["planning"]["industry_limit"] = {"enabled": False}
+    v2 = _copy.deepcopy(cfg)
+    v2["experiment"] = {"v3_share": 0.0, "v3_industries": [], "v4_share": 0.0, "v4_industries": []}
+    cfg["experiment"] = {"v4_share": 1.0, "v4_industries": ["hvac", "plumbing", "roofing"],
+                         "v3_share": 0.0, "v3_industries": ["hvac", "plumbing", "roofing"]}
+    waiting = company(conn, "Waiting HVAC", "waitinghvac.com", "a@waitinghvac.com")
+    sent = company(conn, "Sent Plumbing", "sentplumb.com", "a@sentplumb.com")
+    tried = company(conn, "Tried Roofing", "triedroof.com", "a@triedroof.com")
+    salon = company(conn, "Glow Salon", "glowsalon.com", "a@glowsalon.com")
+    contacted = company(conn, "Already HVAC", "alreadyhvac.com", "a@alreadyhvac.com")
+    conn.execute("UPDATE companies SET industry = 'HVAC' WHERE company_id = %s", (waiting,))
+    conn.execute("UPDATE companies SET industry = 'plumbing' WHERE company_id = %s", (sent,))
+    conn.execute("UPDATE companies SET industry = 'roofing' WHERE company_id = %s", (tried,))
+    conn.execute("UPDATE companies SET industry = 'salon' WHERE company_id = %s", (salon,))
+    conn.execute("UPDATE companies SET industry = 'hvac' WHERE company_id = %s", (contacted,))
+    conn.commit()
+    sender.plan(conn, v2)
+    sent_body = q(conn, sent)["body"]
+    tried_body = q(conn, tried)["body"]
+    salon_body = q(conn, salon)["body"]
+    contacted_body = q(conn, contacted)["body"]
+    conn.execute("UPDATE outreach_queue SET state = 'sent', sent_at = now(), message_id_header = 'sent-1@test' "
+                 "WHERE company_id = %s", (sent,))
+    conn.execute("UPDATE outreach_queue SET attempts = 1, message_id_header = 'tried-1@test' WHERE company_id = %s",
+                 (tried,))
+    conn.execute("UPDATE companies SET first_contacted_at = now() WHERE company_id = %s", (contacted,))
+    conn.commit()
+    assert q(conn, waiting)["copy_variant"].startswith("v2-")
+
+    monkeypatch.setenv("SENDER_POSTAL_ADDRESS", "")
+    deferred = sender.rerender_queued_v4(conn, cfg)
+    assert deferred == {"skipped": False, "rewritten": 0, "qa_failed": 0, "deferred": "no_postal_address"}
+    assert conn.execute("SELECT 1 FROM airtable_state WHERE key = %s", (sender.COPY_RERENDER_V4,)).fetchone() is None
+    assert q(conn, waiting)["copy_variant"].startswith("v2-")
+
+    monkeypatch.setenv("SENDER_POSTAL_ADDRESS", ADDR)
+    first = sender.rerender_queued_v4(conn, cfg)
+    assert first["rewritten"] == 1 and first["qa_failed"] == 0 and first["skipped"] is False
+    row = q(conn, waiting)
+    assert row["state"] == "queued" and row["attempts"] == 0 and row["message_id_header"] is None
+    assert row["copy_variant"].startswith("v4-") and "5 missed callers" in row["body"]
+    assert ADDR in row["body"] and '"stop"' in row["body"]
+    assert cw.qa(cw.Email(row["subject"], row["body"], row["copy_variant"]), postal_address=ADDR,
+                  company_name="Waiting HVAC") == []
+    assert q(conn, sent)["body"] == sent_body and q(conn, sent)["state"] == "sent"
+    assert q(conn, tried)["body"] == tried_body and q(conn, tried)["attempts"] == 1
+    assert q(conn, salon)["body"] == salon_body and q(conn, salon)["copy_variant"].startswith("v2-")
+    assert q(conn, contacted)["body"] == contacted_body and q(conn, contacted)["copy_variant"].startswith("v2-")
+
+    conn.execute("UPDATE outreach_queue SET body = 'STALE' WHERE company_id = %s", (waiting,))
+    conn.commit()
+    second = sender.rerender_queued_v4(conn, cfg)
+    assert second["skipped"] is True and second["reason"] == "already_done" and second["rewritten"] == 0
+    assert q(conn, waiting)["body"] == "STALE"
+    assert q(conn, sent)["body"] == sent_body
+
+
+def test_claim_prefers_v4_trade_first_touches_over_other_due_rows(conn, cfg):
+    cfg["planning"]["industry_limit"] = {"enabled": False}
+    cfg["experiment"] = {"v4_share": 1.0, "v4_industries": ["hvac", "plumbing", "roofing"],
+                         "v3_share": 0.0, "v3_industries": []}
+    trade = company(conn, "Trade HVAC", "tradehvac.com", "a@tradehvac.com")
+    salon = company(conn, "Glow Salon", "glowsalon.com", "a@glowsalon.com")
+    conn.execute("UPDATE companies SET industry = 'hvac' WHERE company_id = %s", (trade,))
+    conn.execute("UPDATE companies SET industry = 'salon' WHERE company_id = %s", (salon,))
+    conn.commit()
+    sender.plan(conn, cfg)
+    assert q(conn, trade)["copy_variant"].startswith("v4-")
+    assert q(conn, salon)["copy_variant"].startswith("v2-")
+    follow = company(conn, "Old Followup", "oldfollow.com", "a@oldfollow.com")
+    conn.execute(
+        "INSERT INTO outreach_queue (company_id, step, recipient, subject, body, copy_variant, state, due_at) "
+        "VALUES (%s, 1, 'a@oldfollow.com', 'Re: earlier', 'follow up body', 'fu1', 'queued', now() - interval '2 days')",
+        (follow,))
+    conn.execute("UPDATE outreach_queue SET due_at = now() - interval '1 hour' WHERE company_id = %s", (salon,))
+    conn.execute("UPDATE outreach_queue SET due_at = now() - interval '1 minute' WHERE company_id = %s", (trade,))
+    conn.commit()
+    claimed = [str(sender.claim(conn, "t")["company_id"]) for _ in range(3)]
+    assert claimed == [trade, follow, salon]
