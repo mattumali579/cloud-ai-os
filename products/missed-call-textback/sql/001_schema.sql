@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS mctb.tenants (
   daily_sms_limit integer NOT NULL DEFAULT 200 CHECK (daily_sms_limit > 0),
   per_number_daily_limit integer NOT NULL DEFAULT 12 CHECK (per_number_daily_limit > 0),
   dashboard_token text UNIQUE NOT NULL,
+  lead_token text UNIQUE NOT NULL DEFAULT md5(random()::text || clock_timestamp()::text),
+  qualify_name_prompt text NOT NULL DEFAULT 'Thanks — what name should we put on the request?',
+  qualify_unfit_template text NOT NULL DEFAULT 'Thanks for the details. {owner_name} will review the request and let you know whether {business_name} can help.',
   active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -62,9 +65,16 @@ CREATE TABLE IF NOT EXISTS mctb.conversations (
   tenant_id uuid NOT NULL REFERENCES mctb.tenants(id),
   phone text NOT NULL,
   state text NOT NULL,
+  stage text NOT NULL DEFAULT 'new' CHECK (stage IN ('new', 'contacted', 'replied', 'qualified', 'booked', 'won', 'lost')),
+  source text NOT NULL DEFAULT 'sms',
+  customer_name text,
+  email text,
   need text,
   location text,
   urgency text,
+  qualification_status text NOT NULL DEFAULT 'pending' CHECK (qualification_status IN ('pending', 'qualified', 'unqualified')),
+  qualification_score integer NOT NULL DEFAULT 0,
+  requested_window text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (tenant_id, phone)
@@ -85,6 +95,10 @@ CREATE TABLE IF NOT EXISTS mctb.messages (
 
 CREATE INDEX IF NOT EXISTS messages_tenant_phone
   ON mctb.messages (tenant_id, from_number, created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS messages_twilio_sid_unique
+  ON mctb.messages (tenant_id, twilio_sid)
+  WHERE twilio_sid IS NOT NULL AND twilio_sid <> '';
 
 CREATE TABLE IF NOT EXISTS mctb.suppressions (
   tenant_id uuid NOT NULL REFERENCES mctb.tenants(id),
@@ -111,6 +125,31 @@ CREATE TABLE IF NOT EXISTS mctb.estimates (
 CREATE INDEX IF NOT EXISTS estimates_due
   ON mctb.estimates (status, next_send_at);
 
+CREATE TABLE IF NOT EXISTS mctb.appointments (
+  id bigserial PRIMARY KEY,
+  tenant_id uuid NOT NULL REFERENCES mctb.tenants(id),
+  conversation_id bigint REFERENCES mctb.conversations(id),
+  customer_name text NOT NULL DEFAULT '',
+  phone text NOT NULL,
+  requested_window text NOT NULL,
+  status text NOT NULL DEFAULT 'requested' CHECK (status IN ('requested', 'confirmed', 'completed', 'cancelled')),
+  source text NOT NULL DEFAULT 'sms',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS appointments_tenant_created
+  ON mctb.appointments (tenant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS mctb.web_lead_events (
+  id bigserial PRIMARY KEY,
+  tenant_id uuid NOT NULL REFERENCES mctb.tenants(id),
+  external_id text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, external_id)
+);
+
 CREATE TABLE IF NOT EXISTS mctb.outbound_log (
   id bigserial PRIMARY KEY,
   tenant_id uuid NOT NULL REFERENCES mctb.tenants(id),
@@ -136,6 +175,8 @@ CREATE TABLE IF NOT EXISTS mctb.outbound_queue (
   purpose text NOT NULL DEFAULT '',
   send_at timestamptz NOT NULL,
   status text NOT NULL DEFAULT 'pending',
+  attempts integer NOT NULL DEFAULT 0,
+  last_error text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -169,9 +210,11 @@ AS $$
     'call_mode', t.call_mode,
     'ring_timeout_seconds', t.ring_timeout_seconds,
     'missed_call_template', t.missed_call_template,
+    'qualify_name_prompt', t.qualify_name_prompt,
     'qualify_location_prompt', t.qualify_location_prompt,
     'qualify_urgency_prompt', t.qualify_urgency_prompt,
     'qualify_done_template', t.qualify_done_template,
+    'qualify_unfit_template', t.qualify_unfit_template,
     'followup_templates', to_jsonb(t.followup_templates),
     'quiet_start', t.quiet_start,
     'quiet_end', t.quiet_end,
@@ -220,7 +263,12 @@ BEGIN
       SELECT 1 FROM mctb.suppressions s WHERE s.tenant_id = t.id AND s.phone = p_from
     ),
     'conversation', (
-      SELECT jsonb_build_object('state', c.state, 'need', c.need, 'location', c.location, 'urgency', c.urgency)
+      SELECT jsonb_build_object(
+        'state', c.state, 'stage', c.stage, 'source', c.source, 'customer_name', c.customer_name,
+        'email', c.email, 'need', c.need, 'location', c.location, 'urgency', c.urgency,
+        'qualification_status', c.qualification_status, 'qualification_score', c.qualification_score,
+        'requested_window', c.requested_window
+      )
       FROM mctb.conversations c
       WHERE c.tenant_id = t.id AND c.phone = p_from
     ),
@@ -231,7 +279,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION mctb.load_sms_context(p_to text, p_from text)
+CREATE OR REPLACE FUNCTION mctb.load_sms_context(p_to text, p_from text, p_message_sid text DEFAULT '')
 RETURNS jsonb
 LANGUAGE plpgsql
 STABLE
@@ -245,11 +293,20 @@ BEGIN
   END IF;
   RETURN jsonb_build_object(
     'tenant', mctb.tenant_public(t),
+    'duplicate', EXISTS (
+      SELECT 1 FROM mctb.messages m
+      WHERE m.tenant_id = t.id AND m.twilio_sid = COALESCE(p_message_sid, '') AND COALESCE(p_message_sid, '') <> ''
+    ),
     'suppressed', EXISTS (
       SELECT 1 FROM mctb.suppressions s WHERE s.tenant_id = t.id AND s.phone = p_from
     ),
     'conversation', (
-      SELECT jsonb_build_object('state', c.state, 'need', c.need, 'location', c.location, 'urgency', c.urgency)
+      SELECT jsonb_build_object(
+        'state', c.state, 'stage', c.stage, 'source', c.source, 'customer_name', c.customer_name,
+        'email', c.email, 'need', c.need, 'location', c.location, 'urgency', c.urgency,
+        'qualification_status', c.qualification_status, 'qualification_score', c.qualification_score,
+        'requested_window', c.requested_window
+      )
       FROM mctb.conversations c
       WHERE c.tenant_id = t.id AND c.phone = p_from
     ),
@@ -310,6 +367,31 @@ BEGIN
         LIMIT 50
       ) x
     ), '[]'::jsonb),
+    'sent_today', mctb.sent_count(t.id, NULL),
+    'sent_to_today', 0,
+    'sent_to_owner_today', mctb.sent_count(t.id, t.owner_phone)
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION mctb.web_lead_context(p_token text, p_external_id text)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+  t mctb.tenants%ROWTYPE;
+BEGIN
+  SELECT * INTO t FROM mctb.tenants WHERE lead_token = p_token AND active LIMIT 1;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('tenant', NULL);
+  END IF;
+  RETURN jsonb_build_object(
+    'tenant', mctb.tenant_public(t),
+    'duplicate', COALESCE(p_external_id, '') <> '' AND EXISTS (
+      SELECT 1 FROM mctb.web_lead_events e
+      WHERE e.tenant_id = t.id AND e.external_id = p_external_id
+    ),
     'sent_today', mctb.sent_count(t.id, NULL),
     'sent_to_today', 0,
     'sent_to_owner_today', mctb.sent_count(t.id, t.owner_phone)
@@ -382,20 +464,37 @@ BEGIN
   IF p_conversation IS NULL OR p_conversation = 'null'::jsonb OR COALESCE(p_phone, '') = '' THEN
     RETURN NULL;
   END IF;
-  INSERT INTO mctb.conversations (tenant_id, phone, state, need, location, urgency)
+  INSERT INTO mctb.conversations (
+    tenant_id, phone, state, stage, source, customer_name, email, need, location, urgency,
+    qualification_status, qualification_score, requested_window
+  )
   VALUES (
     p_tenant,
     p_phone,
     COALESCE(p_conversation->>'state', 'awaiting_need'),
+    COALESCE(NULLIF(p_conversation->>'stage', ''), 'contacted'),
+    COALESCE(NULLIF(p_conversation->>'source', ''), 'sms'),
+    NULLIF(p_conversation->>'customer_name', ''),
+    NULLIF(p_conversation->>'email', ''),
     NULLIF(p_conversation->>'need', ''),
     NULLIF(p_conversation->>'location', ''),
-    NULLIF(p_conversation->>'urgency', '')
+    NULLIF(p_conversation->>'urgency', ''),
+    COALESCE(NULLIF(p_conversation->>'qualification_status', ''), 'pending'),
+    COALESCE((p_conversation->>'qualification_score')::integer, 0),
+    NULLIF(p_conversation->>'requested_window', '')
   )
   ON CONFLICT (tenant_id, phone) DO UPDATE SET
     state = EXCLUDED.state,
+    stage = EXCLUDED.stage,
+    source = COALESCE(EXCLUDED.source, mctb.conversations.source),
+    customer_name = COALESCE(EXCLUDED.customer_name, mctb.conversations.customer_name),
+    email = COALESCE(EXCLUDED.email, mctb.conversations.email),
     need = COALESCE(EXCLUDED.need, mctb.conversations.need),
     location = COALESCE(EXCLUDED.location, mctb.conversations.location),
     urgency = COALESCE(EXCLUDED.urgency, mctb.conversations.urgency),
+    qualification_status = EXCLUDED.qualification_status,
+    qualification_score = EXCLUDED.qualification_score,
+    requested_window = COALESCE(EXCLUDED.requested_window, mctb.conversations.requested_window),
     updated_at = now()
   RETURNING id INTO v_id;
   RETURN v_id;
@@ -444,6 +543,13 @@ BEGIN
   v_conv := mctb.upsert_conversation(v_tenant, v_from, p->'conversation');
   PERFORM mctb.store_outbound(v_tenant, p->'outbound', v_conv);
 
+  IF COALESCE((p->>'text_sent')::boolean, false) AND v_from <> '' THEN
+    INSERT INTO mctb.outbound_queue (tenant_id, to_number, from_number, body, purpose, send_at, status)
+    VALUES
+      (v_tenant, v_from, COALESCE(p->>'to', ''), 'Just checking that you saw our text — what service or job do you need help with? Reply STOP to opt out.', 'lead_followup_1', now() + interval '15 minutes', 'pending'),
+      (v_tenant, v_from, COALESCE(p->>'to', ''), 'We do not want to miss your request. Reply with the job and ZIP when you are ready, or STOP to opt out.', 'lead_followup_2', now() + interval '24 hours', 'pending');
+  END IF;
+
   IF p->'owner_notification' IS NOT NULL AND jsonb_typeof(p->'owner_notification') = 'object' THEN
     INSERT INTO mctb.owner_notifications (tenant_id, channel, body)
     VALUES (v_tenant, COALESCE(p->'owner_notification'->>'channel', 'sms'), p->'owner_notification'->>'body');
@@ -463,6 +569,19 @@ DECLARE
   v_conv bigint;
   v_estimate_id bigint;
 BEGIN
+  IF COALESCE(p->>'message_sid', '') <> '' AND EXISTS (
+    SELECT 1 FROM mctb.messages m
+    WHERE m.tenant_id = v_tenant AND m.twilio_sid = p->>'message_sid'
+  ) THEN
+    RETURN jsonb_build_object('ok', true, 'duplicate', true);
+  END IF;
+
+  IF COALESCE(p->>'external_id', '') <> '' THEN
+    INSERT INTO mctb.web_lead_events (tenant_id, external_id, payload)
+    VALUES (v_tenant, p->>'external_id', COALESCE((p->>'inbound_body')::jsonb, '{}'::jsonb))
+    ON CONFLICT (tenant_id, external_id) DO NOTHING;
+  END IF;
+
   IF COALESCE((p->>'suppress')::boolean, false) AND v_from <> '' THEN
     INSERT INTO mctb.suppressions (tenant_id, phone, reason)
     VALUES (v_tenant, v_from, 'stop')
@@ -487,6 +606,15 @@ BEGIN
       NULLIF(p->>'message_sid', ''),
       COALESCE(p->>'inbound_purpose', 'sms')
     );
+
+    IF p->>'inbound_purpose' <> 'web_form' THEN
+      UPDATE mctb.outbound_queue
+         SET status = 'cancelled'
+       WHERE tenant_id = v_tenant
+         AND to_number = v_from
+         AND status = 'pending'
+         AND purpose LIKE 'lead_followup%';
+    END IF;
   END IF;
 
   IF p->'new_estimate' IS NOT NULL AND jsonb_typeof(p->'new_estimate') = 'object' THEN
@@ -514,9 +642,43 @@ BEGIN
            updated_at = now()
      WHERE id = (p->'estimate_update'->>'id')::bigint
        AND tenant_id = v_tenant;
+
+    UPDATE mctb.conversations
+       SET stage = CASE p->'estimate_update'->>'status'
+         WHEN 'won' THEN 'won'
+         WHEN 'lost' THEN 'lost'
+         ELSE stage
+       END,
+       updated_at = now()
+     WHERE tenant_id = v_tenant
+       AND phone = (SELECT phone FROM mctb.estimates WHERE id = (p->'estimate_update'->>'id')::bigint AND tenant_id = v_tenant)
+       AND p->'estimate_update'->>'status' IN ('won', 'lost');
+  END IF;
+
+  IF p->'new_appointment' IS NOT NULL AND jsonb_typeof(p->'new_appointment') = 'object' THEN
+    INSERT INTO mctb.appointments (
+      tenant_id, conversation_id, customer_name, phone, requested_window, status, source
+    ) VALUES (
+      v_tenant,
+      v_conv,
+      COALESCE(p->'new_appointment'->>'customer_name', ''),
+      p->'new_appointment'->>'phone',
+      p->'new_appointment'->>'requested_window',
+      COALESCE(p->'new_appointment'->>'status', 'requested'),
+      COALESCE(p->'new_appointment'->>'source', 'sms')
+    );
   END IF;
 
   PERFORM mctb.store_outbound(v_tenant, p->'outbound', v_conv);
+
+  IF p->>'inbound_purpose' = 'web_form' AND p->'new_appointment' IS NULL THEN
+    INSERT INTO mctb.outbound_queue (tenant_id, to_number, from_number, body, purpose, send_at, status)
+    VALUES (
+      v_tenant, v_from, COALESCE(p->>'to', ''),
+      'What day or arrival window works best for your request? Reply here and we will confirm it. Reply STOP to opt out.',
+      'lead_followup_web', now() + interval '1 hour', 'pending'
+    );
+  END IF;
 
   IF p->'owner_notification' IS NOT NULL AND jsonb_typeof(p->'owner_notification') = 'object' THEN
     INSERT INTO mctb.owner_notifications (tenant_id, channel, body)
@@ -586,6 +748,7 @@ AS $$
           'body', q.body,
           'purpose', q.purpose,
           'send_at', q.send_at,
+          'attempts', q.attempts,
           'twilio_number', t.twilio_number,
           'timezone', t.timezone,
           'quiet_start', t.quiet_start,
@@ -601,6 +764,17 @@ AS $$
         FROM mctb.outbound_queue q
         JOIN mctb.tenants t ON t.id = q.tenant_id
         WHERE q.status = 'pending' AND q.send_at <= now() AND t.active
+          AND (
+            q.purpose NOT LIKE 'lead_followup%'
+            OR NOT EXISTS (
+              SELECT 1 FROM mctb.messages m
+              WHERE m.tenant_id = q.tenant_id
+                AND m.direction = 'in'
+                AND m.from_number = q.to_number
+                AND m.created_at >= q.created_at
+                AND m.purpose NOT IN ('web_form')
+            )
+          )
         ORDER BY q.send_at
         LIMIT 100
       ) x
@@ -651,7 +825,10 @@ BEGIN
          AND tenant_id = v_tenant;
     ELSIF v_status IN ('deferred', 'rate_limited', 'retry') AND NULLIF(p->>'next_send_at', '') IS NOT NULL THEN
       UPDATE mctb.outbound_queue
-         SET send_at = (p->>'next_send_at')::timestamptz
+         SET send_at = (p->>'next_send_at')::timestamptz,
+             attempts = attempts + CASE WHEN v_status = 'retry' THEN 1 ELSE 0 END,
+             last_error = CASE WHEN v_status = 'retry' THEN COALESCE(p->>'error', 'provider did not return a message sid') ELSE last_error END,
+             status = CASE WHEN v_status = 'retry' AND attempts >= 4 THEN 'failed' ELSE status END
        WHERE id = (p->>'queue_id')::bigint
          AND tenant_id = v_tenant
          AND status = 'pending';
@@ -713,7 +890,11 @@ BEGIN
       ),
       'leads_30d', (
         SELECT count(*) FROM mctb.conversations c
-        WHERE c.tenant_id = t.id AND c.state = 'handed_off' AND c.updated_at > now() - interval '30 days'
+        WHERE c.tenant_id = t.id AND c.qualification_status = 'qualified' AND c.updated_at > now() - interval '30 days'
+      ),
+      'booked_30d', (
+        SELECT count(*) FROM mctb.appointments a
+        WHERE a.tenant_id = t.id AND a.created_at > now() - interval '30 days'
       ),
       'texts_30d', (
         SELECT count(*) FROM mctb.outbound_log o
@@ -742,8 +923,11 @@ BEGIN
     'conversations', COALESCE((
       SELECT jsonb_agg(x.obj) FROM (
         SELECT jsonb_build_object(
-          'phone', c.phone, 'state', c.state, 'need', c.need, 'location', c.location,
-          'urgency', c.urgency, 'updated_at', c.updated_at
+          'phone', c.phone, 'state', c.state, 'stage', c.stage, 'source', c.source,
+          'customer_name', c.customer_name, 'email', c.email, 'need', c.need, 'location', c.location,
+          'urgency', c.urgency, 'qualification_status', c.qualification_status,
+          'qualification_score', c.qualification_score, 'requested_window', c.requested_window,
+          'updated_at', c.updated_at
         ) AS obj
         FROM mctb.conversations c WHERE c.tenant_id = t.id ORDER BY c.updated_at DESC LIMIT 25
       ) x
@@ -756,6 +940,16 @@ BEGIN
           'next_send_at', e.next_send_at, 'created_at', e.created_at
         ) AS obj
         FROM mctb.estimates e WHERE e.tenant_id = t.id ORDER BY e.id DESC LIMIT 25
+      ) x
+    ), '[]'::jsonb),
+    'appointments', COALESCE((
+      SELECT jsonb_agg(x.obj) FROM (
+        SELECT jsonb_build_object(
+          'id', a.id, 'customer_name', a.customer_name, 'phone', a.phone,
+          'requested_window', a.requested_window, 'status', a.status,
+          'source', a.source, 'created_at', a.created_at
+        ) AS obj
+        FROM mctb.appointments a WHERE a.tenant_id = t.id ORDER BY a.id DESC LIMIT 25
       ) x
     ), '[]'::jsonb),
     'notifications', COALESCE((

@@ -4,7 +4,7 @@ Do this on the Windows mini PC that already runs Docker. You do not buy a server
 
 Two ways to host it:
 
-1. **Use the n8n and Postgres you already run** for Cloud AI OS. The product lives in schema `mctb` and in six new workflows. Outreach tables are not modified.
+1. **Use the n8n and Postgres you already run** for Cloud AI OS. The product lives in schema `mctb` and in seven new workflows. Outreach tables are not modified.
 2. **Start a separate stack** from `products/missed-call-textback/docker-compose.yml` if you want this client’s data in its own Postgres. Host ports are 5680 (n8n) and 54329 (Postgres) so they do not take the Cloud AI OS ports 5679 and 5432.
 
 ## 0. What you will spend
@@ -84,11 +84,12 @@ Files:
 - `workflows/mctb_voice.json` — unanswered call
 - `workflows/mctb_dial_status.json` — owner did not pick up
 - `workflows/mctb_inbound_sms.json` — replies, STOP/HELP/START, owner commands
+- `workflows/mctb_web_lead.json` — real website form submissions
 - `workflows/mctb_followups.json` — estimate sequence, once a minute
 - `workflows/mctb_dashboard.json` — private results page
 - `workflows/mctb_actions.json` — log an estimate, text a customer, mark won/lost
 
-UI: n8n → Workflows → Import from File. Repeat for all six. Leave them inactive until the Postgres credential is attached.
+UI: n8n → Workflows → Import from File. Repeat for all seven. Leave them inactive until the Postgres credential is attached.
 
 CLI, from the repo root, with the Cloud AI OS compose project:
 
@@ -114,7 +115,7 @@ n8n does not import database passwords from git. In n8n: Credentials → New →
 
 The host name `db` works only inside the compose network. From the Windows host it is `localhost`.
 
-Open each imported workflow. Every node that says Postgres needs this credential. There are 11 of them. Save.
+Open each imported workflow. Every node that says Postgres needs this credential. Save.
 
 If you already created an n8n owner login, this can click them for you:
 
@@ -129,9 +130,9 @@ MCTB_PG_PASSWORD='the postgres password' \
 node products/missed-call-textback/scripts/assign_postgres_credential.mjs
 ```
 
-Use port 5680 if you started the dedicated compose file. The script creates the credential, writes its id onto the Postgres nodes, and activates the six BrightReach workflows. If the n8n API shape does not match, it prints the error and you attach the credential by hand. That is a linking step, not a product bug.
+Use port 5680 if you started the dedicated compose file. The script creates the credential, writes its id onto the Postgres nodes, and activates the seven BrightReach workflows. If the n8n API shape does not match, it prints the error and you attach the credential by hand. That is a linking step, not a product bug.
 
-Activate all six workflows. Production webhook URLs do not exist until the workflow is active. The editor “test URL” (`/webhook-test/...`) is the wrong URL to paste into Twilio.
+Activate all seven workflows. Production webhook URLs do not exist until the workflow is active. The editor “test URL” (`/webhook-test/...`) is the wrong URL to paste into Twilio.
 
 ## 4. Expose the webhooks
 
@@ -210,6 +211,24 @@ products/missed-call-textback/scripts/setup_tenant.sh \
 
 The script prints the dashboard URL. That URL is the password. Text it to the owner. Do not commit it.
 
+It also prints a website lead token. Keep that token in the website server or form automation, not browser JavaScript. Configure the real form to POST:
+
+```json
+{
+  "token": "PRINTED_LEAD_TOKEN",
+  "external_id": "the-form-provider-submission-id",
+  "name": "Customer name",
+  "phone": "Customer phone",
+  "email": "optional@example.com",
+  "service": "Job or service needed",
+  "zip": "ZIP or service address",
+  "urgency": "today, this week, or flexible",
+  "requested_window": "optional preferred day/time"
+}
+```
+
+to `https://HOST/webhook/mctb-lead`. `external_id` is required for provider retry deduplication. A valid request returns `{"ok":true,"qualified":true,...}`; invalid requests return an error and do not text anyone.
+
 Templates can stay on the defaults. To change wording later:
 
 ```sql
@@ -254,11 +273,13 @@ Toll-free verification is the other path Twilio offers. It has its own form and 
 1. `TWILIO_MODE=mock`. Import and activate. Run `npm test` on a machine with Node and Postgres. That is the same graph Twilio will hit.
 2. Set `TWILIO_MODE=live` and the account SID and auth token. Restart n8n.
 3. Call the shop number, let it ring out. Your phone should get the missed-call text, and the owner phone should get the alert.
-4. Reply with a job, a ZIP, and “today”. The owner text should contain all three.
-5. Reply `STOP`. Call again. The call is on the dashboard and no new text goes to that phone.
-6. Reply `START` from that phone if you want it back on the list.
-7. On the dashboard, log an estimate. Within about a minute, `mctb.outbound_log` shows the first follow-up (`mock_sent` or `sent`).
-8. Open the dashboard on your phone. The counts at the top are the guarantee numbers: missed calls, recovered replies, qualified leads, texts, open estimates, jobs won, won amount.
+4. Reply with a job, name, ZIP, and “today”. The owner text should contain all four and mark the lead qualified.
+5. Reply with a preferred day or arrival window. Confirm an appointment request appears on the dashboard and the owner is alerted.
+6. Submit the contractor’s real website form and confirm the same reply, qualification, booking, notification, and CRM rows.
+7. Reply `STOP`. Call again. The call is on the dashboard and no new text goes to that phone.
+8. Reply `START` from that phone if you want it back on the list.
+9. On the dashboard, log an estimate. Within about a minute, `mctb.outbound_log` shows the first follow-up (`mock_sent` or `sent`).
+10. Open the dashboard on your phone. The counts at the top are the guarantee numbers: missed calls, recovered replies, qualified leads, bookings, texts, open estimates, jobs won, won amount.
 
 ## 9. Owner commands
 
@@ -292,14 +313,16 @@ If Pages was already pointed at another folder, don’t run that action until yo
 ## 12. Go-live checklist
 
 - [ ] Schema `mctb` applied
-- [ ] Six workflows imported, Postgres credential attached, workflows active
+- [ ] Seven workflows imported, Postgres credential attached, workflows active
 - [ ] `MCTB_PUBLIC_BASE_URL` is the public https origin and n8n was restarted
 - [ ] Tunnel stays up when the laptop you sold from is closed (the mini PC is the host)
 - [ ] Twilio number’s voice and SMS webhooks point at `/webhook/mctb-voice` and `/webhook/mctb-sms`
+- [ ] Real website form posts server-side to `/webhook/mctb-lead` with its stable submission id
 - [ ] Shop added with `setup_tenant.sh`, dashboard link in the owner’s hands
 - [ ] Call forwarding is conditional, and a real missed call produced a real text
 - [ ] A2P brand and campaign submitted, number attached, campaign approved before you call the line “in production”
 - [ ] `TWILIO_MODE=live` only after the SID and token are in the environment, not in git
+- [ ] You saved proof of: missed call → text → reply → details → booking request → contractor alert → CRM update
 - [ ] You watched one estimate move from open → follow-up sent, and one STOP suppress a second text
 
 ## 13. When something is quiet

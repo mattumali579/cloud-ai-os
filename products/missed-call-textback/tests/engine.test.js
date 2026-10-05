@@ -105,26 +105,72 @@ test('dial mode without a public URL does not invent a callback', () => {
   assert.doesNotMatch(decision.twiml, /<Dial/);
 });
 
-test('qualification collects need, place, and urgency, then hands off', () => {
+test('qualification collects name, job, place, urgency, then creates a booking request', () => {
   const tenant = engine.exampleTenant();
   let state = engine.freshState();
   const opened = engine.handleVoice(engine.voiceContext(state, tenant, { now: DAY, from: caller(), callSid: 'CA5' }));
   state = engine.project(state, opened.record);
 
   const need = engine.handleInboundSms(engine.smsContext(state, tenant, { now: DAY, from: caller(), body: 'Furnace will not start' }));
-  assert.match(need.twiml, /address or ZIP/);
+  assert.match(need.twiml, /what name/i);
   state = engine.project(state, need.record);
+
+  const name = engine.handleInboundSms(engine.smsContext(state, tenant, { now: DAY, from: caller(), body: 'Jane Doe' }));
+  assert.match(name.twiml, /address or ZIP/);
+  state = engine.project(state, name.record);
 
   const place = engine.handleInboundSms(engine.smsContext(state, tenant, { now: DAY, from: caller(), body: '53211' }));
   assert.match(place.twiml, /TODAY, THIS WEEK, or FLEXIBLE/);
   state = engine.project(state, place.record);
 
   const urgent = engine.handleInboundSms(engine.smsContext(state, tenant, { now: DAY, from: caller(), body: 'today please' }));
-  assert.equal(urgent.record.conversation.state, 'handed_off');
+  assert.equal(urgent.record.conversation.state, 'awaiting_booking');
+  assert.equal(urgent.record.conversation.stage, 'qualified');
   assert.equal(urgent.record.conversation.urgency, 'today');
+  assert.equal(urgent.record.conversation.customer_name, 'Jane Doe');
   assert.match(urgent.record.owner_notification.body, /53211/);
   assert.match(urgent.record.owner_notification.body, /Furnace will not start/);
-  assert.match(urgent.twiml, /Dana/);
+  assert.match(urgent.twiml, /preferred day or arrival window/i);
+  state = engine.project(state, urgent.record);
+
+  const booking = engine.handleInboundSms(engine.smsContext(state, tenant, { now: DAY, from: caller(), body: 'Tomorrow 8-10am' }));
+  assert.equal(booking.record.conversation.stage, 'booked');
+  assert.equal(booking.record.new_appointment.status, 'requested');
+  assert.equal(booking.record.new_appointment.requested_window, 'Tomorrow 8-10am');
+  assert.match(booking.record.owner_notification.body, /Appointment requested/);
+});
+
+test('website lead validates, qualifies, deduplicates, and requests an appointment', () => {
+  const tenant = engine.exampleTenant();
+  const decision = engine.handleWebLead({
+    tenant,
+    customer_name: 'Alex Rivera',
+    phone: '(414) 555-0188',
+    email: 'alex@example.com',
+    job: 'Leaking water heater',
+    location: '53211',
+    urgency: 'today',
+    requested_window: 'Today 2-4pm',
+    external_id: 'form-1',
+    env: { TWILIO_MODE: 'mock' },
+  });
+  assert.equal(decision.save, 'yes');
+  assert.equal(decision.response.qualified, true);
+  assert.equal(decision.response.booking_status, 'requested');
+  assert.equal(decision.record.conversation.source, 'web_form');
+  assert.equal(decision.record.new_appointment.requested_window, 'Today 2-4pm');
+  assert.equal(decision.record.outbound.filter((item) => item.delivery === 'mock').length, 2);
+
+  const duplicate = engine.handleWebLead(Object.assign({}, decision.record, {
+    tenant,
+    phone: decision.record.from,
+    customer_name: 'Alex Rivera',
+    job: 'Leaking water heater',
+    location: '53211',
+    duplicate: true,
+  }));
+  assert.equal(duplicate.save, 'no');
+  assert.equal(duplicate.response.duplicate, true);
 });
 
 test('STOP, HELP, and START', () => {

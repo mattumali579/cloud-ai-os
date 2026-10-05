@@ -14,6 +14,7 @@ const workflows = {
   voice: requireJson('mctb_voice.json'),
   dial: requireJson('mctb_dial_status.json'),
   sms: requireJson('mctb_inbound_sms.json'),
+  lead: requireJson('mctb_web_lead.json'),
   followups: requireJson('mctb_followups.json'),
   dashboard: requireJson('mctb_dashboard.json'),
   actions: requireJson('mctb_actions.json'),
@@ -69,6 +70,7 @@ test('workflow files embed the engine and do not carry live credentials', () => 
     'mctb-dashboard',
     'mctb-dial-status',
     'mctb-followups-run',
+    'mctb-lead',
     'mctb-sms',
     'mctb-voice',
   ]);
@@ -145,21 +147,33 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
   }
 
   const need = sms('+14145550123', 'Furnace will not start');
-  assert.match(need.responses[0].body, /address or ZIP/);
+  assert.match(need.responses[0].body, /what name/i);
   say('CUSTOMER: Furnace will not start');
-  say('BUSINESS: asks for address or ZIP');
+  say('BUSINESS: asks for customer name');
+
+  const name = sms('+14145550123', 'Jane Homeowner');
+  assert.match(name.responses[0].body, /address or ZIP/);
+  say('CUSTOMER: Jane Homeowner');
 
   const place = sms('+14145550123', '53211');
   assert.match(place.responses[0].body, /TODAY, THIS WEEK, or FLEXIBLE/);
   say('CUSTOMER: 53211');
 
   const urgent = sms('+14145550123', 'today please');
-  assert.match(urgent.responses[0].body, /Dana/);
+  assert.match(urgent.responses[0].body, /preferred day or arrival window/i);
   assert.match(urgent.responses[0].body, /to="\+14145550199"/);
   assert.match(urgent.httpLog[0].body, /53211/);
   say('CUSTOMER: today please');
-  say('BUSINESS: handed off to Dana');
+  say('CRM: lead marked qualified');
   say('OWNER ALERT: ' + urgent.httpLog[0].body);
+
+  const booking = sms('+14145550123', 'Tomorrow 8-10am');
+  assert.match(booking.responses[0].body, /appointment request/i);
+  assert.match(booking.responses[0].body, /to="\+14145550199"/);
+  const appointment = one("SELECT jsonb_build_object('status', status, 'window', requested_window) FROM mctb.appointments WHERE phone = '+14145550123' ORDER BY id DESC LIMIT 1");
+  assert.equal(appointment.status, 'requested');
+  assert.equal(appointment.window, 'Tomorrow 8-10am');
+  say('BOOKING REQUESTED: Tomorrow 8-10am');
 
   const casual = sms('+14145550123', 'stop by tomorrow morning if you can');
   assert.equal(casual.responses[0].body.includes('unsubscribed'), false);
@@ -182,7 +196,35 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
   assert.ok(Number(stats.stats.missed_calls_7d) >= 1);
   assert.ok(Number(stats.stats.recovered_7d) >= 1);
   assert.ok(Number(stats.stats.leads_30d) >= 1);
-  say('DASHBOARD missed=' + stats.stats.missed_calls_7d + ' recovered=' + stats.stats.recovered_7d + ' leads=' + stats.stats.leads_30d);
+  assert.ok(Number(stats.stats.booked_30d) >= 1);
+  say('CRM UPDATED: missed=' + stats.stats.missed_calls_7d + ' recovered=' + stats.stats.recovered_7d + ' qualified=' + stats.stats.leads_30d + ' booked=' + stats.stats.booked_30d);
+
+  const webLead = runWorkflow(workflows.lead, 'Lead Webhook', envelope({
+    token: one("SELECT jsonb_build_object('token', lead_token) FROM mctb.tenants WHERE slug = 'northline'").token,
+    external_id: 'website-100',
+    name: 'Morgan Website',
+    phone: '4145550155',
+    email: 'morgan@example.com',
+    service: 'AC replacement',
+    zip: '53202',
+    urgency: 'this week',
+    requested_window: 'Friday afternoon',
+  }), env);
+  assert.deepEqual(JSON.parse(webLead.responses[0].body), { ok: true, qualified: true, booking_status: 'requested' });
+  const webAppointment = one("SELECT jsonb_build_object('source', source, 'window', requested_window) FROM mctb.appointments WHERE phone = '+14145550155'");
+  assert.equal(webAppointment.source, 'web_form');
+  assert.equal(webAppointment.window, 'Friday afternoon');
+  const webReplay = runWorkflow(workflows.lead, 'Lead Webhook', envelope({
+    token: one("SELECT jsonb_build_object('token', lead_token) FROM mctb.tenants WHERE slug = 'northline'").token,
+    external_id: 'website-100',
+    name: 'Morgan Website',
+    phone: '4145550155',
+    service: 'AC replacement',
+    zip: '53202',
+  }), env);
+  assert.equal(JSON.parse(webReplay.responses[0].body).duplicate, true);
+  assert.equal(Number(one("SELECT jsonb_build_object('n', count(*)) FROM mctb.web_lead_events WHERE external_id = 'website-100'").n), 1);
+  say('WEBSITE FORM: immediate response, qualified, booking requested, contractor notified, CRM updated');
 
   const estimate = runWorkflow(workflows.actions, 'Action Webhook', envelope({
     token: 'token-northline',
@@ -324,4 +366,7 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
   const text = transcript.join('\n') + '\n';
   fs.writeFileSync(path.join(artifactDir, 'missed-call-e2e.txt'), text);
   assert.ok(text.includes('FOLLOW-UP 1'));
+  assert.ok(text.includes('CALL unanswered'));
+  assert.ok(text.includes('BOOKING REQUESTED'));
+  assert.ok(text.includes('CRM UPDATED'));
 });

@@ -334,8 +334,8 @@ smsGraph.add(webhook('SMS Webhook', 'POST', 'mctb-sms', 'mctb-sms-hook', 'Twilio
 smsGraph.add(code('Normalize SMS', NORMALIZE, 'Normalizes the inbound SMS.'));
 smsGraph.add(postgres(
   'Load SMS Context',
-  'SELECT jsonb_build_object(\'ctx\', mctb.load_sms_context($1::text, $2::text))',
-  '={{ $json.to_e164 }},{{ $json.from_e164 }}',
+  'SELECT jsonb_build_object(\'ctx\', mctb.load_sms_context($1::text, $2::text, $3::text))',
+  '={{ $json.to_e164 }},{{ $json.from_e164 }},{{ $json.message_sid }}',
   'Tenant, conversation, suppression, open estimate, and rate-limit counts.'
 ));
 smsGraph.add(code('Decide SMS', `
@@ -386,6 +386,86 @@ smsGraph.link('Prepare SMS Response', 'Respond SMS');
 smsGraph.link('Prepare SMS Response', 'Notify On SMS');
 smsGraph.link('Notify On SMS', 'Post SMS Alert', 0);
 const sms = finish(smsGraph, 'BrightReach Inbound SMS', 'mctbSms');
+
+const leadGraph = workflowBuilder('mctblead');
+leadGraph.add(webhook('Lead Webhook', 'POST', 'mctb-lead', 'mctb-lead-hook', 'Website forms post server-side with the tenant lead token. external_id makes retries idempotent.'));
+leadGraph.add(code('Read Lead', `
+const wrapped = engine.unwrapWebhook($input.first().json);
+const body = wrapped.body || {};
+return [{ json: {
+  token: String(body.token || ''),
+  external_id: String(body.external_id || body.submission_id || ''),
+  customer_name: String(body.name || body.customer_name || ''),
+  phone: String(body.phone || ''),
+  email: String(body.email || ''),
+  job: String(body.job || body.service || body.message || ''),
+  location: String(body.location || body.zip || body.address || ''),
+  urgency: String(body.urgency || 'flexible'),
+  requested_window: String(body.requested_window || body.appointment_window || '')
+} }];
+`, 'Normalizes common website form field names.'));
+leadGraph.add(postgres(
+  'Load Lead Tenant',
+  'SELECT jsonb_build_object(\'ctx\', mctb.web_lead_context($1::text, $2::text))',
+  '={{ $json.token }},{{ $json.external_id }}',
+  'Tenant is selected by a dedicated form token; repeated external ids are ignored.'
+));
+leadGraph.add(code('Decide Lead', `
+const form = $('Read Lead').first().json;
+const loaded = $input.first().json.ctx || {};
+const ctx = engine.contextFromLoad(loaded, Object.assign({}, form, {
+  now: new Date().toISOString()
+}));
+ctx.env = {
+  TWILIO_MODE: $env.TWILIO_MODE || '',
+  TWILIO_ACCOUNT_SID: $env.TWILIO_ACCOUNT_SID || '',
+  TWILIO_AUTH_TOKEN: $env.TWILIO_AUTH_TOKEN || ''
+};
+return [{ json: engine.handleWebLead(ctx) }];
+`, 'Validates, qualifies, replies immediately, optionally creates an appointment request, and alerts the contractor.'));
+leadGraph.add(ifYes('Save Lead', '={{ $json.save }}', 'Invalid or duplicate submissions do not create duplicate CRM rows or texts.'));
+leadGraph.add(postgres(
+  'Apply Lead',
+  'SELECT jsonb_build_object(\'result\', mctb.apply_sms_decision($1::jsonb))',
+  '={{ JSON.stringify($json.record) }}',
+  'Stores the web submission, conversation, appointment, messages, and notification.'
+));
+leadGraph.add(code('Prepare Lead Response', `
+const decided = $('Decide Lead').first().json;
+const url = $env.OWNER_ALERT_WEBHOOK_URL || '';
+return [{ json: {
+  response: JSON.stringify(decided.response || { ok: false }),
+  shouldNotify: url && decided.ownerWebhook ? 'yes' : 'no',
+  ownerWebhook: decided.ownerWebhook || {}
+} }];
+`, 'Returns a stable JSON acknowledgement and prepares optional notification fan-out.'));
+leadGraph.add(ifYes('Notify On Lead', '={{ $json.shouldNotify }}', 'Optional immediate alert webhook.'));
+leadGraph.add({
+  name: 'Post Lead Alert',
+  type: 'n8n-nodes-base.httpRequest',
+  typeVersion: 4.2,
+  onError: 'continueRegularOutput',
+  parameters: {
+    method: 'POST',
+    url: '={{ $env.OWNER_ALERT_WEBHOOK_URL }}',
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ JSON.stringify($json.ownerWebhook) }}',
+    options: { timeout: 15000 },
+  },
+});
+leadGraph.add(respond('Respond Lead', '={{ $json.response }}', 'application/json; charset=utf-8'));
+leadGraph.link('Lead Webhook', 'Read Lead');
+leadGraph.link('Read Lead', 'Load Lead Tenant');
+leadGraph.link('Load Lead Tenant', 'Decide Lead');
+leadGraph.link('Decide Lead', 'Save Lead');
+leadGraph.link('Save Lead', 'Apply Lead', 0);
+leadGraph.link('Save Lead', 'Prepare Lead Response', 1);
+leadGraph.link('Apply Lead', 'Prepare Lead Response');
+leadGraph.link('Prepare Lead Response', 'Respond Lead');
+leadGraph.link('Prepare Lead Response', 'Notify On Lead');
+leadGraph.link('Notify On Lead', 'Post Lead Alert', 0);
+const leads = finish(leadGraph, 'BrightReach Website Leads', 'mctbLeads');
 
 const followGraph = workflowBuilder('mctbfolo');
 followGraph.add({
@@ -592,6 +672,7 @@ const files = [
   ['mctb_voice.json', voice],
   ['mctb_dial_status.json', dial],
   ['mctb_inbound_sms.json', sms],
+  ['mctb_web_lead.json', leads],
   ['mctb_followups.json', followups],
   ['mctb_dashboard.json', dashboard],
   ['mctb_actions.json', actions],

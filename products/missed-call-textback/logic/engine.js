@@ -10,10 +10,13 @@ const ENGINE_VERSION = 'mctb-engine-1';
 const DEFAULTS = {
   missed_call_template:
     'Hi, this is {business_name}. Sorry we missed your call. Reply with what you need and we will get you scheduled. Hours: {hours}. Book: {booking_link}. Reply STOP to opt out.',
+  qualify_name_prompt: 'Thanks — what name should we put on the request?',
   qualify_location_prompt: 'Thanks. What is the service address or ZIP code?',
   qualify_urgency_prompt: 'How urgent is this? Reply TODAY, THIS WEEK, or FLEXIBLE.',
   qualify_done_template:
-    'Got it. {owner_name} at {business_name} has your request and will follow up shortly. Book now: {booking_link}',
+    'This looks like a job we can help with. Reply with your preferred day or arrival window and {owner_name} will confirm it. Book online: {booking_link}',
+  qualify_unfit_template:
+    'Thanks for the details. {owner_name} will review the request and let you know whether {business_name} can help.',
   followup_templates: [
     'Hi {customer_name}, this is {business_name}. Following up on your {job} estimate for {amount}. Reply with any questions or book here: {booking_link}. Reply STOP to opt out.',
     'Hi {customer_name}, {business_name} can still hold the {amount} price for {job}. Want us to get you on the schedule this week? Reply STOP to opt out.',
@@ -210,12 +213,14 @@ function createEngine() {
       owner_name: tenant.owner_name || '',
       owner_phone: tenant.owner_phone || '',
       customer_name: data.customer_name || data.name || '',
+      email: data.email || '',
       job: data.job || '',
       amount: data.amount || '',
       phone: data.phone || '',
       need: data.need || '',
       location: data.location || '',
       urgency: data.urgency || '',
+      requested_window: data.requested_window || '',
     };
   }
 
@@ -322,7 +327,7 @@ function createEngine() {
         outbound.push(outboundMessage(from, tenant.twilio_number, customerBody, 'missed_call', 'queue', sendAt.toISOString()));
         suppressedReason = 'quiet_hours_deferred';
         if (!ctx.conversation) {
-          conversation = { state: 'awaiting_need', need: null, location: null, urgency: null };
+          conversation = blankConversation();
         }
       } else {
         suppressedReason = 'rate_limited';
@@ -335,7 +340,7 @@ function createEngine() {
       counters.sentToCaller += 1;
       textSent = true;
       if (!ctx.conversation) {
-        conversation = { state: 'awaiting_need', need: null, location: null, urgency: null };
+        conversation = blankConversation();
       }
     }
 
@@ -475,17 +480,54 @@ function createEngine() {
     return clip(text, 80);
   }
 
+  function qualifyLead(conversation) {
+    const lead = conversation || {};
+    const need = String(lead.need || '').trim();
+    const location = String(lead.location || '').trim();
+    const urgency = String(lead.urgency || '').trim();
+    const junk = /^(test|testing|asdf|none|n\/a|no|spam)$/i;
+    const score =
+      (need.length >= 5 && !junk.test(need) ? 2 : 0) +
+      (location.length >= 3 && !junk.test(location) ? 1 : 0) +
+      (urgency ? 1 : 0) +
+      (String(lead.customer_name || '').trim().length >= 2 ? 1 : 0);
+    return {
+      qualified: score >= 4,
+      score: score,
+      reason: score >= 4 ? 'service, location, name, and urgency captured' : 'missing or invalid lead details',
+    };
+  }
+
   function blankConversation() {
-    return { state: 'awaiting_need', need: null, location: null, urgency: null };
+    return {
+      state: 'awaiting_need',
+      stage: 'contacted',
+      source: 'missed_call',
+      customer_name: null,
+      email: null,
+      need: null,
+      location: null,
+      urgency: null,
+      qualification_status: 'pending',
+      qualification_score: 0,
+      requested_window: null,
+    };
   }
 
   function copyConversation(conversation) {
     const source = conversation || blankConversation();
     return {
       state: source.state || 'awaiting_need',
+      stage: source.stage || 'contacted',
+      source: source.source || 'sms',
+      customer_name: source.customer_name || null,
+      email: source.email || null,
       need: source.need || null,
       location: source.location || null,
       urgency: source.urgency || null,
+      qualification_status: source.qualification_status || 'pending',
+      qualification_score: Number(source.qualification_score || 0),
+      requested_window: source.requested_window || null,
     };
   }
 
@@ -554,6 +596,7 @@ function createEngine() {
       outbound: details.outbound || [],
       new_estimate: details.new_estimate || null,
       estimate_update: details.estimate_update || null,
+      new_appointment: details.new_appointment || null,
       owner_notification: notification,
     }, notification ? ownerWebhook(tenant, notification.body, details.webhookCode || 'MCTB_SMS') : null);
   }
@@ -645,6 +688,7 @@ function createEngine() {
 
   function handleInboundSms(ctx) {
     if (!ctx || !ctx.tenant) return noTenant();
+    if (ctx.duplicate) return pack(false, emptyTwiml(), null, null);
     const tenant = ctx.tenant;
     const from = ctx.from;
     const ownerPhone = normalizePhone(tenant.owner_phone);
@@ -710,25 +754,55 @@ function createEngine() {
     let customerBody = null;
     let purpose = 'qualify';
     let justQualified = false;
+    let appointment = null;
     const estimateUpdate = ctx.openEstimate ? { id: Number(ctx.openEstimate.id), status: 'replied' } : null;
 
     if (!text) {
       customerBody = 'Sorry, we did not catch that. What do you need ' + tenant.business_name + ' to help with?';
       if (!ctx.conversation) conversation = blankConversation();
     } else if (!ctx.conversation || conversation.state === 'awaiting_need' || conversation.state === 'opted_out') {
-      conversation.state = 'awaiting_location';
+      conversation.state = 'awaiting_name';
+      conversation.stage = 'replied';
       conversation.need = clip(text, 500);
+      customerBody = tenant.qualify_name_prompt || DEFAULTS.qualify_name_prompt;
+    } else if (conversation.state === 'awaiting_name') {
+      conversation.state = 'awaiting_location';
+      conversation.stage = 'replied';
+      conversation.customer_name = clip(text, 80);
       customerBody = tenant.qualify_location_prompt || DEFAULTS.qualify_location_prompt;
     } else if (conversation.state === 'awaiting_location') {
       conversation.state = 'awaiting_urgency';
+      conversation.stage = 'replied';
       conversation.location = clip(text, 160);
       customerBody = tenant.qualify_urgency_prompt || DEFAULTS.qualify_urgency_prompt;
     } else if (conversation.state === 'awaiting_urgency') {
-      conversation.state = 'handed_off';
       conversation.urgency = normalizeUrgency(text);
-      customerBody = renderTemplate(tenant.qualify_done_template || DEFAULTS.qualify_done_template, templateVars(tenant, conversation));
-      purpose = 'qualify_done';
-      justQualified = true;
+      const qualification = qualifyLead(conversation);
+      conversation.qualification_score = qualification.score;
+      conversation.qualification_status = qualification.qualified ? 'qualified' : 'unqualified';
+      conversation.stage = qualification.qualified ? 'qualified' : 'replied';
+      conversation.state = qualification.qualified ? 'awaiting_booking' : 'handed_off';
+      customerBody = renderTemplate(
+        qualification.qualified
+          ? (tenant.qualify_done_template || DEFAULTS.qualify_done_template)
+          : (tenant.qualify_unfit_template || DEFAULTS.qualify_unfit_template),
+        templateVars(tenant, conversation)
+      );
+      purpose = qualification.qualified ? 'qualify_done' : 'qualify_review';
+      justQualified = qualification.qualified;
+    } else if (conversation.state === 'awaiting_booking') {
+      conversation.state = 'booked';
+      conversation.stage = 'booked';
+      conversation.requested_window = clip(text, 160);
+      appointment = {
+        phone: from,
+        customer_name: conversation.customer_name || '',
+        requested_window: conversation.requested_window,
+        status: 'requested',
+        source: conversation.source || 'sms',
+      };
+      customerBody = 'Your appointment request for ' + conversation.requested_window + ' is in. ' + tenant.owner_name + ' will confirm the arrival window.';
+      purpose = 'booking_requested';
     } else {
       customerBody = 'Thanks, we passed that to ' + tenant.owner_name + ' at ' + tenant.business_name + '.';
       purpose = 'relay_ack';
@@ -754,8 +828,10 @@ function createEngine() {
     counters.sentToCaller += 1;
 
     const leadLine = justQualified
-      ? 'Qualified lead for ' + tenant.business_name + '\nFrom: ' + from + '\nNeed: ' + (conversation.need || '') + '\nArea: ' + (conversation.location || '') + '\nUrgency: ' + (conversation.urgency || '') + '\nReply: REPLY ' + from + ' your message'
-      : 'Reply from ' + from + ' to ' + tenant.business_name + ': "' + clip(text, 300) + '"';
+      ? 'Qualified lead for ' + tenant.business_name + '\nName: ' + (conversation.customer_name || '') + '\nFrom: ' + from + '\nNeed: ' + (conversation.need || '') + '\nArea: ' + (conversation.location || '') + '\nUrgency: ' + (conversation.urgency || '') + '\nReply: REPLY ' + from + ' your message'
+      : appointment
+        ? 'Appointment requested for ' + tenant.business_name + '\nName: ' + (conversation.customer_name || '') + '\nPhone: ' + from + '\nWindow: ' + appointment.requested_window + '\nNeed: ' + (conversation.need || '')
+        : 'Reply from ' + from + ' to ' + tenant.business_name + ': "' + clip(text, 300) + '"';
     if (ownerPhone && canText(tenant, counters.sentToday, counters.sentToOwner)) {
       outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, leadLine, 'owner_notify', 'twiml', null));
     }
@@ -765,9 +841,86 @@ function createEngine() {
       outbound: outbound,
       conversation: conversation,
       estimate_update: estimateUpdate,
+      new_appointment: appointment,
       owner_notification: { channel: 'sms', body: leadLine },
-      webhookCode: conversation.state === 'handed_off' ? 'MCTB_QUALIFIED' : 'MCTB_REPLY',
+      webhookCode: appointment ? 'MCTB_BOOKING' : (justQualified ? 'MCTB_QUALIFIED' : 'MCTB_REPLY'),
     });
+  }
+
+  function handleWebLead(ctx) {
+    if (!ctx || !ctx.tenant) return { save: 'no', record: null, response: { ok: false, error: 'unknown_tenant' }, ownerWebhook: null };
+    const tenant = ctx.tenant;
+    const phone = normalizePhone(ctx.phone);
+    const name = clip(ctx.customer_name, 80);
+    const need = clip(ctx.job, 500);
+    const location = clip(ctx.location, 160);
+    const urgency = normalizeUrgency(ctx.urgency || 'flexible');
+    if (!phone || !name || !need || !location) {
+      return { save: 'no', record: null, response: { ok: false, error: 'name_phone_job_location_required' }, ownerWebhook: null };
+    }
+    if (ctx.duplicate) {
+      return { save: 'no', record: null, response: { ok: true, duplicate: true }, ownerWebhook: null };
+    }
+    const conversation = {
+      state: 'awaiting_booking',
+      stage: 'qualified',
+      source: 'web_form',
+      customer_name: name,
+      email: clip(ctx.email, 160) || null,
+      need: need,
+      location: location,
+      urgency: urgency,
+      qualification_status: 'qualified',
+      qualification_score: 5,
+      requested_window: clip(ctx.requested_window, 160) || null,
+    };
+    let appointment = null;
+    if (conversation.requested_window) {
+      conversation.state = 'booked';
+      conversation.stage = 'booked';
+      appointment = {
+        phone: phone,
+        customer_name: name,
+        requested_window: conversation.requested_window,
+        status: 'requested',
+        source: 'web_form',
+      };
+    }
+    const body = appointment
+      ? 'Hi ' + name + ', this is ' + tenant.business_name + '. We received your ' + need + ' request for ' + appointment.requested_window + '. ' + tenant.owner_name + ' will confirm the arrival window. Reply STOP to opt out.'
+      : 'Hi ' + name + ', this is ' + tenant.business_name + '. We received your ' + need + ' request. Reply with your preferred day or arrival window and ' + tenant.owner_name + ' will confirm it. Reply STOP to opt out.';
+    const ownerBody = (appointment ? 'Qualified website lead and appointment request' : 'Qualified website lead') +
+      ' for ' + tenant.business_name + '\nName: ' + name + '\nPhone: ' + phone + '\nNeed: ' + need +
+      '\nArea: ' + location + '\nUrgency: ' + urgency + (appointment ? '\nWindow: ' + appointment.requested_window : '');
+    const delivery = deliveryFor(ctx.env || {});
+    const outbound = [
+      outboundMessage(phone, tenant.twilio_number, body, 'web_lead_reply', delivery, null),
+    ];
+    const ownerPhone = normalizePhone(tenant.owner_phone);
+    if (ownerPhone) outbound.push(outboundMessage(ownerPhone, tenant.twilio_number, ownerBody, 'owner_notify', delivery, null));
+    const record = {
+      tenant_id: tenant.id,
+      from: phone,
+      to: tenant.twilio_number,
+      message_sid: '',
+      external_id: clip(ctx.external_id, 160),
+      inbound_body: JSON.stringify({ name: name, phone: phone, email: conversation.email, job: need, location: location, urgency: urgency }),
+      inbound_purpose: 'web_form',
+      suppress: false,
+      clear_suppression: false,
+      conversation: conversation,
+      outbound: outbound,
+      new_estimate: null,
+      estimate_update: null,
+      new_appointment: appointment,
+      owner_notification: { channel: delivery === 'mock' ? 'dashboard' : 'sms', body: ownerBody },
+    };
+    return {
+      save: 'yes',
+      record: record,
+      response: { ok: true, qualified: true, booking_status: appointment ? 'requested' : 'awaiting_window' },
+      ownerWebhook: ownerWebhook(tenant, ownerBody, appointment ? 'MCTB_BOOKING' : 'MCTB_QUALIFIED'),
+    };
   }
 
   function followupBody(tenant, estimate, stepIndex) {
@@ -1125,10 +1278,11 @@ function createEngine() {
     const tz = tenant.timezone || 'UTC';
     const hidden = '<input type="hidden" name="token" value="' + escapeHtml(token || '') + '">';
     const calls = (snap.calls || []).map((call) => '<tr><td>' + escapeHtml(formatWhen(call.created_at, tz)) + '</td><td>' + escapeHtml(call.from_number) + '</td><td>' + (call.missed ? 'missed' : 'answered') + '</td><td>' + (call.text_sent ? 'texted' : escapeHtml(call.suppressed_reason || '')) + '</td></tr>').join('');
-    const leads = (snap.conversations || []).map((lead) => '<tr><td>' + escapeHtml(lead.phone) + '</td><td>' + escapeHtml(lead.state) + '</td><td>' + escapeHtml(lead.need || '') + '</td><td>' + escapeHtml(lead.location || '') + '</td><td>' + escapeHtml(lead.urgency || '') + '</td></tr>').join('');
+    const leads = (snap.conversations || []).map((lead) => '<tr><td>' + escapeHtml(lead.customer_name || '') + '</td><td>' + escapeHtml(lead.phone) + '</td><td>' + escapeHtml(lead.source || '') + '</td><td>' + escapeHtml(lead.stage || lead.state) + '</td><td>' + escapeHtml(lead.need || '') + '</td><td>' + escapeHtml(lead.location || '') + '</td><td>' + escapeHtml(lead.urgency || '') + '</td></tr>').join('');
     const estimates = (snap.estimates || []).map((estimate) => '<tr><td>' + escapeHtml(estimate.id) + '</td><td>' + escapeHtml(estimate.customer_name) + '</td><td>' + escapeHtml(estimate.phone) + '</td><td>' + escapeHtml(estimate.job) + '</td><td>' + escapeHtml(formatMoney(estimate.amount_cents)) + '</td><td>' + escapeHtml(estimate.status) + '</td><td>' + escapeHtml(estimate.next_send_at ? formatWhen(estimate.next_send_at, tz) : '') + '</td><td>' +
       '<form method="post" action="/webhook/mctb-action">' + hidden + '<input type="hidden" name="action" value="won"><input type="hidden" name="estimate_id" value="' + escapeHtml(estimate.id) + '"><button type="submit">Won</button></form>' +
       '<form method="post" action="/webhook/mctb-action">' + hidden + '<input type="hidden" name="action" value="lost"><input type="hidden" name="estimate_id" value="' + escapeHtml(estimate.id) + '"><button type="submit">Lost</button></form></td></tr>').join('');
+    const appointments = (snap.appointments || []).map((appointment) => '<tr><td>' + escapeHtml(appointment.customer_name || '') + '</td><td>' + escapeHtml(appointment.phone) + '</td><td>' + escapeHtml(appointment.requested_window) + '</td><td>' + escapeHtml(appointment.status) + '</td><td>' + escapeHtml(formatWhen(appointment.created_at, tz)) + '</td></tr>').join('');
     const notes = (snap.notifications || []).map((note) => '<li><time>' + escapeHtml(formatWhen(note.created_at, tz)) + '</time> ' + escapeHtml(note.body) + '</li>').join('');
     return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>' +
       escapeHtml(tenant.business_name) + ' · BrightReach</title><style>' +
@@ -1147,6 +1301,7 @@ function createEngine() {
       stat('Missed calls, 7 days', stats.missed_calls_7d || 0) +
       stat('Recovered replies, 7 days', stats.recovered_7d || 0) +
       stat('Qualified leads, 30 days', stats.leads_30d || 0) +
+      stat('Booked / requested', stats.booked_30d || 0) +
       stat('Texts sent, 30 days', stats.texts_30d || 0) +
       stat('Open estimates', stats.estimates_open || 0) +
       stat('Jobs won, 30 days', stats.jobs_won_30d || 0) +
@@ -1158,7 +1313,8 @@ function createEngine() {
       '<section class="card"><h2>Text a customer</h2><form method="post" action="/webhook/mctb-action">' + hidden +
       '<input type="hidden" name="action" value="reply"><label>Phone</label><input name="phone" required><label>Message</label><textarea name="message" rows="4" required></textarea><button type="submit">Send through the business number</button></form></section></div>' +
       '<h2>Missed calls</h2><table><thead><tr><th>When</th><th>From</th><th>Call</th><th>Text</th></tr></thead><tbody>' + (calls || '<tr><td colspan="4">No calls yet.</td></tr>') + '</tbody></table>' +
-      '<h2>Leads</h2><table><thead><tr><th>Phone</th><th>State</th><th>Need</th><th>Address / ZIP</th><th>Urgency</th></tr></thead><tbody>' + (leads || '<tr><td colspan="5">No conversations yet.</td></tr>') + '</tbody></table>' +
+      '<h2>Lead pipeline</h2><p class="sub">new → contacted → replied → qualified → booked → won/lost</p><table><thead><tr><th>Name</th><th>Phone</th><th>Source</th><th>Stage</th><th>Need</th><th>Address / ZIP</th><th>Urgency</th></tr></thead><tbody>' + (leads || '<tr><td colspan="7">No conversations yet.</td></tr>') + '</tbody></table>' +
+      '<h2>Appointment requests</h2><table><thead><tr><th>Name</th><th>Phone</th><th>Requested window</th><th>Status</th><th>Created</th></tr></thead><tbody>' + (appointments || '<tr><td colspan="5">No appointment requests yet.</td></tr>') + '</tbody></table>' +
       '<h2>Estimates</h2><table><thead><tr><th>ID</th><th>Name</th><th>Phone</th><th>Job</th><th>Amount</th><th>Status</th><th>Next text</th><th></th></tr></thead><tbody>' + (estimates || '<tr><td colspan="8">No estimates yet.</td></tr>') + '</tbody></table>' +
       '<h2>Owner feed</h2><ul>' + (notes || '<li>No notifications yet.</li>') + '</ul></main></body></html>';
   }
@@ -1290,7 +1446,12 @@ function createEngine() {
       action: fields.action || '',
       customer_name: fields.customer_name || '',
       phone: fields.phone || '',
+      email: fields.email || '',
       job: fields.job || '',
+      location: fields.location || '',
+      urgency: fields.urgency || '',
+      requested_window: fields.requested_window || '',
+      external_id: fields.external_id || '',
       amount: fields.amount || '',
       message: fields.message || '',
       estimate_id: fields.estimate_id || '',
@@ -1347,8 +1508,10 @@ function createEngine() {
       ring_timeout_seconds: 20,
       missed_call_template: DEFAULTS.missed_call_template,
       qualify_location_prompt: DEFAULTS.qualify_location_prompt,
+      qualify_name_prompt: DEFAULTS.qualify_name_prompt,
       qualify_urgency_prompt: DEFAULTS.qualify_urgency_prompt,
       qualify_done_template: DEFAULTS.qualify_done_template,
+      qualify_unfit_template: DEFAULTS.qualify_unfit_template,
       followup_templates: DEFAULTS.followup_templates.slice(),
       quiet_start: '21:00',
       quiet_end: '08:00',
@@ -1378,6 +1541,8 @@ function createEngine() {
     handleVoice: handleVoice,
     handleDialStatus: handleDialStatus,
     handleInboundSms: handleInboundSms,
+    handleWebLead: handleWebLead,
+    qualifyLead: qualifyLead,
     handleAction: handleAction,
     parseOwnerCommand: parseOwnerCommand,
     planOneFollowup: planOneFollowup,

@@ -65,6 +65,7 @@ normalize() {
 TWILIO_NUMBER=$(normalize "$TWILIO_NUMBER")
 OWNER_PHONE=$(normalize "$OWNER_PHONE")
 TOKEN=$(openssl rand -hex 24)
+LEAD_TOKEN=$(openssl rand -hex 24)
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -v slug="$SLUG" \
@@ -77,13 +78,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -v booking_link="$BOOKING_LINK" \
   -v timezone="$TIMEZONE" \
   -v call_mode="$CALL_MODE" \
-  -v token="$TOKEN" <<'SQL'
+  -v token="$TOKEN" \
+  -v lead_token="$LEAD_TOKEN" <<'SQL'
 INSERT INTO mctb.tenants (
   slug, business_name, twilio_number, owner_name, owner_phone, owner_email,
-  hours_text, booking_link, timezone, call_mode, dashboard_token
+  hours_text, booking_link, timezone, call_mode, dashboard_token, lead_token
 ) VALUES (
   :'slug', :'business_name', :'twilio_number', :'owner_name', :'owner_phone', :'owner_email',
-  :'hours', :'booking_link', :'timezone', :'call_mode', :'token'
+  :'hours', :'booking_link', :'timezone', :'call_mode', :'token', :'lead_token'
 );
 SQL
 
@@ -96,10 +98,12 @@ echo "Call mode:     $CALL_MODE"
 if [[ -n "$BASE" ]]; then
   echo "Voice webhook: $BASE/webhook/mctb-voice"
   echo "SMS webhook:   $BASE/webhook/mctb-sms"
+  echo "Website lead:  $BASE/webhook/mctb-lead (POST token=$LEAD_TOKEN server-side)"
   echo "Dashboard:     $BASE/webhook/mctb-dashboard?token=$TOKEN"
 else
   echo "Dashboard token: $TOKEN"
   echo "Dashboard path:  /webhook/mctb-dashboard?token=$TOKEN"
+  echo "Website lead token: $LEAD_TOKEN"
   echo "Set PUBLIC_BASE_URL to print the full links."
 fi
 echo "Give the owner the dashboard link. It is the password."
