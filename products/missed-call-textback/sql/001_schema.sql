@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS mctb.tenants (
   missed_call_template text NOT NULL DEFAULT 'Hi, this is {business_name}. Sorry we missed your call. Reply with what you need and we will get you scheduled. Hours: {hours}. Book: {booking_link}. Reply STOP to opt out.',
   qualify_location_prompt text NOT NULL DEFAULT 'Thanks. What is the service address or ZIP code?',
   qualify_urgency_prompt text NOT NULL DEFAULT 'How urgent is this? Reply TODAY, THIS WEEK, or FLEXIBLE.',
-  qualify_done_template text NOT NULL DEFAULT 'Got it. {owner_name} at {business_name} has your request and will follow up shortly. Book now: {booking_link}',
+  qualify_done_template text NOT NULL DEFAULT 'This looks like a job we can help with. Reply with your preferred day or arrival window and {owner_name} will confirm it. Book online: {booking_link}',
   followup_templates text[] NOT NULL DEFAULT ARRAY[
     'Hi {customer_name}, this is {business_name}. Following up on your {job} estimate for {amount}. Reply with any questions or book here: {booking_link}. Reply STOP to opt out.',
     'Hi {customer_name}, {business_name} can still hold the {amount} price for {job}. Want us to get you on the schedule this week? Reply STOP to opt out.',

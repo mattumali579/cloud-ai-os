@@ -136,20 +136,28 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
   }), env);
   assert.match(replay.responses[0].body, /Thanks for calling/);
   assert.equal(one("SELECT jsonb_build_object('n', (SELECT count(*) FROM mctb.outbound_log WHERE purpose = 'missed_call'))").n, 1);
+  assert.equal(Number(one("SELECT jsonb_build_object('n', count(*)) FROM mctb.outbound_queue WHERE purpose LIKE 'lead_followup%' AND status = 'pending'").n), 2);
 
-  function sms(from, body) {
+  let messageSequence = 0;
+  function sms(from, body, fixedSid) {
+    messageSequence += 1;
+    const sid = fixedSid || 'SM' + String(messageSequence).padStart(8, '0');
     return runWorkflow(workflows.sms, 'SMS Webhook', envelope({
       From: from,
       To: '+14145550100',
       Body: body,
-      MessageSid: 'SM' + body.length + from.slice(-4),
+      MessageSid: sid,
     }), env);
   }
 
-  const need = sms('+14145550123', 'Furnace will not start');
+  const need = sms('+14145550123', 'Furnace will not start', 'SM-NEED-1');
   assert.match(need.responses[0].body, /what name/i);
   say('CUSTOMER: Furnace will not start');
   say('BUSINESS: asks for customer name');
+  const duplicateNeed = sms('+14145550123', 'Furnace will not start', 'SM-NEED-1');
+  assert.equal(duplicateNeed.responses[0].body, '<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+  assert.equal(Number(one("SELECT jsonb_build_object('n', count(*)) FROM mctb.messages WHERE twilio_sid = 'SM-NEED-1'").n), 1);
+  assert.equal(Number(one("SELECT jsonb_build_object('n', count(*)) FROM mctb.outbound_queue WHERE purpose LIKE 'lead_followup%' AND status = 'cancelled'").n), 2);
 
   const name = sms('+14145550123', 'Jane Homeowner');
   assert.match(name.responses[0].body, /address or ZIP/);
@@ -224,7 +232,40 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
   }), env);
   assert.equal(JSON.parse(webReplay.responses[0].body).duplicate, true);
   assert.equal(Number(one("SELECT jsonb_build_object('n', count(*)) FROM mctb.web_lead_events WHERE external_id = 'website-100'").n), 1);
+  const badWebLead = runWorkflow(workflows.lead, 'Lead Webhook', envelope({
+    token: one("SELECT jsonb_build_object('token', lead_token) FROM mctb.tenants WHERE slug = 'northline'").token,
+    external_id: 'website-bad',
+    name: 'No Phone',
+    service: 'AC replacement',
+    zip: '53202',
+  }), env);
+  assert.equal(JSON.parse(badWebLead.responses[0].body).error, 'name_phone_job_location_required');
+  assert.equal(Number(one("SELECT jsonb_build_object('n', count(*)) FROM mctb.web_lead_events WHERE external_id = 'website-bad'").n), 0);
   say('WEBSITE FORM: immediate response, qualified, booking requested, contractor notified, CRM updated');
+
+  const retryQueue = one(`
+    WITH inserted AS (
+      INSERT INTO mctb.outbound_queue (tenant_id, to_number, from_number, body, purpose, send_at)
+      VALUES ('${northline}', '+14145550111', '+14145550100', 'retry me', 'retry_test', now())
+      RETURNING id, tenant_id
+    )
+    SELECT jsonb_build_object('id', id, 'tenant', tenant_id)
+    FROM inserted
+  `);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    psql('mctb_test', 'SELECT mctb.mark_outbound(' + quoteJson({
+      kind: 'queue',
+      queue_id: retryQueue.id,
+      tenant_id: retryQueue.tenant,
+      status: 'retry',
+      next_send_at: '2026-10-03T16:00:00.000Z',
+      error: 'simulated provider failure',
+    }) + '::jsonb)');
+  }
+  const failedQueue = one("SELECT jsonb_build_object('status', status, 'attempts', attempts, 'error', last_error) FROM mctb.outbound_queue WHERE purpose = 'retry_test'");
+  assert.equal(failedQueue.status, 'failed');
+  assert.equal(Number(failedQueue.attempts), 5);
+  assert.match(failedQueue.error, /simulated provider failure/);
 
   const estimate = runWorkflow(workflows.actions, 'Action Webhook', envelope({
     token: 'token-northline',
@@ -276,7 +317,7 @@ test('simulated Twilio webhooks recover a missed call, qualify it, and follow an
   }), env);
   assert.match(replyStopped.responses[0].body, /Chris Pines/);
   const customerReply = sms('+14145550177', 'Can you do Friday?');
-  assert.match(customerReply.responses[0].body, /address or ZIP/);
+  assert.match(customerReply.responses[0].body, /what name/i);
   psql('mctb_test', "UPDATE mctb.estimates SET next_send_at = now() - interval '1 minute' WHERE customer_name = 'Chris Pines'");
   runWorkflow(workflows.followups, 'Run Follow-ups Webhook', envelope({ now: '2026-10-03T15:00:00.000Z' }), env);
   const paused = one("SELECT jsonb_build_object('status', status) FROM mctb.estimates WHERE customer_name = 'Chris Pines'");
