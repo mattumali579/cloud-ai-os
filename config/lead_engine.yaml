@@ -16,7 +16,12 @@ handoff:
   airtable_ready_window: 150  # keep at most this many engine leads waiting in Airtable
   airtable_record_ceiling: 950 # Airtable free plan caps a base at 1,000 records
   status: Ready
-  offer: Missed-call and quote follow-up for local service businesses
+  offer: Google Reviews + Google Maps visibility — $299/month
+
+campaign:
+  id: google_reviews_maps_299
+  industry_priority: [roofing, hvac, plumbing, electrical, med_spa, dentist]
+  maps_only_for_campaign: true
 
 sources:
   osm:

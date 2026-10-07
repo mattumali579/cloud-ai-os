@@ -9,6 +9,12 @@ sender:
   imap_host: imap.hostinger.com
   imap_port: 993
 
+campaign:
+  id: google_reviews_maps_299
+  offer_key: google_reviews_maps
+  copy_source: claude-review-v1
+  authoritative_copy: true
+
 pacing:
   timezone: America/Chicago
   send_days: [0, 1, 2, 3, 4, 5, 6]   # Monday..Sunday (same 08:00-17:30 window)
@@ -25,20 +31,21 @@ pacing:
   provider_daily_limit: 100
   max_attempts: 3                 # transient failures (timeouts, 4xx) before a row is marked failed
 
-sequence:                         # a restrained 3-touch sequence; replies/unsubs/bounces stop it
-  followup_days: [3, 5]           # business days after the previous touch
+sequence:                         # day 0, 2, 4, 7; replies/unsubs/bounces stop it
+  followup_days: [2, 2, 3]       # calendar-day gaps for the active reviews campaign
+  day_mode: calendar
   stop_statuses: [replied, interested, qualified, meeting_requested, proposal_needed, proposal_sent,
                   negotiating, won, lost, not_now, do_not_contact, needs_review]
 
 planning:
-  queue_ahead: 400                # non-v4 first touches kept prepared (copy written, QA passed)
-  v4_queue_ahead: 150             # v4 trade first touches; prepared even when the general queue is full
+  queue_ahead: 200                # all 200 may be prepared; the sender still paces at its verified cap
+  v4_queue_ahead: 0               # old missed-call copy is disabled for this campaign
   industry_limit:                 # prepare NEW first touches only for these industries
     enabled: true                 # trades only; already-queued other industries are left as they are
-    industries: [hvac, plumbing, roofing]   # alternate: electrical
+    industries: [roofing, hvac, plumbing, electrical, med_spa, dentist]
 
 experiment:                       # first-touch copy arms. One hash bucket: [0,v4_share) v4, then v3_share v3, rest v2
-  v4_share: 1.0                   # v4 = Missed-Call Rescue (5 leads or free); 0 = v4 off
+  v4_share: 0.0                   # old missed-call copy remains in code for its product, but is off here
   v4_industries: [hvac, plumbing, roofing]
   v4_followup_days: [2, 3, 4]     # v4 is a 4-touch sequence: business days after the previous touch
   v3_share: 0.0                   # retired before it sent (merged Sat Oct 3); kept for rollback

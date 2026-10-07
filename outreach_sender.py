@@ -33,6 +33,7 @@ import re
 import sys
 import time
 import traceback
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -41,7 +42,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from cloudos import db  # noqa: E402
 from cloudos.conversations import notify  # noqa: E402
-from cloudos.outreach import agentmail, airtable_sync, replies, sender, status  # noqa: E402
+from cloudos.outreach import agentmail, airtable_sync, replies, review_campaign, sender, status  # noqa: E402
 from cloudos.outreach.transport import AuthError, build, from_env, new_message_id  # noqa: E402
 
 
@@ -141,6 +142,162 @@ def airtable_selftest(conn) -> dict:
     row = _state(conn, "record_count")
     saved = row["value"] if row and type(row["value"]) is int else None
     return {"ok": saved == n, "records": n, "persisted": saved}
+
+
+def campaign_selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
+    """Exercise the active campaign end to end using only the owner's safe address.
+
+    The provider-confirmed outbound is recorded through the same queue path as a
+    prospect email.  AgentMail then sends a real threaded reply back to the
+    Hostinger inbox, which is polled and classified normally.  The test is
+    resumable and never sends its outbound twice.
+    """
+    key = f"campaign_selftest:{review_campaign.CAMPAIGN}:{review_campaign.COPY_VERSION}"
+    saved = _state(conn, key)
+    prior = dict(saved["value"]) if saved and isinstance(saved["value"], dict) else {}
+    if prior.get("ok"):
+        return {**prior, "duplicate": True}
+
+    recipient = (os.environ.get(cfg["agentmail"]["owner_env"]) or "").strip()
+    if not recipient:
+        return {"ok": False, "blocked": f"{cfg['agentmail']['owner_env']} not set"}
+    company_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"brightreach:{review_campaign.CAMPAIGN}:selftest"))
+    subject = "quick Google review note"
+    first = (
+        "Hi Matt,\n\nI noticed BrightReach Campaign Self-Test has 12 Google reviews at 4.2 stars, "
+        "while a nearby competitor has 95. I put together a short personalized video showing the review "
+        "and Maps gaps. Want me to send it?\n\nMatt"
+    )
+    followups = [
+        "Hi Matt,\n\nJust circling back on the Google review and Maps breakdown I mentioned. "
+        "Should I send the short video?\n\nMatt",
+        "Hi Matt,\n\nOne useful part of the breakdown is the review gap versus the nearby competitor. "
+        "Want me to share the short video?\n\nMatt",
+        "Hi Matt,\n\nI’ll close the loop after this. If improving the Google review flow and Maps presence "
+        "is relevant, should I send the short breakdown?\n\nMatt",
+    ]
+    evidence = {
+        "company_id": company_id, "company": "BrightReach Campaign Self-Test", "email": recipient,
+        "score": 10, "exact_evidence": "Test fixture: 4.2 stars from 12 reviews.",
+        "competitor_context": "Test fixture: nearby competitor has 95 reviews.", "selftest": True,
+    }
+    conn.execute(
+        """
+        INSERT INTO companies (company_id, company_name, normalized_name, industry, city, state, discovery_source,
+                               qualification_status, qualification_reason, personalization, outreach_status, active)
+        VALUES (%s::uuid,'BrightReach Campaign Self-Test','brightreach campaign self test','software','Chicago','IL',
+                'campaign_selftest','HIGH','owner-only launch fixture',%s::jsonb,'outreach_ready',true)
+        ON CONFLICT (company_id) DO UPDATE SET first_contacted_at=NULL, outreach_status='outreach_ready', active=true,
+            qualification_status='HIGH', personalization=EXCLUDED.personalization, updated_at=now()
+        """, (company_id, json.dumps({"google_reviews": 12, "google_rating": 4.2,
+                                      "review_campaign": {"campaign": review_campaign.CAMPAIGN,
+                                                          "selected": False, "score": 10, "selftest": True}})),
+    )
+    conn.execute(
+        "INSERT INTO contacts (company_id,email,email_status,role,source) VALUES (%s::uuid,%s,'validated','owner',"
+        "'campaign_selftest') ON CONFLICT DO NOTHING", (company_id, recipient),
+    )
+    for step, body in enumerate([first, *followups]):
+        conn.execute(
+            """
+            INSERT INTO outreach_campaign_copy
+                (company_id,campaign,step,subject,body,copy_version,evidence,qa_problems,qa_passed_at)
+            VALUES (%s::uuid,%s,%s,%s,%s,%s,%s::jsonb,'[]'::jsonb,now())
+            ON CONFLICT (company_id,campaign,step) DO UPDATE SET subject=EXCLUDED.subject, body=EXCLUDED.body,
+                copy_version=EXCLUDED.copy_version, evidence=EXCLUDED.evidence, qa_problems='[]'::jsonb,
+                qa_passed_at=now(), updated_at=now()
+            """, (company_id, review_campaign.CAMPAIGN, step, subject, body,
+                    review_campaign.COPY_VERSION, json.dumps(evidence)),
+        )
+    conn.commit()
+
+    sent_mid = prior.get("message_id")
+    if not sent_mid:
+        body = review_campaign.add_footer(first, sender.postal_address())
+        conn.execute(
+            """
+            INSERT INTO outreach_queue
+                (company_id,step,recipient,subject,body,copy_variant,state,due_at,campaign,copy_source,evidence)
+            VALUES (%s::uuid,0,%s,%s,%s,%s,'claimed',now(),%s,%s,%s::jsonb)
+            ON CONFLICT (company_id,step) DO UPDATE SET recipient=EXCLUDED.recipient, subject=EXCLUDED.subject,
+                body=EXCLUDED.body, copy_variant=EXCLUDED.copy_variant, state='claimed', due_at=now(),
+                claimed_by='campaign-selftest', claimed_at=now(), attempts=outreach_queue.attempts+1,
+                stop_reason=NULL, campaign=EXCLUDED.campaign, copy_source=EXCLUDED.copy_source,
+                evidence=EXCLUDED.evidence, updated_at=now()
+            RETURNING *
+            """, (company_id, recipient, subject, body, review_campaign.COPY_VERSION,
+                    review_campaign.CAMPAIGN, review_campaign.COPY_VERSION, json.dumps(evidence)),
+        )
+        item = conn.execute("SELECT * FROM outreach_queue WHERE company_id=%s::uuid AND step=0", (company_id,)).fetchone()
+        outcome = sender.send_item(conn, item, mailbox, cfg, from_email=from_email)
+        if outcome != "sent":
+            result = {"ok": False, "outbound": outcome, "stage": "hostinger_send"}
+            _set_state(conn, key, result)
+            return result
+        sent_mid = conn.execute(
+            "SELECT message_id_header FROM outreach_queue WHERE company_id=%s::uuid AND step=0", (company_id,),
+        ).fetchone()["message_id_header"]
+        prior = {"message_id": sent_mid, "outbound": "provider_confirmed"}
+        _set_state(conn, key, prior)
+
+    if not prior.get("reply_accepted"):
+        inboxes = agentmail.ensure_inboxes(cfg)
+        post = agentmail.http_poster(cfg)
+        if not inboxes.get("ok") or post is None:
+            result = {**prior, "ok": False, "stage": "agentmail_reply", "agentmail_ready": False}
+            _set_state(conn, key, result)
+            return result
+        ok, receipt = post(cfg["agentmail"]["inboxes"]["followup"], {
+            "to": [from_email], "subject": f"Re: {subject}", "text": "Yes, please send the video.",
+            "headers": {"In-Reply-To": sent_mid, "References": sent_mid},
+            "labels": ["brightreach", "campaign-selftest"],
+        })
+        if not ok:
+            result = {**prior, "ok": False, "stage": "agentmail_reply", "reply_accepted": False,
+                      "receipt": receipt}
+            _set_state(conn, key, result)
+            return result
+        prior.update(reply_accepted=True, reply_receipt=receipt)
+        _set_state(conn, key, prior)
+
+    reply_result = None
+    for attempt in range(18):
+        reply_result = replies.poll(conn, user=from_email, password=mailbox.password,
+                                    host=cfg["sender"]["imap_host"], port=int(cfg["sender"]["imap_port"]))
+        inbound = conn.execute(
+            "SELECT count(*) n FROM outreach_messages WHERE company_id=%s::uuid AND direction='inbound' "
+            "AND kind NOT IN ('auto_reply','bounce')", (company_id,),
+        ).fetchone()["n"]
+        if inbound:
+            break
+        if attempt < 17:
+            _sleep(5)
+    swept = sender.sweep(conn, cfg)
+    state = conn.execute("SELECT * FROM company_conversation_state WHERE company_id=%s::uuid", (company_id,)).fetchone()
+    followup = conn.execute(
+        "SELECT state,stop_reason FROM outreach_queue WHERE company_id=%s::uuid AND step=1", (company_id,),
+    ).fetchone()
+    airtable = airtable_selftest(conn)
+    notice = agentmail.notify(
+        conn, cfg, role="manager", dedupe_key=f"campaign-selftest:{review_campaign.COPY_VERSION}",
+        subject="BrightReach campaign launch test passed",
+        text="The owner-only Google Reviews campaign test completed: Hostinger accepted and filed the outbound, "
+             "AgentMail delivered a threaded reply, the reply was classified, and the follow-up was stopped.",
+    )
+    ok = bool(state and state["current_status"] not in ("discovered", "ready", "emailed")
+              and followup and followup["state"] == "cancelled" and airtable.get("ok")
+              and notice.get("delivered"))
+    result = {
+        **prior, "ok": ok, "outbound": "provider_confirmed", "inbound_processed": bool(state),
+        "classification": state["last_reply_classification"] if state else None,
+        "followup_cancelled": bool(followup and followup["state"] == "cancelled"),
+        "reply_poll": reply_result, "sweep_cancelled": swept.get("cancelled", 0),
+        "airtable": airtable, "notification_delivered": notice.get("delivered", False),
+    }
+    conn.execute("UPDATE companies SET active=false, updated_at=now() WHERE company_id=%s::uuid", (company_id,))
+    conn.commit()
+    _set_state(conn, key, result)
+    return result
 
 
 def cycle(minutes: float) -> dict:
@@ -278,6 +435,7 @@ def main(argv=None) -> int:
     sub.add_parser("selftest")
     sub.add_parser("agentmail-selftest")
     sub.add_parser("airtable-selftest")
+    sub.add_parser("campaign-selftest")
     sub.add_parser("airtable")
     a = ap.parse_args(argv)
     cfg = sender.load_config()
@@ -322,6 +480,22 @@ def main(argv=None) -> int:
                 return 1
         elif a.cmd == "airtable-selftest":
             out = airtable_selftest(conn)
+            print(public(out))
+            if "blocked" in out:
+                return 3
+            if not out["ok"]:
+                return 1
+        elif a.cmd == "campaign-selftest":
+            mb = from_env(cfg)
+            from_email = (os.environ.get(cfg["sender"]["from_email_env"]) or "").strip()
+            if mb is None or not from_email:
+                print("BLOCKED: HOSTINGER_EMAIL / HOSTINGER_EMAIL_PASSWORD not set")
+                return 3
+            mb.check_login()
+            try:
+                out = campaign_selftest(conn, cfg, mb, from_email)
+            finally:
+                mb.close()
             print(public(out))
             if "blocked" in out:
                 return 3

@@ -192,7 +192,15 @@ def _drafts(conn, c: Classification, company: dict, cid: str, mid: str, msg: dic
     facts = store.facts(conn, cid)
     to = addr(msg.get("sender", ""))
     made: list[tuple[str, tuple]] = []
-    if c.label == "PRICE_QUESTION":
+    latest_outbound = conn.execute(
+        "SELECT body FROM outreach_messages WHERE company_id=%s AND direction='outbound' ORDER BY occurred_at DESC LIMIT 1",
+        (cid,),
+    ).fetchone()
+    video_request = bool(c.label in ("MORE_INFORMATION", "INTERESTED") and latest_outbound
+                         and re.search(r"\b(video|breakdown|walkthrough)\b", latest_outbound["body"] or "", re.I))
+    if video_request:
+        made.append(("reply", actions.video_request_reply(company)))
+    elif c.label == "PRICE_QUESTION":
         made.append(("pricing", actions.pricing_reply(company, st, facts, c.new_text)))
     elif c.label == "INTERESTED":
         made.append(("reply", actions.personal_reply(company, st, facts, c.label, c.new_text)))
@@ -239,11 +247,41 @@ def _attention(conn, c, st, company, cid, mid, prev, link) -> bool:
     if c.legal_or_angry:
         reason = "Angry or legal/privacy wording - handle personally. Sending is blocked."
     code = "legal_or_angry" if c.legal_or_angry else (c.needs_review_reason or c.label.lower())
+    recommended = c.recommended_action
+    if c.label in ("MORE_INFORMATION", "INTERESTED"):
+        outbound = conn.execute(
+            "SELECT subject,body FROM outreach_messages WHERE company_id=%s AND direction='outbound' "
+            "ORDER BY occurred_at DESC LIMIT 1", (cid,),
+        ).fetchone()
+        if outbound and re.search(r"\b(video|breakdown|walkthrough)\b", outbound["body"] or "", re.I):
+            p = company.get("personalization") or {}
+            if isinstance(p, str):
+                try:
+                    import json
+                    p = json.loads(p)
+                except ValueError:
+                    p = {}
+            campaign = p.get("review_campaign") or {}
+            code = "video_request"
+            reason = "They asked for the personalized video - create it now; do not claim it exists until it is produced."
+            recommended = "\n".join(filter(None, [
+                "Create a 3-5 minute personalized video:",
+                f"Company: {company.get('company_name', '')}",
+                f"Contact: {company.get('contact_email') or ''}",
+                f"Google profile: {campaign.get('source') or p.get('google_profile_url') or ''}",
+                f"Original evidence: {campaign.get('exact_evidence') or ''}",
+                f"Competitor evidence: {campaign.get('competitor_context') or ''}",
+                f"Original email: {one_line(outbound['body'], 500)}",
+                f"Their reply: {one_line(c.new_text, 400)}",
+                "Talking points: show the exact review/Maps issue (0:00-0:30); explain the competitive/customer "
+                "impact without promising rankings (0:30-1:30); show the review-request, monitoring/response, and "
+                "local visibility changes (1:30-3:00); end with $299/month and one simple next step.",
+            ]))
     return store.queue_attention(
         conn, company_id=cid, message_id=mid, reason_code=code, reason=reason,
         urgency="urgent" if c.legal_or_angry or c.label == "READY_TO_BUY" else HUMAN_URGENCY.get(c.label, "high" if high_value else "normal"),
         status_snapshot=st["current_status"], last_reply=one_line(c.new_text, 400), summary=c.summary,
-        recommended_action=c.recommended_action, record_link=link)
+        recommended_action=recommended, record_link=link)
 
 
 def _should_notify(c: Classification, st: dict, prev: str) -> bool:

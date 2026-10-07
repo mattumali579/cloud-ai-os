@@ -32,6 +32,7 @@ from cloudos.conversations import guard, store
 from cloudos.config import REPO_ROOT
 from cloudos.conversations.text import business_domain
 from cloudos.outreach import copy as copywriter
+from cloudos.outreach import review_campaign
 from cloudos.outreach.transport import AuthError, Mailbox, build, new_message_id
 
 ROOT = REPO_ROOT
@@ -126,6 +127,17 @@ def add_business_days(start: datetime, days: int, cfg: dict) -> datetime:
     return datetime(d.year, d.month, d.day, 9 + minute // 60, minute % 60, tzinfo=tz).astimezone(timezone.utc)
 
 
+def add_sequence_days(start: datetime, days: int, cfg: dict, campaign: str = "legacy") -> datetime:
+    """Schedule active reviews-campaign touches by calendar day; retain the
+    legacy business-day behavior for every existing campaign."""
+    if campaign == review_campaign.CAMPAIGN and (cfg.get("sequence") or {}).get("day_mode") == "calendar":
+        tz = ZoneInfo(cfg["pacing"]["timezone"])
+        d = (start.astimezone(tz) + timedelta(days=days)).date()
+        minute = random.randint(0, 119)
+        return datetime(d.year, d.month, d.day, 9 + minute // 60, minute % 60, tzinfo=tz).astimezone(timezone.utc)
+    return add_business_days(start, days, cfg)
+
+
 def sent_last_24h(conn) -> int:
     return conn.execute("SELECT count(*) n FROM outreach_queue WHERE state = 'sent' AND sent_at > now() - interval '24 hours'"
                         ).fetchone()["n"]
@@ -204,6 +216,7 @@ def rerender_queued_v4(conn, cfg: dict) -> dict:
         SELECT q.queue_id, q.company_id::text, q.copy_variant, c.company_name, c.industry, c.city, c.personalization
         FROM outreach_queue q JOIN companies c USING (company_id)
         WHERE q.step = 0 AND q.state = 'queued' AND q.attempts = 0 AND q.message_id_header IS NULL
+          AND q.campaign = 'legacy' AND q.copy_source = 'python-generated'
           AND c.first_contacted_at IS NULL
           AND lower(btrim(c.industry)) = ANY(%s::text[])
           AND coalesce(q.copy_variant, '') NOT LIKE 'v4-%%'
@@ -246,6 +259,7 @@ def refresh_queued(conn, cfg: dict) -> dict:
         SELECT q.queue_id, q.company_id::text, q.copy_variant, c.company_name, c.industry, c.city, c.personalization
         FROM outreach_queue q JOIN companies c USING (company_id)
         WHERE q.step = 0 AND q.state = 'queued' AND q.attempts = 0 AND q.message_id_header IS NULL
+          AND q.campaign = 'legacy' AND q.copy_source = 'python-generated'
         """).fetchall()
     for r in rows:
         version = copy_arm(r, cfg)
@@ -323,6 +337,9 @@ def trade_ready_counts(conn, cfg: dict) -> dict:
 
 def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
     """Prepare first touches for Ready companies. Nothing is sent here."""
+    active = (cfg.get("campaign") or {}).get("id")
+    if active == review_campaign.CAMPAIGN:
+        return review_campaign.queue_approved(conn, postal_address=postal_address(), limit=limit)
     migrated = rerender_queued_v4(conn, cfg)
     refreshed = refresh_queued(conn, cfg)
     have, have_v4 = queue_first_touch_counts(conn)
@@ -452,8 +469,34 @@ def record_sent(conn, item: dict, cfg: dict, *, from_email: str, sent_at: dateti
     conn.execute("UPDATE companies SET outreach_status = 'contacted', updated_at = now() WHERE company_id = %s "
                  "AND outreach_status IN ('outreach_ready','handed_off')", (item["company_id"],))
     first = item if item["step"] == 0 else (conn.execute(
-        "SELECT subject, copy_variant FROM outreach_queue WHERE company_id = %s AND step = 0",
+        "SELECT subject, copy_variant, campaign, copy_source FROM outreach_queue WHERE company_id = %s AND step = 0",
         (item["company_id"],)).fetchone() or item)
+    campaign = first.get("campaign") or "legacy"
+    if campaign == review_campaign.CAMPAIGN:
+        next_step = int(item["step"]) + 1
+        approved = conn.execute(
+            "SELECT subject, body, copy_version, evidence FROM outreach_campaign_copy "
+            "WHERE company_id=%s AND campaign=%s AND step=%s AND qa_passed_at IS NOT NULL",
+            (item["company_id"], campaign, next_step),
+        ).fetchone()
+        days = list(cfg["sequence"]["followup_days"])
+        if approved and item["step"] < len(days):
+            body = review_campaign.add_footer(approved["body"], postal_address())
+            problems = copywriter.qa(copywriter.Email(approved["subject"] or first["subject"], body,
+                                                       approved["copy_version"]),
+                                     postal_address=postal_address(), company_name=(store.company(
+                                         conn, str(item["company_id"])) or {}).get("company_name", ""))
+            conn.execute(
+                "INSERT INTO outreach_queue (company_id, step, recipient, subject, body, copy_variant, thread_root, "
+                "due_at, state, stop_reason, campaign, copy_source, evidence) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (company_id, step) DO NOTHING",
+                (item["company_id"], next_step, item["recipient"], approved["subject"] or first["subject"], body,
+                 approved["copy_version"], root, add_sequence_days(sent_at, int(days[item["step"]]), cfg, campaign),
+                 "cancelled" if problems else "queued", ("qa: " + "; ".join(problems)) if problems else None,
+                 campaign, approved["copy_version"], json.dumps(approved["evidence"] or {})),
+            )
+        conn.commit()
+        return mid
     version = (first["copy_variant"] or "").split("-")[0]          # follow-ups stay in the first touch's arm
     version = version if version in (copywriter.V3, copywriter.V4) else copywriter.COPY_VERSION
     days = followup_days(cfg, version)
@@ -466,7 +509,7 @@ def record_sent(conn, item: dict, cfg: dict, *, from_email: str, sent_at: dateti
                      "due_at, state, stop_reason) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                      "ON CONFLICT (company_id, step) DO NOTHING",
                      (item["company_id"], item["step"] + 1, item["recipient"], e.subject, e.body, e.variant, root,
-                      add_business_days(sent_at, int(days[item["step"]]), cfg),
+                      add_sequence_days(sent_at, int(days[item["step"]]), cfg, campaign),
                       "cancelled" if problems else "queued", ("qa: " + "; ".join(problems)) if problems else None))
     conn.commit()
     return mid

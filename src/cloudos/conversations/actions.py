@@ -72,6 +72,11 @@ def website_facts(company: dict) -> list[tuple[str, str]]:
         p = json.loads(p or "{}")
     src = p.get("evidence_url") or company.get("website") or "their website"
     out: list[tuple[str, str]] = []
+    review = p.get("review_campaign") or {}
+    if review.get("exact_evidence"):
+        out.append((review["exact_evidence"], review.get("source") or "Google Maps"))
+    if review.get("competitor_context"):
+        out.append((review["competitor_context"], review.get("source") or "Google Maps"))
     if p.get("has_contact_form") is False:
         out.append(("No contact / quote-request form was found on the pages we read.", f"{p.get('pages_read', '?')} pages of {src}"))
     elif p.get("has_contact_form") is True:
@@ -93,6 +98,13 @@ def next_action(label: str) -> tuple[str, str]:
 
 def pricing_reply(company: dict, state: dict, facts: list[dict], question: str) -> tuple[str, str, dict]:
     o = offer()
+    if o["key"] == "google_reviews_maps":
+        lines = [f"Hi {_first_name(state.get('contact_email'))},", "",
+                 f"It's {o['price_text']}. That includes the review-request workflow, review monitoring and "
+                 "responses, plus ongoing Google Maps visibility work.", "",
+                 "Want me to send the short personalized breakdown first?", "", "Matt"]
+        return (f"Re: {company['company_name']}", "\n".join(lines),
+                {"offer": o["key"], "price_text": o["price_text"], "question": question})
     h = offer("hosted")
     objections = _facts_by(facts, "price_objection")
     lines = [f"Hi {_first_name(state.get('contact_email'))},", "",
@@ -128,6 +140,15 @@ def personal_reply(company: dict, state: dict, facts: list[dict], label: str, th
     return f"Re: {company['company_name']}", "\n".join(lines), {"label": label, "observations": obs}
 
 
+def video_request_reply(company: dict) -> tuple[str, str, dict]:
+    """Acknowledge a request without pretending the personalized video already exists."""
+    body = "\n".join([
+        "Hi there,", "", "Absolutely — I’ll put the short personalized breakdown together and send it here as soon as it’s ready.",
+        "", "Matt",
+    ])
+    return f"Re: {company['company_name']}", body, {"video_requested": True, "video_produced": False}
+
+
 def audit(company: dict, state: dict, facts: list[dict]) -> tuple[str, str, dict]:
     o = offer()
     obs = website_facts(company)
@@ -140,15 +161,27 @@ def audit(company: dict, state: dict, facts: list[dict]) -> tuple[str, str, dict
     parts += [f"- {f} - source: {e}" for f, e in obs] or ["- none on record"]
     if said:
         parts += ["", "What they told us (FACT, from the email thread):"] + [f"- {s}" for s in said]
-    parts += ["", "## 3. Why it matters (INFERENCE)",
-              "- When a caller or visitor can't get an instant answer or booking, some of them contact the next company. "
-              "We have NOT measured how often this happens for this business."]
+    if o["key"] == "google_reviews_maps":
+        parts += ["", "## 3. Why it matters (INFERENCE)",
+                  "- Review quantity, recency and owner responses can affect customer trust and how competitive the "
+                  "business looks in local results. No ranking or revenue outcome is promised."]
+    else:
+        parts += ["", "## 3. Why it matters (INFERENCE)",
+                  "- When a caller or visitor can't get an instant answer or booking, some of them contact the next company. "
+                  "We have NOT measured how often this happens for this business."]
     parts += ["", "## 4. Recommended BrightReach solution", f"- {o['name']}"]
     parts += ["", "## 5. Deliverables"] + [f"- {d}" for d in o["deliverables"]]
-    parts += ["", "## 6. Price", f"- {o['price_text']}", f"- Optional: {offer('hosted')['name']} {offer('hosted')['price_text']}"]
-    parts += ["", "## 7. Expected outcome (INFERENCE, not a promise)",
-              "- Missed calls get an instant text-back and a booking link, so fewer enquiries go unanswered. "
-              "No revenue or lead numbers are claimed.", f"- Guarantee: {o['guarantee']}"]
+    parts += ["", "## 6. Price", f"- {o['price_text']}"]
+    if o["key"] != "google_reviews_maps":
+        parts += [f"- Optional: {offer('hosted')['name']} {offer('hosted')['price_text']}"]
+    if o["key"] == "google_reviews_maps":
+        parts += ["", "## 7. Expected outcome (INFERENCE, not a promise)",
+                  "- A steady, policy-compliant review workflow and a stronger local profile. No ranking, review-volume, "
+                  "or revenue result is guaranteed."]
+    else:
+        parts += ["", "## 7. Expected outcome (INFERENCE, not a promise)",
+                  "- Missed calls get an instant text-back and a booking link, so fewer enquiries go unanswered. "
+                  "No revenue or lead numbers are claimed.", f"- Guarantee: {o['guarantee']}"]
     parts += ["", "## 8. Next action", "- Reply to confirm and I'll send the setup steps."]
     excluded = _facts_by(facts, "scope_exclusion")
     if excluded:
@@ -158,7 +191,6 @@ def audit(company: dict, state: dict, facts: list[dict]) -> tuple[str, str, dict
 
 def proposal(company: dict, state: dict, facts: list[dict]) -> tuple[str, str, dict]:
     o = offer()
-    h = offer("hosted")
     obs = website_facts(company)
     problem = obs[0][0] if obs else "[OWNER: state the problem they confirmed]"
     wants = _facts_by(facts, "service_interest")
@@ -170,14 +202,16 @@ def proposal(company: dict, state: dict, facts: list[dict]) -> tuple[str, str, d
         lines += ["", "**What you asked for:** " + "; ".join(wants)]
     if excluded:
         lines += ["**Not included (per your request):** " + "; ".join(excluded)]
-    lines += ["", f"**Setup price:** {o['price_text']}",
-              f"**Recurring (optional):** {h['name']} - {h['price_text']}",
+    price_label = "Monthly price" if o.get("monthly_usd") else "Setup price"
+    lines += ["", f"**{price_label}:** {o['price_text']}",
               f"**Implementation timeline:** {o.get('timeline') or '[OWNER: confirm timeline before sending]'}",
               "", "**Your part (confirm on kickoff):**"]
     lines += [f"- {r}" for r in o.get("client_responsibilities") or []]
-    lines += ["", f"**Guarantee:** {o['guarantee']}", "", "**Next step:** reply \"approved\" and I'll send the invoice and kickoff steps."]
+    if o.get("guarantee"):
+        lines += ["", f"**Guarantee:** {o['guarantee']}"]
+    lines += ["", "**Next step:** reply \"approved\" and I'll send the invoice and kickoff steps."]
     return (f"Proposal for {company['company_name']}", "\n".join(lines),
-            {"offer": o["key"], "setup": o["price_text"], "recurring": h["price_text"], "problem": problem})
+            {"offer": o["key"], "price": o["price_text"], "problem": problem})
 
 
 def referral_intro(company: dict, referral: dict, referrer: str) -> tuple[str, str, dict]:

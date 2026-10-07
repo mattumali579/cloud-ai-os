@@ -8,12 +8,18 @@ name: Outreach Send
 # PUBLIC repo: logs are counts only - never names, emails or message text.
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - 'config/campaigns/google_reviews_maps_299.yaml'
+      - 'db/migrations/011_google_reviews_campaign.sql'
+      - 'src/cloudos/outreach/review_campaign.py'
   schedule:
     - cron: '3,33 * * * *'    # fallback only; the Ticker starts it every 10 min
   workflow_dispatch:
     inputs:
       mode:
-        description: 'cycle (normal), status, selftest (Hostinger), agentmail-selftest, airtable-selftest (read only), queue-audit (read only, counts only, sends nothing), trade-count (read only, counts only)'
+        description: 'cycle (normal), campaign-selftest (owner only), status, selftest (Hostinger), agentmail-selftest, airtable-selftest (read only), queue-audit (read only, counts only, sends nothing), trade-count (read only, counts only)'
         required: true
         default: cycle
         type: choice
@@ -67,9 +73,14 @@ jobs:
       - name: Run
         shell: bash
         run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            python outreach_sender.py campaign-selftest
+            exit $?
+          fi
           case "${{ inputs.mode || 'cycle' }}" in
             status) python outreach_sender.py status ;;
             selftest) python outreach_sender.py selftest ;;
+            campaign-selftest) python outreach_sender.py campaign-selftest ;;
             agentmail-selftest) python outreach_sender.py agentmail-selftest ;;
             airtable-selftest) python outreach_sender.py airtable-selftest ;;
             queue-audit) python outreach_sender.py queue-audit --min 100 ;;

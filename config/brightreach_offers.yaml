@@ -1,10 +1,27 @@
 # BrightReach offer catalog used by pricing replies, audits and proposals.
-# Default is Missed-Call Rescue (v4). recovery_build ($1,500) stays as the own-it anchor.
+# The active outreach campaign is Google Reviews / Maps. Legacy offers remain
+# available to their existing product paths, but are not the default here.
 # Nothing outside this file may be quoted to a prospect. Change prices HERE.
 
-default_offer: missed_call_rescue   # v4 (revenue-operator/sales/offer.md); recovery_build kept as the 'own it' anchor
+default_offer: google_reviews_maps
 
 offers:
+  google_reviews_maps:
+    name: Google Reviews + Google Maps Visibility
+    setup_usd: null
+    monthly_usd: 299
+    price_text: "$299/month, month to month"
+    deliverables:
+      - Legitimate review-request workflow for all customers without review gating
+      - Review monitoring and owner-response workflow
+      - Google Business Profile and local Maps visibility improvements
+      - Monthly progress reporting
+    timeline: "Initial setup and profile review in the first week"
+    guarantee: null
+    client_responsibilities:
+      - Google Business Profile access
+      - A customer contact list or an approved point in the service workflow for review requests
+      - Timely approval of suggested owner responses
   missed_call_rescue:
     name: Missed-Call Rescue
     setup_usd: 497
