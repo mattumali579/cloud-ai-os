@@ -285,7 +285,18 @@ def qa_copy(subject: str, body: str, lead: dict, *, cfg: dict | None = None) -> 
         problems.append("not signed as Matt")
     evidence = " ".join(filter(None, [lead.get("exact_evidence"), lead.get("competitor_context")]))
     evidence_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", evidence))
-    if evidence_numbers and not any(re.search(rf"\b{re.escape(n)}\b", body) for n in evidence_numbers):
+    number_words = {
+        "0": ("zero",), "1": ("one", "single"), "2": ("two",), "3": ("three",),
+        "4": ("four",), "5": ("five",), "6": ("six",), "7": ("seven",),
+        "8": ("eight",), "9": ("nine",), "10": ("ten",), "11": ("eleven",), "12": ("twelve",),
+    }
+    body_lower = body.casefold()
+    grounded = any(
+        re.search(rf"\b{re.escape(n)}\b", body)
+        or any(re.search(rf"\b{word}\b", body_lower) for word in number_words.get(n, ()))
+        for n in evidence_numbers
+    )
+    if evidence_numbers and not grounded:
         problems.append("no verifiable evidence from the lead record")
     allowed_numbers = evidence_numbers | set(re.findall(r"\b\d+(?:\.\d+)?\b", lead.get("company") or ""))
     body_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", body))

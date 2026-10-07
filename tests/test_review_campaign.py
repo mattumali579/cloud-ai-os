@@ -60,6 +60,13 @@ def test_first_touch_qa_accepts_company_digits_but_not_invented_metrics():
     assert rc.qa_copy("Google reviews", good, numbered) == []
 
 
+def test_first_touch_qa_accepts_verified_one_written_as_single():
+    one_review = lead(exact_evidence="Google Maps shows 4.2 stars from 1 review.", competitor_context="")
+    body = ("Hi there,\n\nAcme Roofing has a single Google review. That gives a visitor very little to read "
+            "before calling. I mapped a simple review and response workflow. May I send the short breakdown?\n\nMatt")
+    assert rc.qa_copy("Google reviews", body, one_review) == []
+
+
 def test_footer_is_outside_conversational_body():
     out = rc.add_footer("Hi there.\n\nWant the short video?\n\nMatt", "123 Main St, Austin, TX")
     assert "\n--\n123 Main St" in out
