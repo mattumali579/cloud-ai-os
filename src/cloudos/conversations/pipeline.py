@@ -196,10 +196,18 @@ def _drafts(conn, c: Classification, company: dict, cid: str, mid: str, msg: dic
         "SELECT body FROM outreach_messages WHERE company_id=%s AND direction='outbound' ORDER BY occurred_at DESC LIMIT 1",
         (cid,),
     ).fetchone()
-    video_request = bool(c.label in ("MORE_INFORMATION", "INTERESTED") and latest_outbound
-                         and re.search(r"\b(video|breakdown|walkthrough)\b", latest_outbound["body"] or "", re.I))
+    outbound_body = (latest_outbound or {}).get("body") or ""
+    video_request = bool(c.label in ("MORE_INFORMATION", "INTERESTED")
+                         and re.search(r"\b(video|walkthrough)\b", outbound_body, re.I))
+    breakdown_request = bool(c.label in ("MORE_INFORMATION", "INTERESTED")
+                             and re.search(r"\b(breakdown|audit)\b", outbound_body, re.I))
     if video_request:
         made.append(("reply", actions.video_request_reply(company)))
+    elif breakdown_request:
+        # The prospect accepted the low-friction audit offer. Prepare the useful
+        # material now instead of acknowledging it and creating another delay.
+        made.append(("reply", actions.personal_reply(company, st, facts, "INTERESTED", c.new_text)))
+        made.append(("audit", actions.audit(company, st, facts)))
     elif c.label == "PRICE_QUESTION":
         made.append(("pricing", actions.pricing_reply(company, st, facts, c.new_text)))
     elif c.label == "INTERESTED":
@@ -253,7 +261,7 @@ def _attention(conn, c, st, company, cid, mid, prev, link) -> bool:
             "SELECT subject,body FROM outreach_messages WHERE company_id=%s AND direction='outbound' "
             "ORDER BY occurred_at DESC LIMIT 1", (cid,),
         ).fetchone()
-        if outbound and re.search(r"\b(video|breakdown|walkthrough)\b", outbound["body"] or "", re.I):
+        if outbound and re.search(r"\b(video|walkthrough)\b", outbound["body"] or "", re.I):
             p = company.get("personalization") or {}
             if isinstance(p, str):
                 try:
@@ -276,6 +284,26 @@ def _attention(conn, c, st, company, cid, mid, prev, link) -> bool:
                 "Talking points: show the exact review/Maps issue (0:00-0:30); explain the competitive/customer "
                 "impact without promising rankings (0:30-1:30); show the review-request, monitoring/response, and "
                 "local visibility changes (1:30-3:00); end with $299/month and one simple next step.",
+            ]))
+        elif outbound and re.search(r"\b(breakdown|audit)\b", outbound["body"] or "", re.I):
+            p = company.get("personalization") or {}
+            if isinstance(p, str):
+                try:
+                    import json
+                    p = json.loads(p)
+                except ValueError:
+                    p = {}
+            campaign = p.get("review_campaign") or {}
+            code = "breakdown_request"
+            reason = "They accepted the 3-point breakdown offer; a reply and mini audit are prepared for approval."
+            recommended = "\n".join(filter(None, [
+                "Approve the prepared reply and mini audit:",
+                f"Company: {company.get('company_name', '')}",
+                f"Contact: {company.get('contact_email') or ''}",
+                f"Google profile: {campaign.get('source') or p.get('google_profile_url') or ''}",
+                f"Original evidence: {campaign.get('exact_evidence') or ''}",
+                f"Competitor evidence: {campaign.get('competitor_context') or ''}",
+                f"Their reply: {one_line(c.new_text, 400)}",
             ]))
     return store.queue_attention(
         conn, company_id=cid, message_id=mid, reason_code=code, reason=reason,

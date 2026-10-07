@@ -269,6 +269,26 @@ def test_interested_stops_generic_sequence(conn):
     assert kinds == ["audit", "reply"]
 
 
+def test_breakdown_request_prepares_the_audit_instead_of_a_video_placeholder(conn):
+    cid = make_company(conn)
+    cold_send(conn, cid, body=(
+        "Hi,\n\nI checked ABC Roofing's Google profile. I can map the review-request and response workflow.\n\n"
+        "Want me to send the 3-point breakdown?\n\nMatt"
+    ))
+    r = reply(conn, "Yes, send the breakdown.")
+    assert r["classification"] in ("INTERESTED", "MORE_INFORMATION")
+    drafts = conn.execute(
+        "SELECT kind,content FROM outreach_drafts WHERE company_id=%s ORDER BY kind", (cid,)
+    ).fetchall()
+    assert [row["kind"] for row in drafts] == ["audit", "reply"]
+    assert not any((row["content"] or {}).get("video_requested") for row in drafts)
+    attention = conn.execute(
+        "SELECT reason_code,recommended_action FROM human_attention_queue WHERE company_id=%s", (cid,)
+    ).fetchone()
+    assert attention["reason_code"] == "breakdown_request"
+    assert "reply and mini audit" in attention["recommended_action"]
+
+
 def test_auto_reply_does_not_count_as_reply(conn):
     cid = make_company(conn)
     cold_send(conn, cid)
