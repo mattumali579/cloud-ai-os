@@ -152,18 +152,22 @@ def campaign_selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
     Hostinger inbox, which is polled and classified normally.  The test is
     resumable and never sends its outbound twice.
     """
-    key = f"campaign_selftest:{review_campaign.CAMPAIGN}:{review_campaign.COPY_VERSION}"
+    selftest_version = "hostinger-agentmail-roundtrip-v2"
+    key = f"campaign_selftest:{review_campaign.CAMPAIGN}:{review_campaign.COPY_VERSION}:{selftest_version}"
     saved = _state(conn, key)
     prior = dict(saved["value"]) if saved and isinstance(saved["value"], dict) else {}
     if prior.get("ok"):
         return {**prior, "duplicate": True}
 
     # The safe test recipient is the explicit owner address when configured;
-    # otherwise the authenticated sender mailbox is itself owner-controlled.
-    recipient = (os.environ.get(cfg["agentmail"]["owner_env"]) or from_email or "").strip()
+    # otherwise use the connected AgentMail follow-up inbox.  Both are
+    # owner-controlled, and AgentMail makes a genuine threaded reply possible.
+    recipient = (os.environ.get(cfg["agentmail"]["owner_env"])
+                 or cfg["agentmail"]["inboxes"]["followup"] or "").strip()
     if not recipient:
         return {"ok": False, "blocked": f"{cfg['agentmail']['owner_env']} not set"}
-    company_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"brightreach:{review_campaign.CAMPAIGN}:selftest"))
+    company_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"brightreach:{review_campaign.CAMPAIGN}:selftest:{selftest_version}"))
     subject = "quick Google review note"
     first = (
         "Hi Matt,\n\nI noticed BrightReach Campaign Self-Test has 12 Google reviews at 4.2 stars, "

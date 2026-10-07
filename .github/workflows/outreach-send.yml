@@ -14,6 +14,7 @@ on:
       - 'config/campaigns/google_reviews_maps_299.yaml'
       - 'db/migrations/011_google_reviews_campaign.sql'
       - 'src/cloudos/outreach/review_campaign.py'
+      - 'outreach_sender.py'
   schedule:
     - cron: '3,33 * * * *'    # fallback only; the Ticker starts it every 10 min
   workflow_dispatch:
