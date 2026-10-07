@@ -23,12 +23,10 @@ pacing:
   window_end: "17:30"
   min_gap_seconds: 55             # between two sends - never a burst
   max_gap_seconds: 110
-  # Sends allowed per rolling 24 h, the same from the first sending day (no warm-up ramp).
-  daily_limit: 100
-  # Hostinger's own per-mailbox cap (rolling 24 h): trial/free email = 100,
-  # Business Starter = 1000 (hostinger.com/support/4625828). The lower of
-  # daily_limit and this cap wins. Override with the HOSTINGER_DAILY_LIMIT secret.
-  provider_daily_limit: 100
+  # Owner-authorized campaign ceiling. Provider-side throttles are still handled
+  # fail-closed by the transport, but there is no internal 100-message hold.
+  daily_limit: 1000
+  provider_daily_limit: 1000
   max_attempts: 3                 # transient failures (timeouts, 4xx) before a row is marked failed
 
 sequence:                         # day 0, 2, 4, 7; replies/unsubs/bounces stop it

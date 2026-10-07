@@ -144,9 +144,13 @@ def sent_last_24h(conn) -> int:
 
 
 def daily_cap(conn, cfg: dict) -> int:
-    """The configured daily limit, never above the provider's own cap. The same on every sending day."""
-    provider = int(os.environ.get("HOSTINGER_DAILY_LIMIT") or cfg["pacing"]["provider_daily_limit"])
-    return max(0, min(int(cfg["pacing"]["daily_limit"]), provider))
+    """Return the owner-authorized campaign ceiling.
+
+    The mailbox transport remains authoritative for real provider throttling.
+    A stale HOSTINGER_DAILY_LIMIT secret must not silently re-enable a retired
+    campaign hold.
+    """
+    return max(0, int(cfg["pacing"]["daily_limit"]))
 
 
 # ----------------------------------------------------------------- planning

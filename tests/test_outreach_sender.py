@@ -508,9 +508,9 @@ def test_daily_cap_and_window(conn, cfg):
     assert run(conn, cfg, mb) == {**run(conn, cfg, mb), "in_window": False} and len(mb.sent) == 2
 
 
-def test_hostinger_daily_limit_env_wins(conn, cfg, monkeypatch):
+def test_hostinger_daily_limit_env_does_not_override_campaign_ceiling(conn, cfg, monkeypatch):
     monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "1")
-    assert sender.daily_cap(conn, cfg) == 1
+    assert sender.daily_cap(conn, cfg) == cfg["pacing"]["daily_limit"]
 
 
 def test_checked_in_cap_is_100_from_the_first_sending_day(monkeypatch):
@@ -518,12 +518,12 @@ def test_checked_in_cap_is_100_from_the_first_sending_day(monkeypatch):
     monkeypatch.delenv("HOSTINGER_DAILY_LIMIT", raising=False)
     real = sender.load_config()
     p = real["pacing"]
-    assert "ramp" not in p and p["daily_limit"] == 100 and p["provider_daily_limit"] == 100
-    assert sender.daily_cap(None, real) == 100
+    assert "ramp" not in p and p["daily_limit"] == 1000 and p["provider_daily_limit"] == 1000
+    assert sender.daily_cap(None, real) == 1000
     monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "40")
-    assert sender.daily_cap(None, real) == 40                  # a lower provider limit still lowers it
+    assert sender.daily_cap(None, real) == 1000                # stale secret cannot restore the retired hold
     monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "1000")
-    assert sender.daily_cap(None, real) == 100                 # a higher one never raises it past 100
+    assert sender.daily_cap(None, real) == 1000
     assert (p["window_start"], p["window_end"], p["send_days"]) == ("08:00", "17:30", [0, 1, 2, 3, 4, 5, 6])
     assert p["business_days"] == [0, 1, 2, 3, 4]
     assert (p["min_gap_seconds"], p["max_gap_seconds"], p["timezone"]) == (55, 110, "America/Chicago")
@@ -840,7 +840,7 @@ def test_checked_in_config_sends_v4_to_trades_and_v2_to_other_industries():
     assert real["planning"]["industry_limit"]["enabled"] is True
     assert real["planning"]["queue_ahead"] == 400
     assert real["planning"]["v4_queue_ahead"] == 150
-    assert real["pacing"]["daily_limit"] == 100 and real["pacing"]["provider_daily_limit"] == 100
+    assert real["pacing"]["daily_limit"] == 1000 and real["pacing"]["provider_daily_limit"] == 1000
     ids = [str(uuid.uuid4()) for _ in range(40)]
     for ind in ("hvac", "plumbing", "roofing", "HVAC"):
         assert all(sender.copy_arm({"company_id": i, "industry": ind}, real) == cw.V4 for i in ids), ind
