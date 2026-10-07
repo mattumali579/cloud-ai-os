@@ -1,0 +1,33 @@
+campaign: google_reviews_maps_299
+name: Google Reviews + Google Maps Visibility
+offer_key: google_reviews_maps
+price_text: "$299/month"
+copy_source: claude-review-v1
+copy_authority: claude_free
+
+selection:
+  target: 200
+  minimum_score: 7
+  raw_candidate_target: 700
+  industry_priority: [roofing, hvac, plumbing, electrical, med_spa, dentist]
+  require_usable_email: true
+  never_contact_previously_contacted: true
+
+signals:
+  low_rating_at_or_below: 4.4
+  very_low_review_count_below: 35
+  low_review_count_below: 100
+  competitor_gap_ratio: 0.45
+
+copy:
+  first_touch_max_words: 80
+  subject_max_words: 8
+  first_touch_has_link: false
+  cta: Ask permission to send the short personalized video.
+  signature: Matt
+  footer_opt_out: 'If you would rather not hear from me, reply "stop" and I will not email you again.'
+
+sequence:
+  followup_offsets_days: [2, 2, 3]
+  day_mode: calendar
+
