@@ -21,8 +21,8 @@ pacing:
   business_days: [0, 1, 2, 3, 4]  # follow-ups still land Mon-Fri; weekends are send days only
   window_start: "08:00"           # local time; nothing is sent outside the window
   window_end: "17:30"
-  min_gap_seconds: 55             # between two sends - never a burst
-  max_gap_seconds: 110
+  min_gap_seconds: 0              # owner-authorized immediate dispatch
+  max_gap_seconds: 0
   # Owner-authorized campaign ceiling. Provider-side throttles are still handled
   # fail-closed by the transport, but there is no internal 100-message hold.
   daily_limit: 1000

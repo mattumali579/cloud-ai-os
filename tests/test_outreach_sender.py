@@ -526,7 +526,7 @@ def test_checked_in_cap_is_100_from_the_first_sending_day(monkeypatch):
     assert sender.daily_cap(None, real) == 1000
     assert (p["window_start"], p["window_end"], p["send_days"]) == ("08:00", "17:30", [0, 1, 2, 3, 4, 5, 6])
     assert p["business_days"] == [0, 1, 2, 3, 4]
-    assert (p["min_gap_seconds"], p["max_gap_seconds"], p["timezone"]) == (55, 110, "America/Chicago")
+    assert (p["min_gap_seconds"], p["max_gap_seconds"], p["timezone"]) == (0, 0, "America/Chicago")
     central = lambda *a: datetime(*a, tzinfo=sender.ZoneInfo("America/Chicago"))  # noqa: E731
     assert sender.in_window(real, central(2026, 10, 1, 8, 0)) and sender.in_window(real, central(2026, 10, 1, 17, 29))
     assert not sender.in_window(real, central(2026, 10, 1, 7, 59))
