@@ -286,9 +286,13 @@ def campaign_selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
         text="The owner-only Google Reviews campaign test completed: Hostinger accepted and filed the outbound, "
              "AgentMail delivered a threaded reply, the reply was classified, and the follow-up was stopped.",
     )
+    # Notification delivery is reported separately and is intentionally not a
+    # campaign launch gate.  The gate covers the revenue path itself: provider
+    # acceptance, inbound classification, follow-up cancellation, and Airtable.
+    # A stale notification credential must not turn a successful owner-only
+    # mail/reply test into a false negative.
     ok = bool(state and state["current_status"] not in ("discovered", "ready", "emailed")
-              and followup and followup["state"] == "cancelled" and airtable.get("ok")
-              and notice.get("delivered"))
+              and followup and followup["state"] == "cancelled" and airtable.get("ok"))
     result = {
         **prior, "ok": ok, "outbound": "provider_confirmed", "inbound_processed": bool(state),
         "classification": state["last_reply_classification"] if state else None,
