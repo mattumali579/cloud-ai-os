@@ -41,6 +41,23 @@ def test_first_touch_qa_blocks_old_offer_links_and_unsupported_copy():
     assert "link in first touch" in problems
     assert "generic marketing language" in problems
     assert "no verifiable evidence from the lead record" in problems
+    assert "company name missing from body" in problems
+
+
+def test_first_touch_qa_blocks_invented_numbers_speculation_and_review_gating():
+    body = ("Hi there,\n\nAcme Roofing has 31 Google reviews at 4.2 stars. Odds are your happy customers "
+            "just haven't been asked, and a 4.9 would guarantee top-3 placement. Want me to send the video?\n\nMatt")
+    problems = rc.qa_copy("Google reviews", body, lead())
+    assert "unsupported speculative claim" in problems
+    assert "review gating language" in problems
+    assert "unsupported numeric claim" in problems
+
+
+def test_first_touch_qa_accepts_company_digits_but_not_invented_metrics():
+    numbered = lead(company="Roofing 360")
+    good = ("Hi there,\n\nRoofing 360 has 31 Google reviews at 4.2 stars. I recorded a short breakdown "
+            "of the profile. Want me to send the video?\n\nMatt")
+    assert rc.qa_copy("Google reviews", good, numbered) == []
 
 
 def test_footer_is_outside_conversational_body():

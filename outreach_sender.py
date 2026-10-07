@@ -158,7 +158,9 @@ def campaign_selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
     if prior.get("ok"):
         return {**prior, "duplicate": True}
 
-    recipient = (os.environ.get(cfg["agentmail"]["owner_env"]) or "").strip()
+    # The safe test recipient is the explicit owner address when configured;
+    # otherwise the authenticated sender mailbox is itself owner-controlled.
+    recipient = (os.environ.get(cfg["agentmail"]["owner_env"]) or from_email or "").strip()
     if not recipient:
         return {"ok": False, "blocked": f"{cfg['agentmail']['owner_env']} not set"}
     company_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"brightreach:{review_campaign.CAMPAIGN}:selftest"))

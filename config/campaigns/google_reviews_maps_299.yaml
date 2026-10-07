@@ -7,7 +7,8 @@ copy_authority: claude_free
 
 selection:
   target: 200
-  minimum_score: 7
+  preferred_score: 7
+  minimum_score: 4
   raw_candidate_target: 700
   industry_priority: [roofing, hvac, plumbing, electrical, med_spa, dentist]
   require_usable_email: true

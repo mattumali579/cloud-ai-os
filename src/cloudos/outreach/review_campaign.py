@@ -31,6 +31,17 @@ GENERIC = re.compile(
     r"\bgame[- ]changer\b|\bsynerg\w*\b|\bboost your online presence\b",
     re.I,
 )
+UNSUPPORTED = re.compile(
+    r"\bodds are\b|\bjust (?:have not|haven't) been asked\b|\bmust not be asking\b|"
+    r"\bprobably because\b|\busually comes? down to\b|\bgoogle penalizes\b|"
+    r"\bguarantee(?:d|s)?\b|\bwill rank\b|\btop[- ]?3\b",
+    re.I,
+)
+REVIEW_GATING = re.compile(
+    r"\b(?:happy|satisfied) (?:customer|client|patient)s?\b|"
+    r"\bonly (?:ask|request|invite)\w*\b.{0,30}\b(?:happy|satisfied)\b",
+    re.I | re.S,
+)
 
 
 def load_config(path: Path = CAMPAIGN_PATH) -> dict:
@@ -262,9 +273,13 @@ def qa_copy(subject: str, body: str, lead: dict, *, cfg: dict | None = None) -> 
         problems.append("old offer language")
     if GENERIC.search(body):
         problems.append("generic marketing language")
+    if UNSUPPORTED.search(body):
+        problems.append("unsupported speculative claim")
+    if REVIEW_GATING.search(body):
+        problems.append("review gating language")
     if body.count("?") != 1:
         problems.append("must contain exactly one CTA question")
-    if not re.search(r"\b(send|share)\b.{0,35}\b(video|breakdown)\b|\b(video|breakdown)\b.{0,35}\b(send|share)\b", body, re.I | re.S):
+    if not re.search(r"\b(send|sent|share)\b.{0,35}\b(video|breakdown)\b|\b(video|breakdown)\b.{0,35}\b(send|sent|share)\b", body, re.I | re.S):
         problems.append("CTA does not ask permission to send the video")
     if not re.search(r"(?m)^Matt\s*$", body):
         problems.append("not signed as Matt")
@@ -272,6 +287,18 @@ def qa_copy(subject: str, body: str, lead: dict, *, cfg: dict | None = None) -> 
     evidence_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", evidence))
     if evidence_numbers and not any(re.search(rf"\b{re.escape(n)}\b", body) for n in evidence_numbers):
         problems.append("no verifiable evidence from the lead record")
+    allowed_numbers = evidence_numbers | set(re.findall(r"\b\d+(?:\.\d+)?\b", lead.get("company") or ""))
+    body_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", body))
+    if body_numbers - allowed_numbers:
+        problems.append("unsupported numeric claim")
+    company = (lead.get("company") or "").strip()
+    company_tokens = re.findall(r"[a-z0-9]+", company.casefold())
+    body_normalized = " ".join(re.findall(r"[a-z0-9]+", body.casefold()))
+    # Claude may reasonably omit a legal suffix or shorten a long trading name,
+    # but the first distinctive part must still identify the intended business.
+    company_anchor = " ".join(company_tokens[: min(2, len(company_tokens))])
+    if company_anchor and company_anchor not in body_normalized:
+        problems.append("company name missing from body")
     return problems
 
 
