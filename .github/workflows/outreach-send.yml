@@ -30,7 +30,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: outreach-send
+  group: outreach-send-immediate-v2
   cancel-in-progress: false
 
 jobs:
