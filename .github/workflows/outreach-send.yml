@@ -24,7 +24,7 @@ on:
         required: true
         default: cycle
         type: choice
-        options: [cycle, status, selftest, agentmail-selftest, airtable-selftest, queue-audit, trade-count]
+        options: [cycle, campaign-selftest, status, selftest, agentmail-selftest, airtable-selftest, queue-audit, trade-count]
 
 permissions:
   contents: read
