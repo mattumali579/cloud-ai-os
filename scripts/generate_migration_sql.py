@@ -13,22 +13,57 @@ with db.get_conn() as conn:
     q_rows = conn.execute("SELECT * FROM outreach_queue WHERE campaign = 'google_reviews_maps_299' ORDER BY queue_id").fetchall()
     c_rows = conn.execute("SELECT * FROM outreach_campaign_copy WHERE campaign = 'google_reviews_maps_299' ORDER BY company_id").fetchall()
     comp_ids = [r["company_id"] for r in q_rows]
-    comps = conn.execute("SELECT company_id, personalization, qualification_status, outreach_status FROM companies WHERE company_id = ANY(%s)", (comp_ids,)).fetchall()
+    comps = conn.execute("SELECT * FROM companies WHERE company_id = ANY(%s)", (comp_ids,)).fetchall()
+    contacts = conn.execute("SELECT * FROM contacts WHERE company_id = ANY(%s)", (comp_ids,)).fetchall()
 
     lines = []
     lines.append("-- 013_seed_review_campaign_291.sql")
-    lines.append("-- Populate approved Hormozi Google Reviews / Maps copy and queue 291 verified leads.")
+    lines.append("-- Populate verified companies, contacts, approved Hormozi Google Reviews / Maps copy and 291 queued leads.")
     lines.append("")
 
-    # Update company personalizations
+    # Upsert companies
+    lines.append("-- Upsert companies")
     for comp in comps:
         cid = comp["company_id"]
-        pers_json = json.dumps(comp["personalization"])
+        cname = sql_escape(comp["company_name"])
+        nname = sql_escape(comp["normalized_name"])
+        dom = sql_escape(comp["domain"])
+        ndom = sql_escape(comp["normalized_domain"])
+        web = sql_escape(comp["website"])
+        ind = sql_escape(comp["industry"])
+        city = sql_escape(comp["city"])
+        state = sql_escape(comp["state"])
+        cntry = sql_escape(comp["country"])
+        ph = sql_escape(comp["phone"])
+        nph = sql_escape(comp["normalized_phone"])
+        source = sql_escape(comp["discovery_source"])
+        qstatus = sql_escape(comp["qualification_status"])
+        qreason = sql_escape(comp["qualification_reason"])
+        ostatus = sql_escape(comp["outreach_status"])
+        pers_json = sql_escape(json.dumps(comp["personalization"]))
+        active = "true" if comp["active"] else "false"
+
         lines.append(
-            f"UPDATE companies SET personalization = {sql_escape(pers_json)}::jsonb, "
-            f"qualification_status = {sql_escape(comp['qualification_status'])}, "
-            f"outreach_status = {sql_escape(comp['outreach_status'])}, updated_at = now() "
-            f"WHERE company_id = '{cid}'::uuid;"
+            f"INSERT INTO companies (company_id, company_name, normalized_name, domain, normalized_domain, website, industry, city, state, country, phone, normalized_phone, discovery_source, qualification_status, qualification_reason, personalization, outreach_status, active, updated_at) "
+            f"VALUES ('{cid}'::uuid, {cname}, {nname}, {dom}, {ndom}, {web}, {ind}, {city}, {state}, {cntry}, {ph}, {nph}, {source}, {qstatus}, {qreason}, {pers_json}::jsonb, {ostatus}, {active}, now()) "
+            f"ON CONFLICT (company_id) DO UPDATE SET personalization = EXCLUDED.personalization, qualification_status = EXCLUDED.qualification_status, outreach_status = EXCLUDED.outreach_status, active = EXCLUDED.active, updated_at = now();"
+        )
+    lines.append("")
+
+    # Upsert contacts
+    lines.append("-- Upsert contacts")
+    for ct in contacts:
+        ctid = ct["contact_id"]
+        cid = ct["company_id"]
+        em = sql_escape(ct["email"])
+        estatus = sql_escape(ct["email_status"])
+        role = sql_escape(ct["role"])
+        src = sql_escape(ct["source"])
+        srcurl = sql_escape(ct["source_url"])
+        lines.append(
+            f"INSERT INTO contacts (contact_id, company_id, email, email_status, role, source, source_url) "
+            f"VALUES ('{ctid}'::uuid, '{cid}'::uuid, {em}, {estatus}, {role}, {src}, {srcurl}) "
+            f"ON CONFLICT (contact_id) DO UPDATE SET email_status = EXCLUDED.email_status;"
         )
     lines.append("")
 
