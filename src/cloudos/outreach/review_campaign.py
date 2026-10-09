@@ -410,6 +410,13 @@ def approved_count(conn) -> int:
 def queue_approved(conn, *, postal_address: str, limit: int | None = None) -> dict:
     if not postal_address.strip():
         return {"queued": 0, "stopped": "SENDER_POSTAL_ADDRESS is not set - nothing prepared"}
+    conn.execute(
+        """
+        DELETE FROM outreach_queue
+        WHERE campaign = %s AND state = 'cancelled'
+        """,
+        (CAMPAIGN,),
+    )
     if approved_count(conn) < 50:
         auto_prepare_campaign(conn, limit=limit)
     rows = conn.execute(
@@ -422,7 +429,10 @@ def queue_approved(conn, *, postal_address: str, limit: int | None = None) -> di
         ) ct ON true
         WHERE cc.campaign=%s AND cc.step=0 AND cc.qa_passed_at IS NOT NULL
           AND c.first_contacted_at IS NULL AND c.active
-          AND NOT EXISTS (SELECT 1 FROM outreach_queue q WHERE q.company_id=cc.company_id)
+          AND NOT EXISTS (
+              SELECT 1 FROM outreach_queue q
+              WHERE q.company_id=cc.company_id AND q.state IN ('sent', 'queued', 'claimed')
+          )
         ORDER BY (cc.evidence->>'score')::int DESC NULLS LAST, cc.updated_at
         LIMIT %s
         """, (CAMPAIGN, limit or 1000000)).fetchall()

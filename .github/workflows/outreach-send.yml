@@ -12,7 +12,7 @@ on:
     branches: [master]
     paths:
       - 'config/campaigns/google_reviews_maps_299.yaml'
-      - 'db/migrations/011_google_reviews_campaign.sql'
+      - 'db/migrations/**'
       - 'src/cloudos/outreach/review_campaign.py'
       - 'outreach_sender.py'
   schedule:
