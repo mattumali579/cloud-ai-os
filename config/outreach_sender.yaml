@@ -21,8 +21,9 @@ pacing:
   business_days: [0, 1, 2, 3, 4]  # follow-ups still land Mon-Fri; weekends are send days only
   window_start: "00:00"           # local time; runs throughout the day
   window_end: "23:59"
-  min_gap_seconds: 55             # between two sends - never a burst
-  max_gap_seconds: 110
+  min_gap_seconds: 14             # paced for 30 emails per 10 minutes (~17s avg gap)
+  max_gap_seconds: 20
+  cycle_limit: 30                 # strict cap of 30 sends per 10-minute cycle run
   # Sends allowed per rolling 24 h, the same from the first sending day (no warm-up ramp).
   daily_limit: 300
   # Hostinger's own per-mailbox cap (rolling 24 h): trial/free email = 100,

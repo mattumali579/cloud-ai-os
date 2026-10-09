@@ -686,7 +686,11 @@ def run(conn, mailbox: Mailbox, cfg: dict, *, from_email: str, minutes: float, f
              "sent_24h_before": sent_last_24h(conn), "in_window": in_window(cfg, now())}
     if not stats["in_window"]:
         return stats
+    cycle_cap = int((cfg.get("pacing") or {}).get("cycle_limit", 30))
     while clock() < deadline:
+        if stats["sent"] >= cycle_cap:
+            stats["stopped"] = f"cycle limit reached ({cycle_cap})"
+            break
         if sent_last_24h(conn) >= stats["cap"]:
             stats["stopped"] = "daily cap reached"
             break
