@@ -215,19 +215,18 @@ def qualify(conn, cfg: dict | None = None) -> dict:
     scored.sort(key=lambda item: (-item[1].value, order.get(item[0]["industry"], 999), item[0]["company_name"].lower()))
     minimum = int(selection["minimum_score"])
     chosen = [(row, s) for row, s in scored if s.value >= minimum][: int(selection["target"])]
-    chosen_ids = {row["company_id"] for row, _ in chosen}
-    for row, s in scored:
+    for row, s in chosen:
         payload = {
-            "campaign": CAMPAIGN, "selected": row["company_id"] in chosen_ids, "score": s.value,
+            "campaign": CAMPAIGN, "selected": True, "score": s.value,
             "strongest_signal": s.strongest_signal, "exact_evidence": s.exact_evidence,
             "competitor_context": s.competitor_context, "email_hook": s.email_hook, "source": s.source,
         }
         conn.execute(
             "UPDATE companies SET personalization = jsonb_set(personalization, '{review_campaign}', %s::jsonb, true), "
             "qualification_status = CASE WHEN %s >= 8 THEN 'HIGH' WHEN %s >= %s THEN 'MEDIUM' ELSE qualification_status END, "
-            "outreach_status = CASE WHEN %s THEN 'outreach_ready' ELSE outreach_status END, updated_at = now() "
+            "outreach_status = 'outreach_ready', updated_at = now() "
             "WHERE company_id = %s::uuid",
-            (json.dumps(payload), s.value, s.value, minimum, row["company_id"] in chosen_ids, row["company_id"]),
+            (json.dumps(payload), s.value, s.value, minimum, row["company_id"]),
         )
     conn.commit()
     return {
