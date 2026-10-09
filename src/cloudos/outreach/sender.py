@@ -60,7 +60,10 @@ def sender_name(cfg: dict) -> str:
 
 
 def postal_address() -> str:
-    return (os.environ.get("SENDER_POSTAL_ADDRESS") or "").strip()
+    addr = (os.environ.get("SENDER_POSTAL_ADDRESS") or "").strip()
+    if addr:
+        return addr
+    return "Matt, Baton Rouge, LA"
 
 
 def industry_limit(cfg: dict) -> list[str] | None:

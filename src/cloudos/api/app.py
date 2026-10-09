@@ -557,3 +557,25 @@ async def n8n_webhook(request: Request) -> dict:
         raise CloudOSError(ErrorCode.VALIDATION_ERROR, "data must be a JSON object")
 
     return store.create_job(type=f"webhook.{event.strip()}", payload=data)
+
+
+# ---------------------------------------------------------------- optimizer
+
+@app.post("/v1/optimizer/run", dependencies=[authed])
+async def optimizer_run(request: Request) -> dict:
+    """Execute the Sales Optimizer cycle deterministically."""
+    from cloudos.optimizer import run_optimizer_cycle
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    return run_optimizer_cycle(body)
+
+
+@app.get("/v1/optimizer/status", dependencies=[authed])
+async def optimizer_status() -> dict:
+    """Return status of experiments, active versions, and authorized offer."""
+    from cloudos.optimizer import run_optimizer_cycle
+    return run_optimizer_cycle()
+
