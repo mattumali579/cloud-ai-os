@@ -1,0 +1,22 @@
+# Overnight results
+
+- Fixed `scripts/system-status.ps1`: a standard Windows account that cannot inspect Docker or other processes now reports `UNAVAILABLE`/`UNKNOWN` and `PARTIAL` instead of falsely declaring the healthy API and n8n stack down. Verified actual output against live `:8080` and `:5679`; host-worker tests pass 6/6.
+- Verified live local services: agent API `GET /healthz` returned `{"status":"ok","db":true}`; n8n `GET :5679/healthz` returned `{"status":"ok"}`.
+- Verified canonical BrightReach lead state: 366 unique companies; 101 outreach-ready (64 HIGH, 37 MEDIUM); zero provider-send queue rows. No outreach was sent.
+- Ran the complete Python suite using a workspace test base: 634 passed, 128 skipped. The 4 failures and 13 setup errors require intentionally absent private job-applicant files under `data/`; no production/lead-system regression was found.
+- Verified Missed-Call Text-Back core engine: all 24 engine behavior/safety tests passed, including STOP suppression, owner SMS caps, review safety, and health alerts. Linux-only upgrade tests cannot execute on Windows because their simulator requires Linux `sudo` and shell execution.
+- Verified the installed Missed-Call Text-Back runtime over n8n: `GET /webhook/mctb-health` returned HTTP 200 with `{"ok":true,"db":"ok","version":"mctb-engine-1"}`. Its live schema has one active demo tenant, six recorded suppressions, and no waiting outbound texts (two historical queue rows are sent).
+- Verified recovery artifacts: five `mctb` backups exist in `C:\mctb-backups`; the newest is a 158,799-byte UTF-8 PostgreSQL 16.15 schema dump from 2026-10-04 04:30 and includes the `mctb` schema, tenant/suppression constraints, and pg_dump completion marker.
+- Verified BrightReach lead-engine and sender entrypoint tests: 40/40 passed.
+- Verified database reliability: all migrations `001` through `010` are applied; no jobs are stuck running; no undelivered notifications exist; the only queued job is the scheduled `retention.prune` job for 03:00 UTC.
+- Verified core API/worker behavior: 117 tests passed (8 integration skips). Submitted authenticated live noop job `811b3da3-d1aa-44da-8ae9-ce70056c7a89`; the host worker completed it successfully.
+- Audited the BrightReach reply/status layer: 109 reply, reporting, status, and queue-audit tests passed; live database status has no provider-confirmed sends, replies, pending owner-review items, or stale alerts. The feedback report correctly withholds performance recommendations until real sends/replies exist.
+- Verified the Cloudflare ingress layer: all 51 HMAC-authentication, proxy, health-cron, and GitHub-watchdog tests passed. Privacy/secret guard tests also pass 49/49; `git diff --check` found no whitespace errors.
+- Verified the remaining automation safety layers: 215 email-alert, outbox/transport, routing, and privacy tests passed without enabling paid inference or sending mail.
+- Verified revenue scheduling, retention, and outreach safety code: 26 tests passed; 74 credential/provider-dependent cases were correctly skipped. No sender was invoked.
+- Verified BrightReach flow/API and employee, Discord, and media-adapter integration contracts: 19 tests passed.
+- Reset the OSM lead source and tested it; its free external endpoints remain unreliable from this host (primary endpoint responds, alternates time out), so the source is at 1 consecutive failure. Google Maps discovery remains benched because `GMAPS_SCRAPER_URL` is not configured locally.
+- Verified a handoff dry-run: it safely skipped because Airtable credentials are not configured on this host; therefore none of the 101 verified ready leads can be moved to the sender tray locally. No records were created and no outreach was sent.
+- Blocker: Windows Time (`W32Time`) is stopped/manual. Time correction requires Windows elevation, so it was not changed. This can affect quiet-hours and scheduled follow-up timing.
+- Blocker: GitHub CLI is absent, its Windows package-manager install is inaccessible, and no `GITHUB_TOKEN`/`GH_TOKEN` is present; the scheduled cloud workflow is the remaining free discovery path but cannot be manually dispatched from this host.
+- Next useful action: restore this host's Airtable credentials and GitHub authentication (or wait for the scheduled free-runner cycle), then sync the verified ready inventory to Airtable without sending.

@@ -1,6 +1,8 @@
 """Lead engine pure-logic tests (no network, no database)."""
 from __future__ import annotations
 
+import pytest
+
 from cloudos.leadgen.enrich import EmailFinding, Enrichment, extract_emails, rank_emails
 from cloudos.leadgen.normalize import (
     city_state_from_address,
@@ -10,7 +12,7 @@ from cloudos.leadgen.normalize import (
     normalize_phone,
 )
 from cloudos.leadgen.qualify import qualify
-from cloudos.leadgen.sources import GoogleMapsSource, _matches
+from cloudos.leadgen.sources import GoogleMapsSource, OSMSource, SourceError, _matches
 
 CHAINS = ["anytime fitness", "aspen dental", "roto-rooter"]
 
@@ -105,6 +107,13 @@ def test_osm_filter_matching():
     assert _matches({"craft": "roofer", "website": "x"}, '["craft"="roofer"]')
     assert not _matches({"craft": "plumber"}, '["craft"="roofer"]')
     assert _matches({"shop": "beauty", "beauty": "laser;skin"}, '["shop"="beauty"]["beauty"~"spa|skin|laser"]')
+
+
+def test_overpass_refuses_to_start_after_the_discovery_deadline(monkeypatch):
+    source = OSMSource()
+    monkeypatch.setattr("cloudos.leadgen.sources.time.time", lambda: 100.0)
+    with pytest.raises(SourceError, match="time budget exhausted"):
+        source._overpass("[out:json];", 0, deadline=100.0)
 
 
 def test_maps_csv_parsing():

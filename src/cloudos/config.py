@@ -175,6 +175,26 @@ class Settings:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     load_dotenv(REPO_ROOT / ".env", override=False)
+    # SMTP_* is a complete fallback mailbox.  Do not let a Hostinger host or
+    # port left in a local .env shadow it when the corresponding Hostinger
+    # credentials are blank (a common partially-configured migration state).
+    # Choosing the endpoint together with its credential pair prevents, for
+    # example, authenticating to SMTP_HOST on Hostinger's implicit-TLS port.
+    hostinger_user = _first_str("HOSTINGER_SMTP_USERNAME")
+    hostinger_password = _first_str("HOSTINGER_SMTP_PASSWORD")
+    use_hostinger_mailbox = bool(hostinger_user and hostinger_password)
+    smtp_host = (
+        _first_str("HOSTINGER_SMTP_HOST", default="smtp.hostinger.com")
+        if use_hostinger_mailbox
+        else _first_str("SMTP_HOST", default="smtp.hostinger.com")
+    )
+    smtp_port = (
+        _first_int("HOSTINGER_SMTP_PORT", default=465)
+        if use_hostinger_mailbox
+        else _first_int("SMTP_PORT", default=465)
+    )
+    smtp_username = hostinger_user if use_hostinger_mailbox else _first_str("SMTP_USER")
+    smtp_password = hostinger_password if use_hostinger_mailbox else _first_str("SMTP_PASS")
     return Settings(
         environment=_str("ENVIRONMENT", "local"),
         instance_name=_str("INSTANCE_NAME", "cloudos-local"),
@@ -219,10 +239,10 @@ def get_settings() -> Settings:
         # Hostinger is the intended mailbox. The generic SMTP_* names are read as a
         # fallback so an already-working mailbox keeps sending while Hostinger
         # credentials are not yet in place.
-        hostinger_smtp_host=_first_str("HOSTINGER_SMTP_HOST", "SMTP_HOST", default="smtp.hostinger.com"),
-        hostinger_smtp_port=_first_int("HOSTINGER_SMTP_PORT", "SMTP_PORT", default=465),
-        hostinger_smtp_username=_first_str("HOSTINGER_SMTP_USERNAME", "SMTP_USER"),
-        hostinger_smtp_password=_first_str("HOSTINGER_SMTP_PASSWORD", "SMTP_PASS"),
+        hostinger_smtp_host=smtp_host,
+        hostinger_smtp_port=smtp_port,
+        hostinger_smtp_username=smtp_username,
+        hostinger_smtp_password=smtp_password,
         email_from_name=_first_str("EMAIL_FROM_NAME", "SMTP_FROM_NAME"),
         email_from_address=_first_str("EMAIL_FROM_ADDRESS", "SMTP_FROM_EMAIL"),
         email_send_enabled=_bool("EMAIL_SEND_ENABLED", False),

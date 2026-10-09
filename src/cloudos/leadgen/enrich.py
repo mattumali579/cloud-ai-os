@@ -130,7 +130,14 @@ def rank_emails(emails: list[str], site_domain: str) -> list[tuple[str, str]]:
     ranked: list[tuple[int, str, str]] = []
     for email in emails:
         dom = email_domain(email)
-        is_own = own and registrable_domain(dom) == own
+        reg_dom = registrable_domain(dom)
+        is_own = bool(
+            own and (
+                reg_dom == own
+                or reg_dom.replace("-", "") == own.replace("-", "")
+                or reg_dom.split(".")[0] == own.split(".")[0]
+            )
+        )
         if not is_own and dom not in FREEMAIL:
             continue
         local = email.partition("@")[0]

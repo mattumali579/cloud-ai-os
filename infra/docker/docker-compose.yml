@@ -1,4 +1,4 @@
-﻿# Cloud AI OS â€” LOCAL Phase 1 stack (ARCHITECTURE.md Â§14, Â§15 P1).
+# Cloud AI OS â€” LOCAL Phase 1 stack (ARCHITECTURE.md Â§14, Â§15 P1).
 # db + agent-api + worker + n8n. Local postgres â€” on Oracle, Supabase is the DB
 # (see docker-compose.oracle.yml).
 #
@@ -94,6 +94,7 @@ services:
     mem_limit: 1g
 
   n8n:
+    restart: unless-stopped
     image: docker.n8n.io/n8nio/n8n
     ports:
       - "5679:5678"   # host 5679: 5678 is commonly taken by other local n8n instances
@@ -113,9 +114,43 @@ services:
       AGENT_API_TOKEN: "${AGENT_API_TOKEN}"
     volumes:
       - n8n-data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
     mem_limit: 768m
+
+  research-engine:
+    restart: unless-stopped
+    image: cloudos-research:dev
+    command: ["python", "-m", "research.service"]
+    ports:
+      - "5055:5055"
+    environment:
+      DATABASE_URL: postgresql://cloudos:cloudos@db:5432/cloudos
+      PYTHONPATH: /workspace
+      RESEARCH_BASE_DIR: /workspace/data/ONLINE_MONEY_RESEARCH
+      HOME: /home/cloudos
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ../..
+        target: /workspace
+      - type: bind
+        source: ${USERPROFILE}/.gemini
+        target: /home/cloudos/.gemini
+      - type: bind
+        source: ${USERPROFILE}/.gemini/antigravity/scratch/ONLINE_MONEY_RESEARCH
+        target: /workspace/data/ONLINE_MONEY_RESEARCH
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
 
 volumes:
   db-data:
   n8n-data:
   job-resumes:
+

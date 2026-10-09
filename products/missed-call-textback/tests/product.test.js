@@ -160,6 +160,12 @@ test('postgres queries use the column alias real n8n returns', () => {
     });
   });
   assert.equal(count, 19);
+  assert.equal(workflows.voice.nodes.find((node) => node.name === 'Load Voice Context').parameters.options.queryReplacement,
+    '={{ [ $json.to_e164, $json.from_e164, $json.call_sid ] }}');
+  assert.equal(workflows.dial.nodes.find((node) => node.name === 'Load Dial Context').parameters.options.queryReplacement,
+    '={{ [ $json.to_e164, $json.from_e164, $json.call_sid ] }}');
+  assert.equal(workflows.sms.nodes.find((node) => node.name === 'Load SMS Context').parameters.options.queryReplacement,
+    '={{ [ $json.to_e164, $json.from_e164 ] }}');
   const helper = fs.readFileSync(path.join(root, 'scripts/setup_tenant.ps1'), 'utf8');
   assert.match(helper, /docker exec/);
   assert.match(helper, /mctb\.tenants/);

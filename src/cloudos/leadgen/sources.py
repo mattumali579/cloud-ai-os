@@ -70,24 +70,46 @@ class OSMSource(Source):
         return [{"query": f"osm all-industries around {loc['city']}, {loc['state']}", "location": f"{loc['city']}, {loc['state']}",
                  "industry": "*", "loc": loc} for loc in cfg["locations"]]
 
-    def _overpass(self, ql: str, min_interval: float) -> dict:
+    def _overpass(self, ql: str, min_interval: float, deadline: float | None = None) -> dict:
+        """Fetch one Overpass result without running past the enclosing refill.
+
+        A failed endpoint used to spend up to 120 seconds per retry plus an
+        exponential sleep.  Across the fallback endpoints that could outlive
+        the engine's configured ``max_minutes`` and leave its worker occupied.
+        ``deadline`` makes each request and backoff consume only the time the
+        caller actually budgeted for discovery.
+        """
         wait = min_interval - (time.time() - self._last_call)
         if wait > 0:
-            time.sleep(wait)
+            if deadline is not None:
+                wait = min(wait, max(0.0, deadline - time.time()))
+            if wait:
+                time.sleep(wait)
         errors = []
         for attempt, endpoint in enumerate(OVERPASS_ENDPOINTS * 2):
+            remaining = (deadline - time.time()) if deadline is not None else 120.0
+            if remaining <= 0:
+                raise SourceError("overpass skipped: discovery time budget exhausted")
             try:
                 self._last_call = time.time()
-                resp = httpx.post(endpoint, data={"data": ql}, headers=UA, timeout=120)
+                resp = httpx.post(endpoint, data={"data": ql}, headers=UA, timeout=max(1.0, min(120.0, remaining)))
                 if resp.status_code in (429, 502, 503, 504):
                     errors.append(f"{endpoint.split('/')[2]} {resp.status_code}")
-                    time.sleep(min(60, 5 * 2 ** attempt))
+                    backoff = min(60, 5 * 2 ** attempt)
+                    if deadline is not None:
+                        backoff = min(backoff, max(0.0, deadline - time.time()))
+                    if backoff:
+                        time.sleep(backoff)
                     continue
                 resp.raise_for_status()
                 return resp.json()
             except (httpx.HTTPError, ValueError) as exc:
                 errors.append(f"{endpoint.split('/')[2]} {type(exc).__name__}")
-                time.sleep(min(60, 5 * 2 ** attempt))
+                backoff = min(60, 5 * 2 ** attempt)
+                if deadline is not None:
+                    backoff = min(backoff, max(0.0, deadline - time.time()))
+                if backoff:
+                    time.sleep(backoff)
         raise SourceError("overpass unavailable: " + "; ".join(errors[-4:]))
 
     def search(self, q: dict, cfg: dict) -> list[Candidate]:
@@ -100,7 +122,7 @@ class OSMSource(Source):
                 for wkey in ("website", "contact:website", "url"):
                     parts.append(f'nwr(around:{radius},{loc["lat"]},{loc["lon"]}){flt}["{wkey}"];')
         ql = f"[out:json][timeout:90];({''.join(parts)});out tags center;"
-        data = self._overpass(ql, float(scfg.get("min_interval_s", 6)))
+        data = self._overpass(ql, float(scfg.get("min_interval_s", 6)), cfg.get("_discovery_deadline"))
         out: list[Candidate] = []
         for el in data.get("elements", []):
             tags = el.get("tags") or {}

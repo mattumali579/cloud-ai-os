@@ -50,7 +50,7 @@
         "operation": "executeQuery",
         "query": "SELECT mctb.load_voice_context($1::text, $2::text, $3::text) AS \"ctx\"",
         "options": {
-          "queryReplacement": "={{ $json.to_e164 }},{{ $json.from_e164 }},{{ $json.call_sid }}"
+          "queryReplacement": "={{ [ $json.to_e164, $json.from_e164, $json.call_sid ] }}"
         }
       },
       "credentials": {

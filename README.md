@@ -10,6 +10,7 @@ optional, paid services are disabled.**
 - Zero-cost audit: [`docs/ZERO_COST_AUDIT.md`](docs/ZERO_COST_AUDIT.md)
 - Failure-mode matrix: [`docs/FAILURE_MODES.md`](docs/FAILURE_MODES.md)
 - Oracle recovery runbook: [`infra/oracle/RUNBOOK.md`](infra/oracle/RUNBOOK.md)
+- Mini PC unattended operations: [`docs/MINI_PC_OPERATIONS.md`](docs/MINI_PC_OPERATIONS.md)
 
 ## Quick start (local, Phase 1)
 

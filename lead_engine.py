@@ -207,7 +207,7 @@ def cmd_requalify(engine: LeadEngine, args) -> int:
     from cloudos.leadgen.qualify import qualify
 
     with db.get_conn() as conn:
-        rows = conn.execute("SELECT company_id, company_name, website, industry, outreach_status, handoff_ref FROM companies WHERE outreach_status IN ('outreach_ready','handed_off') "
+        rows = conn.execute("SELECT company_id, company_name, website, industry, outreach_status, handoff_ref FROM companies WHERE outreach_status IN ('outreach_ready','handed_off','not_ready') "
                             "AND first_contacted_at IS NULL AND NOT is_historical ORDER BY discovered_at LIMIT %s", (args.limit,)).fetchall()
         fetcher = Fetcher()
         try:
@@ -245,12 +245,21 @@ def cmd_requalify(engine: LeadEngine, args) -> int:
     return 0
 
 
+def cmd_batch(_engine, args) -> int:
+    from cloudos.leadgen.pipeline import LeadBatchPipeline
+    pipeline = LeadBatchPipeline(db.get_conn)
+    result = pipeline.run_batch(batch_size=args.size, force=args.force)
+    _print(result)
+    return 0 if result.get("status") in ("completed", "skipped") else 1
+
+
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     p = argparse.ArgumentParser(description="Fresh lead generator")
     sub = p.add_subparsers(dest="cmd", required=True)
+    b = sub.add_parser("batch"); b.add_argument("--size", type=int, default=20); b.add_argument("--force", action="store_true")
     t = sub.add_parser("test"); t.add_argument("--target", type=int, default=10); t.add_argument("--max-minutes", type=float, default=20)
     t.add_argument("--sources", default=""); t.add_argument("--show", type=int, default=10)
     d = sub.add_parser("discover"); d.add_argument("--target", type=int, default=100); d.add_argument("--max-minutes", type=float, default=120)
@@ -267,7 +276,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     db.migrate()
     engine = LeadEngine(db.get_conn)
-    return {"test": cmd_test, "discover": cmd_discover, "status": cmd_status, "cycle": cmd_cycle,
+    return {"batch": cmd_batch, "test": cmd_test, "discover": cmd_discover, "status": cmd_status, "cycle": cmd_cycle,
             "import-history": cmd_import, "handoff": cmd_handoff, "reports": cmd_reports,
             "reset-source": cmd_reset_source, "requalify": cmd_requalify}[args.cmd](engine, args)
 

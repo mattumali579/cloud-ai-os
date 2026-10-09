@@ -6,11 +6,11 @@ copy_source: claude-review-v1
 copy_authority: claude_free
 
 selection:
-  target: 200
+  target: 300
   preferred_score: 7
-  minimum_score: 4
+  minimum_score: 2
   raw_candidate_target: 700
-  industry_priority: [roofing, hvac, plumbing, electrical, med_spa, dentist]
+  industry_priority: [roofing, hvac, plumbing, electrical, remodeling, landscaping, pest_control, painting, cleaning, auto_repair, chiropractor, veterinary, med_spa, dentist]
   require_usable_email: true
   never_contact_previously_contacted: true
 

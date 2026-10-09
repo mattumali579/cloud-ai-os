@@ -20,13 +20,15 @@ pacing:
   send_days: [0, 1, 2, 3, 4, 5, 6]   # Monday..Sunday (same 08:00-17:30 window)
   business_days: [0, 1, 2, 3, 4]  # follow-ups still land Mon-Fri; weekends are send days only
   window_start: "08:00"           # local time; nothing is sent outside the window
-  window_end: "23:59"             # owner-authorized immediate dispatch
-  min_gap_seconds: 0              # owner-authorized immediate dispatch
-  max_gap_seconds: 0
-  # Owner-authorized campaign ceiling. Provider-side throttles are still handled
-  # fail-closed by the transport, but there is no internal 100-message hold.
-  daily_limit: 1000
-  provider_daily_limit: 1000
+  window_end: "23:59"
+  min_gap_seconds: 55             # between two sends - never a burst
+  max_gap_seconds: 110
+  # Sends allowed per rolling 24 h, the same from the first sending day (no warm-up ramp).
+  daily_limit: 300
+  # Hostinger's own per-mailbox cap (rolling 24 h): trial/free email = 100,
+  # Business Starter = 1000 (hostinger.com/support/4625828). The lower of
+  # daily_limit and this cap wins. Override with the HOSTINGER_DAILY_LIMIT secret.
+  provider_daily_limit: 300
   max_attempts: 3                 # transient failures (timeouts, 4xx) before a row is marked failed
 
 sequence:                         # day 0, 2, 4, 7; replies/unsubs/bounces stop it
@@ -36,11 +38,11 @@ sequence:                         # day 0, 2, 4, 7; replies/unsubs/bounces stop 
                   negotiating, won, lost, not_now, do_not_contact, needs_review]
 
 planning:
-  queue_ahead: 200                # all 200 may be prepared; the sender still paces at its verified cap
+  queue_ahead: 300                # up to 300 prepared; the sender still paces at its verified cap
   v4_queue_ahead: 0               # old missed-call copy is disabled for this campaign
   industry_limit:                 # prepare NEW first touches only for these industries
     enabled: true                 # trades only; already-queued other industries are left as they are
-    industries: [roofing, hvac, plumbing, electrical, med_spa, dentist]
+    industries: [roofing, hvac, plumbing, electrical, remodeling, landscaping, pest_control, painting, cleaning, auto_repair, chiropractor, veterinary, med_spa, dentist]
 
 experiment:                       # first-touch copy arms. One hash bucket: [0,v4_share) v4, then v3_share v3, rest v2
   v4_share: 0.0                   # old missed-call copy remains in code for its product, but is off here

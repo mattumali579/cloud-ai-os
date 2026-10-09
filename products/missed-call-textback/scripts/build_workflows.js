@@ -220,7 +220,7 @@ function voiceLike(options) {
   graph.add(postgres(
     options.loadName,
     options.loadQuery,
-    '={{ $json.to_e164 }},{{ $json.from_e164 }},{{ $json.call_sid }}',
+    '={{ [ $json.to_e164, $json.from_e164, $json.call_sid ] }}',
     'Loads the tenant for this Twilio number. Phones are already normalized, so they contain no commas.'
   ));
   graph.add(code(options.decideName, options.decideTail, options.decideNotes));
@@ -341,7 +341,7 @@ smsGraph.add(code('Normalize SMS', NORMALIZE, 'Normalizes the inbound SMS.'));
 smsGraph.add(postgres(
   'Load SMS Context',
   selectAs('mctb.load_sms_context($1::text, $2::text)', 'ctx'),
-  '={{ $json.to_e164 }},{{ $json.from_e164 }}',
+  '={{ [ $json.to_e164, $json.from_e164 ] }}',
   'Tenant, conversation, suppression, open estimate, and rate-limit counts.'
 ));
 smsGraph.add(code('Decide SMS', `

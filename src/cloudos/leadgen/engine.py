@@ -209,6 +209,10 @@ class LeadEngine:
         source is exhausted/benched."""
         stats = RunStats()
         deadline = time.time() + max_minutes * 60
+        # Sources keep their existing two-argument public interface, so share
+        # this per-run deadline through the in-memory configuration.  It is
+        # removed below and is never written to the YAML file.
+        self.cfg["_discovery_deadline"] = deadline
         active = [s for s in (sources or list(self.sources)) if s in self.sources]
         fetcher = Fetcher(timeout=float(self.cfg["run"].get("http_timeout", 12)),
                           max_pages=int(self.cfg["run"].get("max_pages_per_site", 4)))
@@ -276,6 +280,7 @@ class LeadEngine:
                     if not progressed and all(s in exhausted for s in active):
                         break
         finally:
+            self.cfg.pop("_discovery_deadline", None)
             fetcher.close()
         return stats
 

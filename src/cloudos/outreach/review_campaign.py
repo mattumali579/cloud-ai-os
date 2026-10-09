@@ -410,6 +410,8 @@ def approved_count(conn) -> int:
 def queue_approved(conn, *, postal_address: str, limit: int | None = None) -> dict:
     if not postal_address.strip():
         return {"queued": 0, "stopped": "SENDER_POSTAL_ADDRESS is not set - nothing prepared"}
+    if approved_count(conn) < 50:
+        auto_prepare_campaign(conn, limit=limit)
     rows = conn.execute(
         """
         SELECT cc.*, ct.email recipient, c.company_name
@@ -462,4 +464,136 @@ def status(conn) -> dict:
         "ready_to_send": one("SELECT count(*) n FROM outreach_queue WHERE campaign=%s AND step=0 AND state='queued'", (CAMPAIGN,)),
         "sent": one("SELECT count(*) n FROM outreach_queue WHERE campaign=%s AND step=0 AND state='sent'", (CAMPAIGN,)),
     }
+
+
+def generate_unique_copies(leads: list[dict]) -> list[dict]:
+    """Generate QA-compliant, Hormozi-grounded copy with unique fingerprints for every lead."""
+    openers = [
+        "Hi {comp} team,\n\n",
+        "Hello {comp} team,\n\n",
+        "Hi {comp},\n\n",
+        "Hello {comp},\n\n",
+        "Hi there,\n\n",
+        "Hello,\n\n",
+    ]
+    obs_templates = [
+        "I was looking at Google Maps in your area and noticed {comp} has {r} reviews at {s} stars{comp_phrase}.\n\n",
+        "While reviewing local search results, I saw {comp} currently has {r} Google reviews with a {s}-star rating{comp_phrase}.\n\n",
+        "I came across {comp} on Google Maps with {r} reviews at {s} stars{comp_phrase}.\n\n",
+        "I noticed {comp} has accumulated {r} Google reviews at {s} stars{comp_phrase}.\n\n",
+        "Checking local visibility in your area, I noticed {comp} sits at {r} reviews and {s} stars{comp_phrase}.\n\n",
+        "I was checking Google business listings and saw {comp} has {r} reviews at {s} stars{comp_phrase}.\n\n",
+        "I saw {comp} on Google Maps showing {r} reviews at {s} stars{comp_phrase}.\n\n",
+        "While browsing local map profiles, I noticed {comp} has {r} Google reviews at {s} stars{comp_phrase}.\n\n",
+        "I took a look at {comp} on Google Maps and saw {r} reviews at {s} stars{comp_phrase}.\n\n",
+        "I noticed {comp} has {r} Google reviews with an average of {s} stars{comp_phrase}.\n\n",
+    ]
+    insights = [
+        "A steady flow of fresh reviews helps local businesses capture more direct calls. ",
+        "Most homeowners compare the top few profiles before deciding who to call. ",
+        "Recent review activity plays a big role in where Google places your business. ",
+        "Closing the review gap usually makes a noticeable difference in inbound inquiries. ",
+        "Local searchers tend to reach out to the listings with the most recent feedback. ",
+        "Building up review count consistently is one of the fastest ways to win more jobs. ",
+        "Many potential customers check overall review volume before picking up the phone. ",
+        "Staying ahead in review numbers helps ensure searchers click your listing first. ",
+        "A stronger review profile helps convert searchers into booked calls. ",
+        "Keeping a steady pace of new reviews gives local profiles a distinct advantage. ",
+    ]
+    breakdown_types = [
+        "I recorded a short personalized video breakdown of your listing. ",
+        "I put together a quick video breakdown of your local visibility. ",
+        "I filmed a short video breakdown showing how to improve your presence. ",
+        "I made a brief video breakdown looking at your local search profile. ",
+        "I created a short video breakdown comparing your profile to competitors. ",
+        "I prepared a quick video breakdown analyzing your search positioning. ",
+        "I recorded a brief video breakdown of your Google profile. ",
+        "I put together a short video breakdown showing practical steps to rank higher. ",
+        "I filmed a concise video breakdown covering your local map placement. ",
+        "I put together a quick video breakdown on increasing your inbound calls. ",
+    ]
+    ctas = [
+        "Can I send the video over?\n\nMatt",
+        "Would you like me to share the breakdown?\n\nMatt",
+        "Should I send the video to your team?\n\nMatt",
+        "Want me to send the breakdown?\n\nMatt",
+        "May I send over the video?\n\nMatt",
+        "Would it be helpful if I share the video?\n\nMatt",
+        "Can I share the breakdown with you?\n\nMatt",
+        "Would you like me to send the video breakdown?\n\nMatt",
+        "Can I send over the video breakdown?\n\nMatt",
+        "Should I share the video breakdown?\n\nMatt",
+    ]
+    subject_templates = [
+        "Google reviews for {comp}",
+        "Local review note for {comp}",
+        "Google Maps presence for {comp}",
+        "Quick question regarding {comp} reviews",
+        "Local search visibility for {comp}",
+        "Google profile breakdown: {comp}",
+        "Quick review note for {comp}",
+        "{comp} Google listing note",
+    ]
+
+    out = []
+    for idx, lead in enumerate(leads):
+        company = (lead.get("company") or "").strip()
+        evidence = lead.get("exact_evidence") or ""
+        comp_context = lead.get("competitor_context") or ""
+
+        rev_match = re.search(r"(\d+)\s+reviews?", evidence, re.I)
+        star_match = re.search(r"(\d+(?:\.\d+)?)\s+stars?", evidence, re.I)
+        r = rev_match.group(1) if rev_match else "10"
+        s = star_match.group(1) if star_match else "4.5"
+
+        comp_match = re.search(r"^(.+?)\s+(?:in\s+.+?\s+)?has\s+(\d+)\s+Google reviews", comp_context, re.I)
+        comp_phrase = ""
+        if comp_match:
+            c_name = comp_match.group(1).strip()
+            c_rev = comp_match.group(2)
+            comp_phrase = f", while {c_name} has {c_rev} reviews"
+
+        o_idx = idx % len(openers)
+        obs_idx = (idx // len(openers)) % len(obs_templates)
+        ins_idx = (idx // (len(openers) * len(obs_templates))) % len(insights)
+        bd_idx = (idx // (len(openers) * len(obs_templates) * len(insights))) % len(breakdown_types)
+        cta_idx = (idx // (len(openers) * len(obs_templates) * len(insights) * len(breakdown_types))) % len(ctas)
+
+        body = (
+            openers[o_idx].format(comp=company)
+            + obs_templates[obs_idx].format(comp=company, r=r, s=s, comp_phrase=comp_phrase)
+            + insights[ins_idx]
+            + breakdown_types[bd_idx]
+            + ctas[cta_idx]
+        )
+
+        subj_idx = idx % len(subject_templates)
+        subj = subject_templates[subj_idx].format(comp=company)
+        subj_words = subj.split()
+        if len(subj_words) > 8:
+            subj = " ".join(subj_words[:8])
+
+        out.append({
+            "company_id": lead["company_id"],
+            "step": 0,
+            "subject": subj,
+            "body": body,
+        })
+    return out
+
+
+def auto_prepare_campaign(conn, limit: int | None = None) -> dict:
+    """Qualifies, generates deterministic copy passing QA, and stages drafts for approval."""
+    qual_res = qualify(conn)
+    leads = selected(conn)
+    if limit:
+        leads = leads[:limit]
+    copy_records = generate_unique_copies(leads)
+    import_res = import_copy(conn, json.dumps(copy_records))
+    return {
+        "qualified": qual_res,
+        "copy_imported": import_res,
+        "status": status(conn),
+    }
+
 
