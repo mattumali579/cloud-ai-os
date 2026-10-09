@@ -366,6 +366,29 @@ async def leads_batch_generate(request: Request) -> dict:
         return batch_stage_qualified_leads(conn, limit=limit)
 
 
+# ---------------------------------------------------------------- Outreach Campaign Monitor
+
+@app.get("/v1/outreach/stats")
+async def outreach_stats() -> dict:
+    from cloudos import db
+    from cloudos.leadgen.dashboard import get_outreach_campaign_stats
+    with db.get_conn() as conn:
+        return get_outreach_campaign_stats(conn)
+
+
+@app.get("/v1/outreach/leads")
+async def outreach_leads_list(
+    search: str = Query(default=""),
+    filter_by: str = Query(default="all"),
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0),
+) -> dict:
+    from cloudos import db
+    from cloudos.leadgen.dashboard import get_outreach_campaign_leads
+    with db.get_conn() as conn:
+        return get_outreach_campaign_leads(conn, search=search, filter_by=filter_by, limit=limit, offset=offset)
+
+
 # ---------------------------------------------------------------- Online Money Research Engine
 
 @app.get("/v1/research/status")
