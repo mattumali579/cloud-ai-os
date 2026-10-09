@@ -172,6 +172,14 @@ def _eligible_rows(conn, industries: list[str]) -> list[dict]:
           AND NOT EXISTS (
               SELECT 1 FROM outreach_messages m
               WHERE m.direction = 'outbound' AND (m.company_id = c.company_id OR outreach_norm_email(m.recipient) = outreach_norm_email(ct.email)))
+          AND NOT EXISTS (
+              SELECT 1 FROM outreach_queue q
+              WHERE q.company_id = c.company_id AND q.state IN ('sent', 'queued', 'claimed')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM outreach_campaign_copy cc
+              WHERE cc.company_id = c.company_id AND cc.campaign = 'google_reviews_maps_299' AND cc.qa_passed_at IS NOT NULL
+          )
         """, (industries,)).fetchall()
 
 
@@ -241,6 +249,10 @@ def selected(conn) -> list[dict]:
         WHERE c.personalization->'review_campaign'->>'campaign' = %s
           AND (c.personalization->'review_campaign'->>'selected')::boolean
           AND c.first_contacted_at IS NULL AND c.active
+          AND NOT EXISTS (
+              SELECT 1 FROM outreach_queue q
+              WHERE q.company_id = c.company_id AND q.state IN ('sent', 'queued', 'claimed')
+          )
         ORDER BY (c.personalization->'review_campaign'->>'score')::int DESC, c.company_name
         """, (CAMPAIGN,)).fetchall()
     out = []
@@ -402,7 +414,16 @@ def add_footer(body: str, postal_address: str, cfg: dict | None = None) -> str:
 
 def approved_count(conn) -> int:
     return conn.execute(
-        "SELECT count(*) n FROM outreach_campaign_copy WHERE campaign=%s AND step=0 AND qa_passed_at IS NOT NULL",
+        """
+        SELECT count(*) n
+        FROM outreach_campaign_copy cc JOIN companies c USING (company_id)
+        WHERE cc.campaign=%s AND cc.step=0 AND cc.qa_passed_at IS NOT NULL
+          AND c.first_contacted_at IS NULL AND c.active
+          AND NOT EXISTS (
+              SELECT 1 FROM outreach_queue q
+              WHERE q.company_id=cc.company_id AND q.state IN ('sent', 'queued', 'claimed')
+          )
+        """,
         (CAMPAIGN,),
     ).fetchone()["n"]
 

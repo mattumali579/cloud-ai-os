@@ -99,9 +99,9 @@ def selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
     if res.ok:
         sender._file_copy(mailbox, msg, mid)
         out["in_sent"] = _wait_in_sent(mailbox, mid)
-        # Passed when provider accepts via SMTP (and IMAP copy attempted)
-        out["ok"] = True
-        _set_state(conn, "selftest", {"message_id": mid, "at": datetime.now(timezone.utc), **out})
+        out["ok"] = bool(out["in_sent"])
+        if out["ok"]:
+            _set_state(conn, "selftest", {"message_id": mid, "at": datetime.now(timezone.utc), **out})
     return out
 
 
