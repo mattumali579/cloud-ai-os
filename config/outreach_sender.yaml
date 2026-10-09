@@ -12,14 +12,14 @@ sender:
 campaign:
   id: google_reviews_maps_299
   offer_key: google_reviews_maps
-  copy_source: claude-review-v1
+  copy_source: codex-personalized-v2
   authoritative_copy: true
 
 pacing:
   timezone: America/Chicago
   send_days: [0, 1, 2, 3, 4, 5, 6]   # Monday..Sunday (same 08:00-17:30 window)
   business_days: [0, 1, 2, 3, 4]  # follow-ups still land Mon-Fri; weekends are send days only
-  window_start: "08:00"           # local time; nothing is sent outside the window
+  window_start: "00:00"           # local time; runs throughout the day
   window_end: "23:59"
   min_gap_seconds: 55             # between two sends - never a burst
   max_gap_seconds: 110
