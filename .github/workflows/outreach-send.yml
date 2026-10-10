@@ -87,12 +87,11 @@ jobs:
             queue-audit) python outreach_sender.py queue-audit --min 100 ;;
             trade-count) python outreach_sender.py trade-count ;;
             *) python outreach_sender.py cycle --minutes 8 --out cycle.json > /dev/null; python - <<'PY'
-import json
-r = json.load(open("cycle.json"))
-keys = ("sender", "sweep", "plan", "recover", "replies", "selftest", "send", "events", "airtable", "blocking")
-print(json.dumps({k: r[k] for k in keys if k in r}, indent=2, default=str))
-PY
-            python outreach_sender.py status
+          import json
+          r = json.load(open("cycle.json"))
+          keys = ("sender", "sweep", "plan", "recover", "replies", "selftest", "send", "events", "airtable", "blocking")
+          print(json.dumps({k: r[k] for k in keys if k in r}, indent=2, default=str))
+          PY
             ;;
           esac
       - name: Summary (counts only)
