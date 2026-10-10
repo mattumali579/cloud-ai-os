@@ -166,7 +166,10 @@ class Mailbox:
 
     # ------------------------------------------------------------------ IMAP
     def _imap(self):
-        i = self.imap_factory(self.imap_host, self.imap_port)
+        try:
+            i = self.imap_factory(self.imap_host, self.imap_port, timeout=self.timeout)
+        except TypeError:
+            i = self.imap_factory(self.imap_host, self.imap_port)
         typ, _ = i.login(self.user, self.password)
         if typ != "OK":
             raise AuthError("imap login refused")

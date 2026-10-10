@@ -44,7 +44,10 @@ def poll(conn, *, user: str, password: str, host: str = "imap.hostinger.com", po
     ours = {user.lower()}
     key = f"{user.lower()}:{folder}"
     res = {"scanned": 0, "relevant": 0, "inbound": {}, "first_run": False, "skipped_errors": 0}
-    i = imap_factory(host, port)
+    try:
+        i = imap_factory(host, port, timeout=40)
+    except TypeError:
+        i = imap_factory(host, port)
     try:
         typ, _ = i.login(user, password)
         if typ != "OK":

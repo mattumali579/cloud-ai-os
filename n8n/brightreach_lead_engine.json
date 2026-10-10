@@ -1,0 +1,304 @@
+{
+  "id": "leadDiscoveryEngine",
+  "name": "BrightReach Lead Discovery & Contact Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "trigger-schedule",
+      "name": "Schedule Every 10 Min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -600,
+        -100
+      ],
+      "notes": "Internal n8n trigger to resume lead discovery & contact collection batches every 10 minutes."
+    },
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Manual Run Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -600,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-engine-run",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "trigger-webhook",
+      "name": "Webhook Run Now",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -600,
+        250
+      ],
+      "webhookId": "lead-engine-webhook"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.AGENT_API_URL }}/v1/lead-engine/status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "check-status",
+      "name": "Check Status & Overlap Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -360,
+        0
+      ],
+      "notes": "Reads current checkpoint state to detect if a batch is already running and prevent overlapping jobs."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.checkpoint?.is_running }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "evaluate-overlap",
+      "name": "Is Job Free to Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_API_URL }}/v1/lead-engine/batch",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AGENT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"batch_size\": 20,\n  \"force\": false\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "execute-batch",
+      "name": "Execute Lead Batch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        140,
+        -100
+      ],
+      "notes": "Executes 20-company batch: backlog crawl, contact page extraction, deterministic qualification, and staging."
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $json;\nreturn [{\n  json: {\n    batch_id: b.batch_id || 'unknown',\n    status: b.status || 'unknown',\n    duration_seconds: b.duration_seconds || 0,\n    source_type: b.source_type || 'backlog',\n    checkpoint_before: b.checkpoint_before || '',\n    checkpoint_after: b.checkpoint_after || '',\n    businesses_found: b.businesses_found || 0,\n    sites_accessed: b.sites_accessed || 0,\n    sites_failed: b.sites_failed || 0,\n    public_emails_found: b.public_emails_found || 0,\n    unique_validated_emails: b.unique_validated_emails || 0,\n    leads_stored: b.leads_stored || 0,\n    outreach_ready_added: b.outreach_ready_added || 0,\n    drafts_prepared: b.drafts_prepared || 0,\n    duplicates_rejected: b.duplicates_rejected || 0,\n    errors: b.errors || []\n  }\n}];"
+      },
+      "id": "format-metrics",
+      "name": "Format Batch Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  (SELECT count(*) FROM companies WHERE active) as total_companies,\n  (SELECT count(*) FROM companies WHERE outreach_status = 'outreach_ready') as outreach_ready,\n  (SELECT count(*) FROM contacts) as total_contacts,\n  (SELECT count(*) FROM outreach_queue WHERE campaign = 'google_reviews_maps_299') as staged_drafts,\n  (SELECT items_processed FROM lead_engine_checkpoint WHERE checkpoint_id = 'primary_lead_pipeline') as checkpoint_items_processed;"
+      },
+      "id": "verify-db",
+      "name": "Verify Database State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        620,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "BrPgMctbCred0001",
+          "name": "BrightReach Postgres"
+        }
+      },
+      "notes": "Directly queries Postgres via existing BrightReach credential to verify persisted records."
+    },
+    {
+      "parameters": {
+        "jsCode": "const dbState = $json;\nconst batch = $('Format Batch Metrics').first().json;\n\nreturn [{\n  json: {\n    status: 'SUCCESS',\n    batch_summary: batch,\n    database_verification: {\n      total_companies: Number(dbState.total_companies),\n      outreach_ready: Number(dbState.outreach_ready),\n      total_contacts: Number(dbState.total_contacts),\n      staged_drafts: Number(dbState.staged_drafts),\n      checkpoint_items_processed: Number(dbState.checkpoint_items_processed)\n    },\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "final-output",
+      "name": "Output Pipeline Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    status: 'SKIPPED',\n    reason: 'Job already in progress — overlapping execution prevented',\n    checkpoint: $('Check Status & Overlap Lock').first().json.checkpoint,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "skip-overlap",
+      "name": "Skip - Overlap Prevented",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        140
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Every 10 Min": {
+      "main": [
+        [
+          {
+            "node": "Check Status & Overlap Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Run Now": {
+      "main": [
+        [
+          {
+            "node": "Check Status & Overlap Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Run Now": {
+      "main": [
+        [
+          {
+            "node": "Check Status & Overlap Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Status & Overlap Lock": {
+      "main": [
+        [
+          {
+            "node": "Is Job Free to Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Job Free to Run?": {
+      "main": [
+        [
+          {
+            "node": "Execute Lead Batch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip - Overlap Prevented",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Lead Batch": {
+      "main": [
+        [
+          {
+            "node": "Format Batch Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Batch Metrics": {
+      "main": [
+        [
+          {
+            "node": "Verify Database State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Database State": {
+      "main": [
+        [
+          {
+            "node": "Output Pipeline Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Chicago"
+  }
+}

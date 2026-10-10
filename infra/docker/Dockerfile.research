@@ -1,0 +1,4 @@
+FROM cloudos:dev
+USER root
+RUN pip install --no-cache-dir youtube_transcript_api beautifulsoup4 yt-dlp feedparser
+USER cloudos

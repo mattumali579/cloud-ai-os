@@ -1,0 +1,273 @@
+{
+  "name": "04 - Sales Optimizer",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "opt-node-0001",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        0
+      ],
+      "notes": "Receives triggers from 01 - Research, 02 - Lead Discovery, 03 - Outreach or manual execution."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sales-optimizer-trigger",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "opt-node-0002",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        200
+      ],
+      "webhookId": "sales-optimizer-trigger-id"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first() ? $input.first().json : {};\nconst payload = input.body ? input.body : input;\n\nreturn [{\n  json: {\n    event_type: payload.event_type || 'workflow_event',\n    domain: payload.domain || 'general',\n    entity_id: payload.entity_id || null,\n    experiment_id: payload.experiment_id || null,\n    evidence: payload.evidence || {},\n    metrics: payload.metrics || {},\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "opt-node-0003",
+      "name": "Normalize Trigger Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://agent-api:8080/v1/optimizer/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer 435439bb48c619e3e333190fc146eed888393a21d32ba91ce7b654c51c48c887"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "opt-node-0004",
+      "name": "Execute Optimizer Engine",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        60,
+        100
+      ],
+      "notes": "Executes deterministic optimization rules via local agent API."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  (SELECT count(*) FROM optimizer_experiments WHERE status = 'running') as running_experiments,\n  (SELECT count(*) FROM optimizer_config_versions WHERE is_active) as active_configs,\n  (SELECT count(*) FROM optimizer_learning_events) as total_learning_events,\n  (SELECT count(*) FROM optimizer_approvals WHERE status = 'pending') as pending_approvals;"
+      },
+      "id": "opt-node-0005",
+      "name": "Verify Optimizer DB State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        320,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "BrPgMctbCred0001",
+          "name": "BrightReach Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const engineResult = $('Execute Optimizer Engine').first().json;\nconst dbState = $json;\n\nreturn [{\n  json: {\n    status: engineResult.status || 'SUCCESS',\n    optimizer_cycle_summary: engineResult,\n    database_verification: {\n      running_experiments: Number(dbState.running_experiments || 0),\n      active_configs: Number(dbState.active_configs || 0),\n      total_learning_events: Number(dbState.total_learning_events || 0),\n      pending_approvals: Number(dbState.pending_approvals || 0)\n    },\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "opt-node-0006",
+      "name": "Format Optimization Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-notify",
+              "leftValue": "={{ ($json.optimizer_cycle_summary.evaluated_experiments || []).filter(e => e.decision === 'promote' || e.decision === 'rollback').length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "opt-node-0007",
+      "name": "Meaningful Outcome?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        840,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://research-engine:5055/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  severity: 'info',\n  code: 'OPTIMIZER_SIGNIFICANT_OUTCOME',\n  message: 'Sales Optimizer completed evaluation with actionable outcome.',\n  meta: $json\n}) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "opt-node-0008",
+      "name": "Send Outcome Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "opt-node-0009",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Trigger Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Trigger Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Trigger Payload": {
+      "main": [
+        [
+          {
+            "node": "Execute Optimizer Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Optimizer Engine": {
+      "main": [
+        [
+          {
+            "node": "Verify Optimizer DB State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Optimizer DB State": {
+      "main": [
+        [
+          {
+            "node": "Format Optimization Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Optimization Report": {
+      "main": [
+        [
+          {
+            "node": "Meaningful Outcome?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Meaningful Outcome?": {
+      "main": [
+        [
+          {
+            "node": "Send Outcome Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "salesOptimizerWorkflow"
+}
