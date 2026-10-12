@@ -143,14 +143,42 @@ def sent_last_24h(conn) -> int:
                         ).fetchone()["n"]
 
 
-def daily_cap(conn, cfg: dict) -> int:
-    """Return the owner-authorized campaign ceiling.
+# Hostinger allows 100 messages per mailbox per day. A higher rolling cap is
+# used only when HOSTINGER_DAILY_LIMIT is set to that number.
+MAILBOX_DAILY_CAP = 100
 
-    The mailbox transport remains authoritative for real provider throttling.
-    A stale HOSTINGER_DAILY_LIMIT secret must not silently re-enable a retired
-    campaign hold.
+
+def _explicit_hostinger_daily_limit() -> int | None:
+    """The set value of HOSTINGER_DAILY_LIMIT, or None when it is empty or unset.
+
+    Whitespace and non-numeric values are not an explicit limit, so they cannot
+    raise the cap. A numeric value is the cap, including one above 100.
     """
-    return max(0, int(cfg["pacing"]["daily_limit"]))
+    raw = os.environ.get("HOSTINGER_DAILY_LIMIT")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return max(0, int(text))
+    except ValueError:
+        return None
+
+
+def daily_cap(conn, cfg: dict) -> int:
+    """Rolling 24h send cap.
+
+    Empty or unset HOSTINGER_DAILY_LIMIT falls back to 100, the mailbox
+    allowance, even when pacing.daily_limit is higher. A number above 100 is
+    used only when that variable is set to it. A configured daily_limit below
+    100 still applies when the variable is absent.
+    """
+    explicit = _explicit_hostinger_daily_limit()
+    if explicit is not None:
+        return explicit
+    configured = int((cfg.get("pacing") or {}).get("daily_limit", MAILBOX_DAILY_CAP))
+    return max(0, min(configured, MAILBOX_DAILY_CAP))
 
 
 # ----------------------------------------------------------------- planning

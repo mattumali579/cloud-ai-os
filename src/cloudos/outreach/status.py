@@ -6,13 +6,17 @@ notices, and writes the three once-a-day digests.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from cloudos.outreach import agentmail
 
 DAY = "(date_trunc('day', now() AT TIME ZONE %(tz)s) AT TIME ZONE %(tz)s)"
 POSITIVE = ("INTERESTED", "MEETING_REQUEST", "READY_TO_BUY", "PRICE_QUESTION", "MORE_INFORMATION", "REFERRAL")
+# A cycle that is still unfinished after this long was killed or is stuck.
+# The send budget itself is 8 minutes, so a healthy run is done well before this.
+STUCK_CYCLE = timedelta(minutes=15)
+CYCLE_BLOCK_PREFIXES = ("planner failed", "sender cycle did not finish", "in-window cycle sent 0")
 
 
 def funnel(conn, *, tz: str = "America/Chicago", ready_target: int = 300, cap: int | None = None) -> dict:
@@ -79,7 +83,58 @@ def blockers(conn, f: dict) -> list[str]:
                           ).fetchall() if _has(conn, "lead_source_health", "consecutive_failures") else []
     for h in health:
         out.append(f"lead source {h['source']} is benched after {h['consecutive_failures']} failures in a row")
+    _sender_cycle_blockers(conn, f, out)
     return out
+
+
+def _as_utc(value) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _sender_cycle_blockers(conn, f: dict, out: list[str]) -> None:
+    """The prepare/send failure used to finish as 'What's in the way: nothing'.
+
+    The cycle stores its own result on outreach_sender_runs. A planner error, a
+    cycle that never finished, or an in-window weekday run that sent nothing
+    while Ready leads are waiting is the outage and has to be listed.
+    """
+    if not _has(conn, "outreach_sender_runs", "stats"):
+        return
+    run = conn.execute(
+        "SELECT started_at, finished_at, stats FROM outreach_sender_runs WHERE mode = 'cycle' "
+        "ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    if not run:
+        return
+    stats = run["stats"] if isinstance(run["stats"], dict) else {}
+    plan = stats.get("plan") if isinstance(stats.get("plan"), dict) else {}
+    if plan.get("error"):
+        out.append(f"planner failed ({str(plan['error'])[:80]}): first emails were not prepared")
+    started = _as_utc(run.get("started_at"))
+    if run.get("finished_at") is None:
+        if started and datetime.now(timezone.utc) - started > STUCK_CYCLE:
+            out.append("sender cycle did not finish: it is still running or was killed before it could send")
+        return
+    send = stats.get("send") if isinstance(stats.get("send"), dict) else None
+    if not send or send.get("in_window") is not True or send.get("auth_failed"):
+        return
+    stopped = str(send.get("stopped") or "")
+    if stopped.startswith("daily cap") or stopped.startswith("mail server says"):
+        return
+    ready = int(f.get("ready_waiting_total") or 0)
+    if int(send.get("sent") or 0) != 0 or ready <= 0 or not started:
+        return
+    if started.astimezone(ZoneInfo("America/Chicago")).weekday() > 4:
+        return
+    detail = f" (stopped: {stopped})" if stopped else ""
+    out.append(f"in-window cycle sent 0 emails with {ready} Ready leads waiting{detail}")
 
 
 def planner_state(conn, f: dict) -> dict:
@@ -124,6 +179,10 @@ def next_action(s: dict) -> dict:
         return {"decision": "execute", "agent": "claude", "task": "draft replies for interested prospects in "
                 "company_conversation_state (drafts only; a person approves anything customer-facing)",
                 "why": f"{s['interested_total']} interested prospect(s)"}
+    cycle = [b for b in s["blocking"] if str(b).startswith(CYCLE_BLOCK_PREFIXES)]
+    if cycle:
+        return {"decision": "execute", "agent": "codex", "task": "the sender cycle is not preparing or sending "
+                "first emails; fix that before the next run", "why": cycle[0]}
     if s["failed_today"] or s["ambiguous_total"]:
         return {"decision": "execute", "agent": "codex", "task": "diagnose failed/ambiguous rows in outreach_queue",
                 "why": f"{s['failed_today']} failed today, {s['ambiguous_total']} ambiguous"}

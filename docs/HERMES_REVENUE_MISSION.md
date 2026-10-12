@@ -86,7 +86,7 @@ Take the highest one that has a real, unblocked task right now:
 - No new paid APIs or subscriptions. Do not use Apify.
 - Do not send automated cold outreach from the owner's personal Gmail.
 - Preserve dedupe, unsubscribe, bounce suppression, send caps, verification gates, and provider-confirmed send evidence. Never loosen one to raise volume.
-- The daily first-email limit is deliberate, not a bug: `config/outreach_sender.yaml` `pacing.daily_limit` is 100 from the first sending day (there is no warm-up ramp), and Hostinger's own plan cap (`pacing.provider_daily_limit`, or a lower `HOSTINGER_DAILY_LIMIT`) is 100/day; the lower of the two wins. Do not raise the limit or the cap.
+- The rolling 24h send cap is 100 when `HOSTINGER_DAILY_LIMIT` is empty or unset. That is the Hostinger mailbox allowance (`pacing.daily_limit` and `pacing.provider_daily_limit`). A number above 100 is used only when `HOSTINGER_DAILY_LIMIT` is set to that number. Do not raise the cap in config.
 - A missing AgentMail key only delays status mail (urgent notices fall back to Discord). It never blocks revenue work.
 - A queued/drafted/attempted email is not a send.
 - Never invent sends, replies, revenue, test results, logs, credentials, integrations, or files.

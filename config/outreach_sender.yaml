@@ -24,12 +24,11 @@ pacing:
   min_gap_seconds: 14             # paced for 30 emails per 10 minutes (~17s avg gap)
   max_gap_seconds: 20
   cycle_limit: 30                 # strict cap of 30 sends per 10-minute cycle run
-  # Sends allowed per rolling 24 h, the same from the first sending day (no warm-up ramp).
-  daily_limit: 300
-  # Hostinger's own per-mailbox cap (rolling 24 h): trial/free email = 100,
-  # Business Starter = 1000 (hostinger.com/support/4625828). The lower of
-  # daily_limit and this cap wins. Override with the HOSTINGER_DAILY_LIMIT secret.
-  provider_daily_limit: 300
+  # Rolling 24h cap when HOSTINGER_DAILY_LIMIT is empty or unset. The Hostinger
+  # mailbox allows 100/day. A higher number is used only when that variable is
+  # set explicitly. A daily_limit below 100 still lowers the cap.
+  daily_limit: 100
+  provider_daily_limit: 100
   max_attempts: 3                 # transient failures (timeouts, 4xx) before a row is marked failed
 
 sequence:                         # day 0, 2, 4, 7; replies/unsubs/bounces stop it

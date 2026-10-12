@@ -25,6 +25,9 @@ from typing import Optional
 import psycopg_pool
 from psycopg.rows import dict_row
 
+# Bound at import so a test can replace ConnectionPool without hiding this callable.
+_POOL_CHECK = psycopg_pool.ConnectionPool.check_connection
+
 from cloudos.config import REPO_ROOT, get_settings
 from cloudos.contracts import CloudOSError, ErrorCode
 
@@ -78,7 +81,21 @@ def get_pool() -> psycopg_pool.ConnectionPool:
                 min_size=POOL_MIN_SIZE,
                 max_size=POOL_MAX_SIZE,
                 timeout=POOL_TIMEOUT_SECONDS,
-                kwargs={"row_factory": dict_row, "prepare_threshold": None},
+                # The pooler drops idle SSL sessions. Check a connection before
+                # handing it out, and don't keep one sitting in the pool for long.
+                # Keepalives make a half-open socket fail instead of blocking the
+                # job until GitHub kills it.
+                max_idle=60,
+                check=_POOL_CHECK,
+                kwargs={
+                    "row_factory": dict_row,
+                    "prepare_threshold": None,
+                    "connect_timeout": 15,
+                    "keepalives": 1,
+                    "keepalives_idle": 30,
+                    "keepalives_interval": 10,
+                    "keepalives_count": 3,
+                },
                 name="cloudos",
                 open=True,
             )

@@ -79,10 +79,28 @@ class LeadEngine:
             ready = store.inventory(conn)["available_inventory"]
         return (force or ready < self.cfg["inventory"]["low_watermark"]), ready
 
+    def _db_call(self, fn):
+        """Run one short database unit. Retry once when the pooler has dropped the socket.
+
+        Callers must not do network I/O inside ``fn``. The Google Maps scrape and
+        website fetches sit between calls, so a connection is not held open across
+        them. A connection held for the whole scrape is what the pooler closes;
+        the next write then dies with 'SSL connection has been closed unexpectedly'.
+        """
+        import psycopg
+        last = None
+        for attempt in (1, 2):
+            try:
+                with self.conn_factory() as conn:
+                    return fn(conn)
+            except psycopg.OperationalError as exc:
+                last = exc
+                log.warning("lead engine database connection dropped (%s), attempt %s",
+                            type(exc).__name__, attempt)
+        raise last
+
     # -------------------------------------------------------------- one company
-    def process_candidates(self, conn, cands: list[Candidate], stats: RunStats, fetcher: Fetcher,
-                           deadline: float) -> list[str]:
-        """Dedupe -> enrich (parallel) -> dedupe again by email -> qualify -> store."""
+    def _screen_candidates(self, conn, cands: list[Candidate], stats: RunStats) -> list[Candidate]:
         fresh: list[Candidate] = []
         seen_in_batch: set[str] = set()
         for cand in cands:
@@ -99,14 +117,18 @@ class LeadEngine:
             seen_in_batch.add(key)
             fresh.append(cand)
         conn.commit()
+        return fresh
 
+    def _enrich_candidates(self, fresh: list[Candidate], fetcher: Fetcher, deadline: float) -> list:
+        """Website fetches. No database connection is held here."""
         workers = int(self.cfg["run"].get("enrich_workers", 8))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            enriched = list(pool.map(
+            return list(pool.map(
                 lambda c: None if (not c.website or time.time() > deadline) else
                 enrich_website(c.website, fetcher, [(e, "public listing") for e in c.listing_emails]),
                 fresh))
 
+    def _store_candidates(self, conn, fresh: list[Candidate], enriched: list, stats: RunStats) -> list[str]:
         new_ids = []
         for cand, enr in zip(fresh, enriched):
             emails = [f.email for f in enr.emails] if enr else []
@@ -154,19 +176,43 @@ class LeadEngine:
                     stats.samples.append(company_id)
         return new_ids
 
+    def process_candidates(self, conn, cands: list[Candidate], stats: RunStats, fetcher: Fetcher,
+                           deadline: float) -> list[str]:
+        """Dedupe -> enrich (parallel) -> dedupe again by email -> qualify -> store."""
+        fresh = self._screen_candidates(conn, cands, stats)
+        enriched = self._enrich_candidates(fresh, fetcher, deadline)
+        return self._store_candidates(conn, fresh, enriched, stats)
+
     # --------------------------------------------------------- history recovery
-    def recover_history(self, conn, stats: RunStats, fetcher: Fetcher, limit: int) -> int:
-        rows = conn.execute(
+    def _history_candidates(self, conn, limit: int):
+        return conn.execute(
             """
             SELECT company_id, company_name, website, industry, city, state FROM companies
             WHERE is_historical AND first_contacted_at IS NULL AND outreach_status = 'not_ready'
               AND enriched_at IS NULL AND website IS NOT NULL
             ORDER BY discovered_at LIMIT %s
             """, (limit,)).fetchall()
+
+    def _enrich_history(self, rows, fetcher: Fetcher) -> list:
+        with ThreadPoolExecutor(max_workers=int(self.cfg["run"].get("enrich_workers", 8))) as pool:
+            return list(pool.map(lambda r: enrich_website(r["website"], fetcher), rows))
+
+    def recover_history(self, conn, stats: RunStats, fetcher: Fetcher, limit: int) -> int:
+        rows = self._history_candidates(conn, limit)
         if not rows:
             return 0
-        with ThreadPoolExecutor(max_workers=int(self.cfg["run"].get("enrich_workers", 8))) as pool:
-            results = list(pool.map(lambda r: enrich_website(r["website"], fetcher), rows))
+        results = self._enrich_history(rows, fetcher)
+        return self._apply_history(conn, rows, results, stats)
+
+    def _recover_history_detached(self, stats: RunStats, fetcher: Fetcher, limit: int) -> int:
+        """Same recovery, but the database is not held during the website fetches."""
+        rows = self._db_call(lambda conn: self._history_candidates(conn, limit))
+        if not rows:
+            return 0
+        results = self._enrich_history(rows, fetcher)
+        return self._db_call(lambda conn: self._apply_history(conn, rows, results, stats))
+
+    def _apply_history(self, conn, rows, results, stats: RunStats) -> int:
         recovered = 0
         for row, enr in zip(rows, results):
             stats.bump("history_recovery", "raw")
@@ -219,66 +265,120 @@ class LeadEngine:
         policy = self.cfg.get("failure_policy", {})
         exhausted: set[str] = set()
         try:
-            with self.conn_factory() as conn:
-                if "history_recovery" in active:
-                    exhausted.add("history_recovery")
-                    try:
-                        self.recover_history(conn, stats, fetcher, int(self.cfg["sources"]["history_recovery"].get("batch", 40)))
-                        store.source_success(conn, "history_recovery")
-                    except Exception as exc:  # noqa: BLE001 - one broken source never stops the others
-                        conn.rollback()
-                        store.source_failure(conn, "history_recovery", f"{type(exc).__name__}: {exc}", policy)
+            if "history_recovery" in active:
+                exhausted.add("history_recovery")
+                try:
+                    self._recover_history_detached(
+                        stats, fetcher, int(self.cfg["sources"]["history_recovery"].get("batch", 40)))
+                    self._db_call(lambda conn: store.source_success(conn, "history_recovery"))
+                except Exception as exc:  # noqa: BLE001 - one broken source never stops the others
+                    def _record_history_failure(conn, _exc=exc):
+                        store.source_failure(conn, "history_recovery", f"{type(_exc).__name__}: {_exc}", policy)
                         conn.commit()
-                        stats.source_errors["history_recovery"] = f"{type(exc).__name__}: {str(exc)[:160]}"
-                        log.warning("source history_recovery failed: %s", type(exc).__name__)
-                while time.time() < deadline and stats.new_outreach_ready < target_new_ready:
-                    progressed = False
-                    for name in active:
-                        if name in exhausted or time.time() >= deadline or stats.new_outreach_ready >= target_new_ready:
-                            continue
-                        ok, why = store.source_available(conn, name)
+                    try:
+                        self._db_call(_record_history_failure)
+                    except Exception:
+                        log.warning("could not record history_recovery failure")
+                    stats.source_errors["history_recovery"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                    log.warning("source history_recovery failed: %s", type(exc).__name__)
+            while time.time() < deadline and stats.new_outreach_ready < target_new_ready:
+                progressed = False
+                for name in active:
+                    if name in exhausted or time.time() >= deadline or stats.new_outreach_ready >= target_new_ready:
+                        continue
+                    src = self.sources[name]
+                    catalog = src.queries(self.cfg)
+
+                    def plan_batch(conn, _name=name, _catalog=catalog):
+                        ok, why = store.source_available(conn, _name)
                         if not ok:
-                            stats.source_errors[name] = why
-                            exhausted.add(name)
-                            continue
-                        src = self.sources[name]
-                        batch = store.next_queries(conn, name, src.queries(self.cfg), queries_per_source)
-                        if not batch:
-                            exhausted.add(name)
-                            continue
-                        for q in batch:
-                            if time.time() >= deadline or stats.new_outreach_ready >= target_new_ready:
-                                break
-                            try:
-                                cands = src.search(q, self.cfg)
-                            except SourceError as exc:
-                                health = store.source_failure(conn, name, str(exc), policy)
-                                store.mark_query(conn, name, q, 0, 0, str(exc))
+                            return False, why, []
+                        return True, "", store.next_queries(conn, _name, _catalog, queries_per_source)
+
+                    try:
+                        ok, why, batch = self._db_call(plan_batch)
+                    except Exception as exc:  # noqa: BLE001
+                        stats.source_errors[name] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                        log.warning("source %s planning failed: %s", name, type(exc).__name__)
+                        continue
+                    if not ok:
+                        stats.source_errors[name] = why
+                        exhausted.add(name)
+                        continue
+                    if not batch:
+                        exhausted.add(name)
+                        continue
+                    for q in batch:
+                        if time.time() >= deadline or stats.new_outreach_ready >= target_new_ready:
+                            break
+                        try:
+                            # Network only. The database connection is not checked out here.
+                            cands = src.search(q, self.cfg)
+                        except SourceError as exc:
+                            def record_failure(conn, _name=name, _exc=exc, _q=q):
+                                health = store.source_failure(conn, _name, str(_exc), policy)
+                                store.mark_query(conn, _name, _q, 0, 0, str(_exc))
                                 conn.commit()
-                                stats.source_errors[name] = str(exc)
-                                stats.bump(name, "errors")
-                                log.warning("source %s failed (%s consecutive): %s", name, health["consecutive_failures"], exc)
-                                if health["disabled_until"]:
-                                    exhausted.add(name)
-                                    break
-                                continue
-                            store.source_success(conn, name)
-                            before = stats.new_companies
+                                return health
                             try:
-                                self.process_candidates(conn, cands, stats, fetcher, deadline)
+                                health = self._db_call(record_failure)
+                            except Exception as db_exc:  # noqa: BLE001
+                                stats.source_errors[name] = f"{type(db_exc).__name__}: {str(db_exc)[:160]}"
+                                break
+                            stats.source_errors[name] = str(exc)
+                            stats.bump(name, "errors")
+                            log.warning("source %s failed (%s consecutive): %s", name,
+                                        health["consecutive_failures"], type(exc).__name__)
+                            if health["disabled_until"]:
+                                exhausted.add(name)
+                                break
+                            continue
+
+                        def take_fresh(conn, _name=name, _cands=cands):
+                            store.source_success(conn, _name)
+                            return self._screen_candidates(conn, _cands, stats)
+
+                        try:
+                            fresh = self._db_call(take_fresh)
+                        except Exception as exc:  # noqa: BLE001
+                            stats.source_errors[name] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                            log.warning("source %s result write failed: %s", name, type(exc).__name__)
+                            continue
+                        before = stats.new_companies
+                        try:
+                            enriched = self._enrich_candidates(fresh, fetcher, deadline)
+                        except Exception as exc:  # noqa: BLE001
+                            stats.source_errors[f"{name}:batch"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                            log.warning("batch from %s failed, continuing: %s", name, type(exc).__name__)
+                            enriched = [None] * len(fresh)
+
+                        def store_batch(conn, _name=name, _fresh=fresh, _enriched=enriched, _q=q,
+                                        _before=before, _cands=cands):
+                            import psycopg
+                            try:
+                                self._store_candidates(conn, _fresh, _enriched, stats)
+                            except psycopg.OperationalError:
+                                raise
                             except Exception as exc:  # noqa: BLE001 - skip this batch, keep the run alive
                                 conn.rollback()
-                                stats.source_errors[f"{name}:batch"] = f"{type(exc).__name__}: {str(exc)[:160]}"
-                                log.warning("batch from %s failed, continuing: %s", name, type(exc).__name__)
-                            store.mark_query(conn, name, q, len(cands), stats.new_companies - before)
+                                stats.source_errors[f"{_name}:batch"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                                log.warning("batch from %s failed, continuing: %s", _name, type(exc).__name__)
+                            store.mark_query(conn, _name, _q, len(_cands), stats.new_companies - _before)
                             conn.commit()
-                            stats.queries_run += 1
-                            stats.bump(name, "queries")
-                            progressed = True
-                            log.info("source=%s results=%d new=%d ready_total_this_run=%d", name, len(cands),
-                                     stats.new_companies - before, stats.new_outreach_ready)
-                    if not progressed and all(s in exhausted for s in active):
-                        break
+
+                        try:
+                            self._db_call(store_batch)
+                        except Exception as exc:  # noqa: BLE001
+                            stats.source_errors[f"{name}:batch"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                            log.warning("batch from %s failed, continuing: %s", name, type(exc).__name__)
+                            continue
+                        stats.queries_run += 1
+                        stats.bump(name, "queries")
+                        progressed = True
+                        log.info("source=%s results=%d new=%d ready_total_this_run=%d", name, len(cands),
+                                 stats.new_companies - before, stats.new_outreach_ready)
+                if not progressed and all(s in exhausted for s in active):
+                    break
         finally:
             self.cfg.pop("_discovery_deadline", None)
             fetcher.close()

@@ -72,3 +72,98 @@ def test_footer_is_outside_conversational_body():
     assert "\n--\n123 Main St" in out
     assert out.endswith("I will not email you again.")
 
+
+class _Rows:
+    def __init__(self, rows=None, one=None, rowcount=1):
+        self._rows, self._one, self.rowcount = list(rows or []), one, rowcount
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def fetchone(self):
+        return self._one
+
+
+class _PlanConn:
+    def __init__(self, approved=0, copies=None):
+        self.approved = approved
+        self.copies = list(copies or [])
+        self.sql, self.commits, self.rollbacks, self.inserts = [], 0, 0, 0
+
+    def execute(self, sql, params=None):
+        compact = " ".join(sql.split())
+        self.sql.append(compact)
+        if "count(*)" in compact and "outreach_campaign_copy" in compact:
+            return _Rows(one={"n": self.approved})
+        if compact.startswith("SELECT cc.*"):
+            return _Rows(rows=list(self.copies))
+        if "INSERT INTO outreach_queue" in compact:
+            self.inserts += 1
+            return _Rows(rowcount=1)
+        return _Rows()
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def test_candidate_query_is_bounded_and_skips_the_normalized_email_scan():
+    seen = []
+
+    class Conn:
+        def execute(self, sql, params=None):
+            seen.append((sql, params))
+            return _Rows()
+
+    rc._eligible_rows(Conn(), ["roofing", "hvac"], limit=60)
+    sql, params = seen[0]
+    assert "LIMIT %s" in sql
+    assert "outreach_norm_email" not in sql
+    assert params[-1] == 60
+    assert params[0] == ["roofing", "hvac"]
+
+
+def test_peer_query_is_the_top_two_listings_in_the_candidate_cities_only():
+    seen = []
+
+    class Conn:
+        def execute(self, sql, params=None):
+            seen.append((sql, params))
+            return _Rows()
+
+    assert rc._peer_rows(Conn(), ["roofing"], cities=[]) == []
+    assert seen == []
+    rc._peer_rows(Conn(), ["roofing"], cities=["austin"])
+    sql, params = seen[0]
+    assert "row_number()" in sql and "rn <= 2" in sql
+    assert params[1] == ["austin"]
+
+
+def test_queue_approved_keeps_ready_copy_when_replenish_is_canceled(monkeypatch):
+    conn = _PlanConn(approved=0, copies=[{
+        "company_id": "c1", "recipient": "owner@example.com", "company_name": "Acme Roofing",
+        "subject": "Hello", "body": "Body", "copy_version": "claude-review-v1", "evidence": {},
+    }])
+    monkeypatch.setattr("cloudos.conversations.guard.check_fail_closed", lambda *a, **k: {"allowed": True})
+    monkeypatch.setattr("cloudos.outreach.copy.qa", lambda *a, **k: [])
+
+    def boom(*_a, **_k):
+        raise RuntimeError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(rc, "auto_prepare_campaign", boom)
+    out = rc.queue_approved(conn, postal_address="123 Main St, Austin, TX")
+    assert out["queued"] == 1 and out["error"] == "RuntimeError"
+    assert conn.inserts == 1 and conn.commits >= 1
+    # the heavy replenish never got as far as the Ready-table scan
+    assert not any("outreach_norm_email" in sql for sql in conn.sql)
+
+
+def test_queue_approved_does_not_replenish_when_the_buffer_is_full(monkeypatch):
+    conn = _PlanConn(approved=50, copies=[])
+    called = []
+    monkeypatch.setattr(rc, "auto_prepare_campaign", lambda *a, **k: called.append(1))
+    out = rc.queue_approved(conn, postal_address="123 Main St, Austin, TX")
+    assert called == [] and "error" not in out and out["queued"] == 0
+

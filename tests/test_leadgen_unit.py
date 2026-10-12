@@ -145,3 +145,119 @@ def test_bot_walled_site_is_low_not_dead():
     e = Enrichment(ok=False, website="https://x.com", blocked=True, error="site refuses automated reading (403)")
     v = qualify(name="Smith Law", website="https://x.com", industry="law_firm", chains=CHAINS, enrichment=e)
     assert v.level == "LOW" and "blocks automated" in v.reason
+
+
+def test_discover_does_not_hold_a_connection_during_network_io(monkeypatch):
+    import psycopg
+
+    from cloudos.leadgen import store
+    from cloudos.leadgen.engine import LeadEngine, RunStats
+
+    held = {"n": 0, "search": None, "enrich": None}
+
+    class CM:
+        def __enter__(self):
+            held["n"] += 1
+            return object()
+
+        def __exit__(self, *_args):
+            held["n"] -= 1
+            return False
+
+    class Src:
+        def queries(self, cfg):
+            return [{"query": "roofing austin", "industry": "roofing", "location": "Austin"}]
+
+        def search(self, q, cfg):
+            held["search"] = held["n"]
+            return ["candidate"]
+
+    monkeypatch.setattr(store, "source_available", lambda conn, name: (True, ""))
+    monkeypatch.setattr(store, "next_queries", lambda conn, name, candidates, limit: list(candidates)[:limit])
+    monkeypatch.setattr(store, "source_success", lambda conn, name: None)
+    monkeypatch.setattr(store, "mark_query", lambda *a, **k: None)
+    cfg = {"run": {"http_timeout": 1, "max_pages_per_site": 1, "enrich_workers": 1},
+           "failure_policy": {}, "sources": {}, "chains": []}
+    engine = LeadEngine(lambda: CM(), cfg, sources={"google_maps": Src()})
+
+    def enrich(fresh, fetcher, deadline):
+        held["enrich"] = held["n"]
+        return [None]
+
+    def save(conn, fresh, enriched, stats):
+        stats.new_outreach_ready += 1
+        return ["id"]
+
+    engine._screen_candidates = lambda conn, cands, stats: ["fresh"]
+    engine._enrich_candidates = enrich
+    engine._store_candidates = save
+    stats = engine.discover(1, 1, ["google_maps"])
+    assert held["search"] == 0 and held["enrich"] == 0
+    assert stats.new_outreach_ready == 1
+    assert psycopg is not None and isinstance(stats, RunStats)
+
+
+def test_discover_retries_when_the_pooler_closes_the_connection(monkeypatch):
+    import psycopg
+
+    from cloudos.leadgen import store
+    from cloudos.leadgen.engine import LeadEngine
+
+    calls = {"success": 0}
+
+    class CM:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            return False
+
+    class Src:
+        def queries(self, cfg):
+            return [{"query": "roofing austin", "industry": "roofing", "location": "Austin"}]
+
+        def search(self, q, cfg):
+            return ["candidate"]
+
+    def source_success(conn, name):
+        calls["success"] += 1
+        if calls["success"] == 1:
+            raise psycopg.OperationalError("consuming input failed: SSL connection has been closed unexpectedly")
+
+    monkeypatch.setattr(store, "source_available", lambda conn, name: (True, ""))
+    monkeypatch.setattr(store, "next_queries", lambda conn, name, candidates, limit: list(candidates)[:limit])
+    monkeypatch.setattr(store, "source_success", source_success)
+    monkeypatch.setattr(store, "mark_query", lambda *a, **k: None)
+    cfg = {"run": {"http_timeout": 1, "max_pages_per_site": 1, "enrich_workers": 1},
+           "failure_policy": {}, "sources": {}, "chains": []}
+    engine = LeadEngine(lambda: CM(), cfg, sources={"google_maps": Src()})
+    engine._screen_candidates = lambda conn, cands, stats: ["fresh"]
+    engine._enrich_candidates = lambda fresh, fetcher, deadline: [None]
+    engine._store_candidates = lambda conn, fresh, enriched, stats: stats.__setattr__("new_outreach_ready", 1) or ["id"]
+    stats = engine.discover(1, 1, ["google_maps"])
+    assert calls["success"] == 2 and stats.new_outreach_ready == 1
+
+
+def test_save_run_retries_a_dropped_connection(monkeypatch):
+    import psycopg
+
+    import lead_engine
+
+    calls = {"n": 0}
+
+    class CM:
+        def __enter__(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise psycopg.OperationalError("SSL connection has been closed unexpectedly")
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(lead_engine.db, "get_conn", lambda: CM())
+    lead_engine._save_run(7, {"ok": True})
+    assert calls["n"] == 2
