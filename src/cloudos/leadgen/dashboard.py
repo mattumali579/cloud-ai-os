@@ -72,8 +72,9 @@ def get_outreach_campaign_stats(conn) -> dict:
     interested = int(row["interested_count"] or 0)
     unsub = int(row["unsubscribed_count"] or 0)
 
-    # 300 maximum cap
-    cap = 300
+    # Rolling 24h mailbox cap: 100 unless HOSTINGER_DAILY_LIMIT is set higher.
+    from cloudos.outreach.sender import daily_cap, load_config
+    cap = daily_cap(conn, load_config())
 
     return {
         "campaign_id": OFFER_CAMPAIGN_ID,
@@ -1067,7 +1068,7 @@ def render_dashboard_html() -> str:
   <!-- Main Application Tabs Navigation -->
   <div class="tabs-nav-bar">
     <button class="nav-tab-btn active" id="tab-btn-outreach" onclick="switchMainTab('outreach')">
-      🚀 Live Outreach Engine (300 Max)
+      🚀 Live Outreach Engine (100 Max)
       <span class="tab-badge" id="nav-outreach-badge">Active</span>
     </button>
     <button class="nav-tab-btn" id="tab-btn-leads" onclick="switchMainTab('leads')">
@@ -1085,7 +1086,7 @@ def render_dashboard_html() -> str:
     <div class="research-hero-banner" style="border-left: 4px solid #3b82f6;">
       <div class="research-hero-text">
         <h2>Autonomous Cold Outreach Engine — Single Offer: $299/mo Google Reviews & Visibility</h2>
-        <p>Configured Rule: <strong>Max 300 highly-personalized emails sent</strong>, grounded in real Google Maps review deficits, then automatic pause to monitor incoming replies.</p>
+        <p>Configured Rule: <strong>Max 100 highly-personalized emails sent</strong>, grounded in real Google Maps review deficits, then automatic pause to monitor incoming replies.</p>
       </div>
       <div class="research-actions">
         <span class="status-pill" style="font-size:13px; padding:6px 14px;">
@@ -1098,13 +1099,13 @@ def render_dashboard_html() -> str:
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-label">Daily Cap Target</div>
-        <div class="stat-val" id="kpi-outreach-cap" style="color: #f8fafc;">300 Max</div>
+        <div class="stat-val" id="kpi-outreach-cap" style="color: #f8fafc;">100 Max</div>
         <div class="stat-sub">Strict Limit Before Pause</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Total Outbound Sent</div>
         <div class="stat-val" id="kpi-outreach-sent" style="color: #3b82f6;">...</div>
-        <div class="stat-sub" id="kpi-outreach-progress-sub">0% of 300 Cap Reached</div>
+        <div class="stat-sub" id="kpi-outreach-progress-sub">0% of 100 Cap Reached</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Queued / Ready to Send</div>
@@ -1825,7 +1826,7 @@ def render_dashboard_html() -> str:
         const res = await fetch('/v1/outreach/stats');
         const data = await res.json();
         const sent = Number(data.sent_count || 0);
-        const cap = Number(data.cap || 300);
+        const cap = Number(data.cap || 100);
         const queued = Number(data.queued_count || 0);
         const replies = Number(data.total_replies || 0);
         const interested = Number(data.interested_count || 0);

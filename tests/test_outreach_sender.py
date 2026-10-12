@@ -508,9 +508,30 @@ def test_daily_cap_and_window(conn, cfg):
     assert run(conn, cfg, mb) == {**run(conn, cfg, mb), "in_window": False} and len(mb.sent) == 2
 
 
-def test_hostinger_daily_limit_env_does_not_override_campaign_ceiling(conn, cfg, monkeypatch):
+def test_daily_cap_falls_back_to_100_unless_hostinger_daily_limit_is_set(conn, cfg, monkeypatch):
+    """A yaml ceiling of 300 or 1000 does not raise the rolling cap. Only a set env var can."""
+    assert sender.load_config()["pacing"]["cycle_limit"] == 30
+    cfg["pacing"]["daily_limit"] = 300
+    cfg["pacing"]["provider_daily_limit"] = 300
+    monkeypatch.delenv("HOSTINGER_DAILY_LIMIT", raising=False)
+    assert sender.daily_cap(conn, cfg) == 100
+    monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "")
+    assert sender.daily_cap(conn, cfg) == 100
+    monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "   ")
+    assert sender.daily_cap(conn, cfg) == 100
+    monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "nope")
+    assert sender.daily_cap(conn, cfg) == 100
+    cfg["pacing"]["daily_limit"] = 2
+    assert sender.daily_cap(conn, cfg) == 2
+    cfg["pacing"]["daily_limit"] = 1000
     monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "1")
-    assert sender.daily_cap(conn, cfg) == cfg["pacing"]["daily_limit"]
+    assert sender.daily_cap(conn, cfg) == 1
+    monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "40")
+    assert sender.daily_cap(conn, cfg) == 40
+    monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "250")
+    assert sender.daily_cap(conn, cfg) == 250
+    monkeypatch.delenv("HOSTINGER_DAILY_LIMIT", raising=False)
+    assert sender.daily_cap(conn, cfg) == 100
 
 
 def test_checked_in_cap_is_100_from_the_first_sending_day(monkeypatch):
@@ -518,10 +539,13 @@ def test_checked_in_cap_is_100_from_the_first_sending_day(monkeypatch):
     monkeypatch.delenv("HOSTINGER_DAILY_LIMIT", raising=False)
     real = sender.load_config()
     p = real["pacing"]
-    assert "ramp" not in p and p["daily_limit"] == 1000 and p["provider_daily_limit"] == 1000
-    assert sender.daily_cap(None, real) == 1000
+    assert "ramp" not in p and p["daily_limit"] == 100 and p["provider_daily_limit"] == 100
+    assert p["cycle_limit"] == 30
+    assert sender.daily_cap(None, real) == 100
+    monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "")
+    assert sender.daily_cap(None, real) == 100
     monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "40")
-    assert sender.daily_cap(None, real) == 1000                # stale secret cannot restore the retired hold
+    assert sender.daily_cap(None, real) == 40
     monkeypatch.setenv("HOSTINGER_DAILY_LIMIT", "1000")
     assert sender.daily_cap(None, real) == 1000
     assert (p["window_start"], p["window_end"], p["send_days"]) == ("08:00", "17:30", [0, 1, 2, 3, 4, 5, 6])
@@ -840,7 +864,8 @@ def test_checked_in_config_sends_v4_to_trades_and_v2_to_other_industries():
     assert real["planning"]["industry_limit"]["enabled"] is True
     assert real["planning"]["queue_ahead"] == 400
     assert real["planning"]["v4_queue_ahead"] == 150
-    assert real["pacing"]["daily_limit"] == 1000 and real["pacing"]["provider_daily_limit"] == 1000
+    assert real["pacing"]["daily_limit"] == 100 and real["pacing"]["provider_daily_limit"] == 100
+    assert real["pacing"]["cycle_limit"] == 30
     ids = [str(uuid.uuid4()) for _ in range(40)]
     for ind in ("hvac", "plumbing", "roofing", "HVAC"):
         assert all(sender.copy_arm({"company_id": i, "industry": ind}, real) == cw.V4 for i in ids), ind
