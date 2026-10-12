@@ -20,6 +20,16 @@ from cloudos.config import REPO_ROOT
 CAMPAIGN_PATH = REPO_ROOT / "config" / "campaigns" / "google_reviews_maps_299.yaml"
 CAMPAIGN = "google_reviews_maps_299"
 COPY_VERSION = "claude-review-v1"
+# Same buffer the Oct 9 replenish used. Each cycle prepares at most one batch,
+# not the whole Ready table: that scan is what the database cancels or stalls on.
+REPLENISH_BELOW = 50
+REPLENISH_BATCH = 60
+# Matches planning.queue_ahead. This bounds one prepare step; it is not a send cap.
+ENQUEUE_CAP = 300
+# Fuse for the prepare statements. Short enough that a bad plan cannot consume
+# the 20-minute job, long enough for the bounded query on a small database.
+PLAN_STATEMENT_TIMEOUT = "45000"
+_SUPPRESSED = {"email_suppressed", "domain_suppressed", "company_suppressed", "do_not_contact", "bounced"}
 URL = re.compile(r"https?://|www\.", re.I)
 OLD_OFFER = re.compile(
     r"missed[- ]?call|missed callers?|quote follow[- ]?up|\$497|\$1,?500|5 recovered|5 missed|"
@@ -146,7 +156,20 @@ def score(row: dict, competitor: dict | None = None) -> Score:
     return Score(points, strongest, exact, competitor_context, hook, source)
 
 
-def _eligible_rows(conn, industries: list[str]) -> list[dict]:
+def _plan_timeout(conn, ms: str) -> None:
+    """Bound the current transaction's statements. Local, so it ends at commit or rollback."""
+    conn.execute("SELECT set_config('statement_timeout', %s, true)", (ms,))
+
+
+def _eligible_rows(conn, industries: list[str], *, limit: int) -> list[dict]:
+    """At most ``limit`` Ready candidates, newest-ready first.
+
+    Email-level suppression stays out of this scan. Matching outreach_norm_email()
+    on both sides of a correlated OR made Postgres walk the whole Ready table,
+    and that statement is what the database cancels (or stalls until the job
+    is killed). Company-id exclusions use primary keys. The send guard still
+    runs on this bounded set before copy is stored or a row is queued.
+    """
     return conn.execute(
         """
         SELECT c.company_id::text, c.company_name, c.website, c.industry, c.city, c.state,
@@ -162,49 +185,74 @@ def _eligible_rows(conn, industries: list[str]) -> list[dict]:
           AND c.personalization ? 'google_reviews' AND c.personalization ? 'google_rating'
           AND c.outreach_status NOT IN ('contacted','replied','bounced','unsubscribed','do_not_contact')
           AND NOT EXISTS (
-              SELECT 1 FROM email_suppressions s
-              WHERE (s.email IS NOT NULL AND outreach_norm_email(s.email) = outreach_norm_email(ct.email))
-                 OR (coalesce(s.domain, '') <> '' AND s.domain = split_part(lower(trim(ct.email)), '@', 2))
-                 OR s.company_id = c.company_id)
-          AND NOT EXISTS (
-              SELECT 1 FROM outreach_history h
-              WHERE h.status = 'sent' AND (h.company_id = c.company_id OR outreach_norm_email(h.email) = outreach_norm_email(ct.email)))
-          AND NOT EXISTS (
-              SELECT 1 FROM outreach_messages m
-              WHERE m.direction = 'outbound' AND (m.company_id = c.company_id OR outreach_norm_email(m.recipient) = outreach_norm_email(ct.email)))
-          AND NOT EXISTS (
               SELECT 1 FROM outreach_queue q
               WHERE q.company_id = c.company_id AND q.state IN ('sent', 'queued', 'claimed')
           )
           AND NOT EXISTS (
               SELECT 1 FROM outreach_campaign_copy cc
-              WHERE cc.company_id = c.company_id AND cc.campaign = 'google_reviews_maps_299' AND cc.qa_passed_at IS NOT NULL
+              WHERE cc.company_id = c.company_id AND cc.campaign = %s AND cc.qa_passed_at IS NOT NULL
           )
-        """, (industries,)).fetchall()
-
-
-def _peer_rows(conn, industries: list[str]) -> list[dict]:
-    """All locally comparable map listings, including those without an email.
-    A competitor is market evidence, not an outreach recipient."""
-    return conn.execute(
-        """
-        SELECT company_id::text, company_name, industry, city, state, personalization
-        FROM companies
-        WHERE active AND industry = ANY(%s::text[])
-          AND qualification_status <> 'REJECT'
-          AND personalization ? 'google_reviews' AND personalization ? 'google_rating'
-        """, (industries,),
+          AND NOT EXISTS (
+              SELECT 1 FROM outreach_history h
+              WHERE h.company_id = c.company_id AND h.status = 'sent'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM outreach_messages m
+              WHERE m.company_id = c.company_id AND m.direction = 'outbound'
+          )
+        ORDER BY c.ready_at DESC NULLS LAST, c.discovered_at DESC
+        LIMIT %s
+        """,
+        (industries, CAMPAIGN, int(limit)),
     ).fetchall()
 
 
-def qualify(conn, cfg: dict | None = None) -> dict:
+def _peer_rows(conn, industries: list[str], *, cities: list[str]) -> list[dict]:
+    """The two strongest map listings in each of these cities.
+
+    Scoring only needs the local review leader and the runner-up (the lead
+    itself may be the leader). Loading every listing in the industries is what
+    made the prepare step spend the rest of the job in Python after the query
+    finally returned.
+    """
+    if not cities:
+        return []
+    return conn.execute(
+        """
+        SELECT company_id::text, company_name, industry, city, state, personalization
+        FROM (
+            SELECT company_id, company_name, industry, city, state, personalization,
+                   row_number() OVER (
+                       PARTITION BY lower(btrim(industry)), lower(btrim(city))
+                       ORDER BY CASE WHEN (personalization->>'google_reviews') ~ '^[0-9]+$'
+                                     THEN (personalization->>'google_reviews')::int END DESC NULLS LAST,
+                                company_id
+                   ) AS rn
+            FROM companies
+            WHERE active AND industry = ANY(%s::text[])
+              AND qualification_status <> 'REJECT'
+              AND personalization ? 'google_reviews' AND personalization ? 'google_rating'
+              AND lower(btrim(city)) = ANY(%s::text[])
+        ) ranked
+        WHERE rn <= 2
+        """,
+        (industries, cities),
+    ).fetchall()
+
+
+def qualify(conn, cfg: dict | None = None, *, limit: int | None = None) -> dict:
     cfg = cfg or load_config()
     selection = cfg["selection"]
     industries = list(selection["industry_priority"])
-    rows = [dict(r) for r in _eligible_rows(conn, industries)]
+    cap = int(limit) if limit is not None else int(selection["target"])
+    cap = max(cap, 0)
+    _plan_timeout(conn, PLAN_STATEMENT_TIMEOUT)
+    rows = [dict(r) for r in _eligible_rows(conn, industries, limit=max(cap * 2, cap) if cap else 0)]
+    cities = sorted({(row.get("city") or "").strip().lower() for row in rows if (row.get("city") or "").strip()})
     by_market: dict[tuple[str, str], list[dict]] = {}
-    for row in (dict(r) for r in _peer_rows(conn, industries)):
+    for row in (dict(r) for r in _peer_rows(conn, industries, cities=cities)):
         by_market.setdefault((row["industry"], (row.get("city") or "").lower()), []).append(row)
+    _plan_timeout(conn, "0")
     scored = []
     for row in rows:
         peers = [p for p in by_market.get((row["industry"], (row.get("city") or "").lower()), [])
@@ -214,7 +262,7 @@ def qualify(conn, cfg: dict | None = None) -> dict:
     order = {industry: n for n, industry in enumerate(industries)}
     scored.sort(key=lambda item: (-item[1].value, order.get(item[0]["industry"], 999), item[0]["company_name"].lower()))
     minimum = int(selection["minimum_score"])
-    chosen = [(row, s) for row, s in scored if s.value >= minimum][: int(selection["target"])]
+    chosen = [(row, s) for row, s in scored if s.value >= minimum][:cap]
     for row, s in chosen:
         payload = {
             "campaign": CAMPAIGN, "selected": True, "score": s.value,
@@ -235,9 +283,8 @@ def qualify(conn, cfg: dict | None = None) -> dict:
     }
 
 
-def selected(conn) -> list[dict]:
-    rows = conn.execute(
-        """
+def selected(conn, *, limit: int | None = None) -> list[dict]:
+    sql = """
         SELECT c.company_id::text, c.company_name, c.industry, c.city, c.state, c.website,
                c.personalization->'review_campaign' campaign_data, ct.email
         FROM companies c
@@ -253,7 +300,12 @@ def selected(conn) -> list[dict]:
               WHERE q.company_id = c.company_id AND q.state IN ('sent', 'queued', 'claimed')
           )
         ORDER BY (c.personalization->'review_campaign'->>'score')::int DESC, c.company_name
-        """, (CAMPAIGN,)).fetchall()
+    """
+    params: list = [CAMPAIGN]
+    if limit is not None:
+        sql += " LIMIT %s"
+        params.append(int(limit))
+    rows = conn.execute(sql, params).fetchall()
     out = []
     for r in rows:
         d = dict(r); campaign_data = d.pop("campaign_data") or {}
@@ -427,18 +479,9 @@ def approved_count(conn) -> int:
     ).fetchone()["n"]
 
 
-def queue_approved(conn, *, postal_address: str, limit: int | None = None) -> dict:
-    if not postal_address.strip():
-        return {"queued": 0, "stopped": "SENDER_POSTAL_ADDRESS is not set - nothing prepared"}
-    conn.execute(
-        """
-        DELETE FROM outreach_queue
-        WHERE campaign = %s AND state = 'cancelled'
-        """,
-        (CAMPAIGN,),
-    )
-    if approved_count(conn) < 50:
-        auto_prepare_campaign(conn, limit=limit)
+def _enqueue_approved(conn, *, postal_address: str, limit: int | None) -> dict:
+    """Queue copy that already passed QA. Starts from the copy table, not the Ready scan."""
+    fetch_limit = ENQUEUE_CAP if limit is None else max(int(limit), 0)
     rows = conn.execute(
         """
         SELECT cc.*, ct.email recipient, c.company_name
@@ -455,7 +498,7 @@ def queue_approved(conn, *, postal_address: str, limit: int | None = None) -> di
           )
         ORDER BY (cc.evidence->>'score')::int DESC NULLS LAST, cc.updated_at
         LIMIT %s
-        """, (CAMPAIGN, limit or 1000000)).fetchall()
+        """, (CAMPAIGN, fetch_limit)).fetchall()
     out = {"queued": 0, "blocked": 0}
     from cloudos.conversations import guard
     from cloudos.outreach import copy as copywriter
@@ -479,7 +522,72 @@ def queue_approved(conn, *, postal_address: str, limit: int | None = None) -> di
             """, (row["company_id"], row["recipient"], row["subject"], body, row["copy_version"],
                    CAMPAIGN, COPY_VERSION, json.dumps(row["evidence"] or {}))).rowcount
         out["queued"] += int(bool(cur))
+    return out
+
+
+def _sendable(conn, leads: list[dict]) -> list[dict]:
+    """Drop leads the send guard would refuse, so they cannot fill the 50-copy buffer."""
+    from cloudos.conversations import guard
+    kept = []
+    for lead in leads:
+        verdict = guard.check_fail_closed(conn, lead.get("email") or "", "cold", lead["company_id"])
+        if verdict.get("allowed") is True:
+            kept.append(lead)
+            continue
+        reasons = set(verdict.get("reasons") or [])
+        if "guard_error" in reasons:
+            continue
+        new = "do_not_contact" if reasons & _SUPPRESSED else ("contacted" if "already_contacted" in reasons else None)
+        if new:
+            conn.execute(
+                "UPDATE companies SET outreach_status = %s, updated_at = now() WHERE company_id = %s::uuid "
+                "AND outreach_status IN ('outreach_ready','handed_off')",
+                (new, lead["company_id"]),
+            )
     conn.commit()
+    return kept
+
+
+def queue_approved(conn, *, postal_address: str, limit: int | None = None) -> dict:
+    if not postal_address.strip():
+        return {"queued": 0, "stopped": "SENDER_POSTAL_ADDRESS is not set - nothing prepared"}
+    # Queue copy that is already approved BEFORE any replenish scan, and commit
+    # it. A later timeout must not roll back mail that was ready to send.
+    _plan_timeout(conn, PLAN_STATEMENT_TIMEOUT)
+    conn.execute(
+        """
+        DELETE FROM outreach_queue
+        WHERE campaign = %s AND state = 'cancelled'
+        """,
+        (CAMPAIGN,),
+    )
+    out = _enqueue_approved(conn, postal_address=postal_address, limit=limit)
+    conn.commit()
+    try:
+        _plan_timeout(conn, PLAN_STATEMENT_TIMEOUT)
+        if approved_count(conn) >= REPLENISH_BELOW:
+            conn.rollback()
+        else:
+            batch = REPLENISH_BATCH if limit is None else max(min(int(limit), REPLENISH_BATCH), 0)
+            if batch:
+                prepared = auto_prepare_campaign(conn, limit=batch)
+                out["replenished"] = {
+                    "raw_eligible": (prepared.get("qualified") or {}).get("raw_eligible"),
+                    "selected": (prepared.get("qualified") or {}).get("selected"),
+                    "stored": (prepared.get("copy_imported") or {}).get("stored"),
+                }
+                more = _enqueue_approved(conn, postal_address=postal_address, limit=limit)
+                conn.commit()
+                out["queued"] += more["queued"]
+                out["blocked"] += more["blocked"]
+            else:
+                conn.rollback()
+    except Exception as exc:  # noqa: BLE001 - prepare must not discard the rows already committed
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        out["error"] = type(exc).__name__
     return out
 
 
@@ -613,11 +721,10 @@ def generate_unique_copies(leads: list[dict]) -> list[dict]:
 
 
 def auto_prepare_campaign(conn, limit: int | None = None) -> dict:
-    """Qualifies, generates deterministic copy passing QA, and stages drafts for approval."""
-    qual_res = qualify(conn)
-    leads = selected(conn)
-    if limit:
-        leads = leads[:limit]
+    """Qualify and store one bounded batch of copy. Never the whole Ready table."""
+    batch = int(limit) if limit is not None else REPLENISH_BATCH
+    qual_res = qualify(conn, limit=batch)
+    leads = _sendable(conn, selected(conn, limit=batch if batch else None))
     copy_records = generate_unique_copies(leads)
     import_res = import_copy(conn, json.dumps(copy_records))
     return {

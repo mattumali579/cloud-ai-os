@@ -32,19 +32,34 @@ from cloudos.leadgen.store import Candidate  # noqa: E402
 DOCS = ROOT / "docs" / "lead_engine"
 
 
+def _save_run(run_id, payload: dict) -> None:
+    """Write the run row, once more if the pooler has already closed the socket."""
+    import psycopg
+    last = None
+    body = json.dumps(payload, default=str)
+    for attempt in (1, 2):
+        try:
+            with db.get_conn() as conn:
+                conn.execute("UPDATE lead_runs SET finished_at = now(), stats = %s::jsonb WHERE run_id = %s",
+                             (body, run_id))
+            return
+        except psycopg.OperationalError as exc:
+            last = exc
+            logging.getLogger("cloudos.leadgen").warning(
+                "lead run update dropped its database connection (%s), attempt %s", type(exc).__name__, attempt)
+    raise last
+
+
 def _record_run(mode: str, fn):
     with db.get_conn() as conn:
         run_id = conn.execute("INSERT INTO lead_runs (mode) VALUES (%s) RETURNING run_id", (mode,)).fetchone()["run_id"]
     try:
         result = fn()
     except BaseException as exc:
-        with db.get_conn() as conn:
-            conn.execute("UPDATE lead_runs SET finished_at = now(), stats = %s::jsonb WHERE run_id = %s",
-                         (json.dumps({"error": f"{type(exc).__name__}: {str(exc)[:300]}"}), run_id))
+        logging.getLogger("cloudos.leadgen").warning("lead engine %s failed: %s", mode, type(exc).__name__)
+        _save_run(run_id, {"error": f"{type(exc).__name__}: {str(exc)[:300]}"})
         raise
-    with db.get_conn() as conn:
-        conn.execute("UPDATE lead_runs SET finished_at = now(), stats = %s::jsonb WHERE run_id = %s",
-                     (json.dumps(result, default=str), run_id))
+    _save_run(run_id, result)
     return result
 
 

@@ -111,6 +111,80 @@ def test_status_text_shows_inventory_progress_and_ready_added_today_separately(m
     assert "12 of 300" not in text and "READY today" not in text
 
 
+# --------------------------------------- silent zero-send must be loud
+from datetime import datetime, timedelta, timezone
+
+
+class CycleConn(FakeConn):
+    """Funnel counts, plus one outreach_sender_runs row."""
+
+    def __init__(self, run, waiting=3590):
+        self.run, self.waiting = run, waiting
+
+    def execute(self, sql, params=None):
+        if "information_schema.columns" in sql:
+            table = (params or [""])[0]
+            return _Rows((1,) if table == "outreach_sender_runs" else None)
+        if "outreach_sender_runs" in sql:
+            return _Rows(self.run)
+        if "first_contacted_at IS NULL" in sql:
+            return _Rows({"n": self.waiting})
+        return super().execute(sql, params)
+
+
+def _cycle(monkeypatch, run, waiting=3590):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("AGENTMAIL_API_KEY", raising=False)
+    f = status.funnel(CycleConn(run, waiting), cap=300)
+    return f, status.as_text(f)
+
+
+def test_planner_error_is_listed_as_in_the_way(monkeypatch):
+    started = datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc)  # Monday, inside the window
+    run = {"started_at": started, "finished_at": started, "stats": {
+        "plan": {"error": "QueryCanceled", "at": ["connection.py:304"]},
+        "send": {"sent": 0, "in_window": True, "stopped": "nothing due", "auth_failed": False},
+    }}
+    f, text = _cycle(monkeypatch, run)
+    assert any(b.startswith("planner failed (QueryCanceled)") for b in f["blocking"])
+    assert any(b.startswith("in-window cycle sent 0 emails with 3590 Ready leads waiting") for b in f["blocking"])
+    assert "What's in the way:\n- nothing" not in text
+    assert "planner failed (QueryCanceled)" in text
+    assert "in-window cycle sent 0 emails with 3590 Ready leads waiting (stopped: nothing due)" in text
+    assert f["blocking"] and status.next_action({
+        "blocking": f["blocking"], "interested_total": 0, "failed_today": 0, "ambiguous_total": 0,
+        "target_remaining": 0, "ready_waiting": 3590, "send_cap_today": 300,
+    })["decision"] == "execute"
+
+
+def test_zero_send_on_a_weekend_is_not_the_weekday_blocker(monkeypatch):
+    started = datetime(2026, 10, 11, 16, 0, tzinfo=timezone.utc)  # Sunday
+    run = {"started_at": started, "finished_at": started, "stats": {
+        "send": {"sent": 0, "in_window": True, "stopped": "nothing due", "auth_failed": False},
+    }}
+    f, _ = _cycle(monkeypatch, run)
+    assert not any(b.startswith("in-window cycle sent 0") for b in f["blocking"])
+
+
+def test_stuck_cycle_is_listed_even_when_it_never_wrote_stats(monkeypatch):
+    started = datetime.now(timezone.utc) - timedelta(minutes=19)
+    f, text = _cycle(monkeypatch, {"started_at": started, "finished_at": None, "stats": {}})
+    assert any(b.startswith("sender cycle did not finish") for b in f["blocking"])
+    assert "sender cycle did not finish" in text
+
+
+def test_zero_send_is_quiet_when_nothing_is_ready_or_the_cap_was_hit(monkeypatch):
+    started = datetime(2026, 10, 12, 16, 0, tzinfo=timezone.utc)
+    empty = {"started_at": started, "finished_at": started, "stats": {
+        "send": {"sent": 0, "in_window": True, "stopped": "nothing due", "auth_failed": False},
+    }}
+    capped = {"started_at": started, "finished_at": started, "stats": {
+        "send": {"sent": 0, "in_window": True, "stopped": "daily cap reached", "auth_failed": False},
+    }}
+    assert not any(b.startswith("in-window cycle sent 0") for b in _cycle(monkeypatch, empty, waiting=0)[0]["blocking"])
+    assert not any(b.startswith("in-window cycle sent 0") for b in _cycle(monkeypatch, capped)[0]["blocking"])
+
+
 # ------------------------------------------------- manager reply alerts (no database)
 class _ReplyRows:
     def __init__(self, rows):
