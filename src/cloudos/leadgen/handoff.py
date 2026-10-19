@@ -10,6 +10,8 @@ drafted, queued or skipped never counts as sent.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import urllib.parse
 from datetime import datetime, timezone
@@ -21,19 +23,62 @@ from cloudos.leadgen.engine import outreach_ready_rows
 
 TAG = "lead_engine_company_id="
 SENT_STATUSES = {"contacted", "emailed", "follow-up 1 sent", "follow-up 2 sent", "follow-ups complete", "out of office"}
+log = logging.getLogger("cloudos.leadgen")
+
+
+class AirtableAPIError(Exception):
+    """One Airtable call failed. Callers stop; they do not retry."""
+
+    def __init__(self, status: int | None, detail: str, created: list | None = None):
+        self.status = status
+        self.detail = detail
+        self.created = list(created or [])
+        super().__init__(detail)
 
 
 class Airtable:
     def __init__(self, api_key: str, base_id: str, table: str):
+        self.api_key = api_key
+        self.base_id = base_id
         self.url = f"https://api.airtable.com/v0/{base_id}/{urllib.parse.quote(table)}"
         self.client = httpx.Client(timeout=60, headers={"Authorization": f"Bearer {api_key}"})
+
+    def _scrub(self, text: str) -> str:
+        for secret in (self.api_key, self.base_id):
+            if secret:
+                text = text.replace(secret, "[redacted]")
+        return text
+
+    def _public_detail(self, resp: httpx.Response) -> str:
+        detail = f"HTTP {resp.status_code}"
+        try:
+            body = resp.json()
+        except Exception:
+            return detail
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict):
+            text = " ".join(str(err.get(k) or "") for k in ("type", "message")).strip()
+            if text:
+                detail = text[:200]
+        elif isinstance(err, str) and err.strip():
+            detail = err.strip()[:200]
+        return self._scrub(detail)
+
+    def _send(self, method: str, **kwargs) -> httpx.Response:
+        """One attempt. A failure raises AirtableAPIError and does not retry."""
+        try:
+            resp = self.client.request(method, self.url, **kwargs)
+        except httpx.HTTPError:
+            raise AirtableAPIError(None, "request_failed") from None
+        if resp.status_code >= 400:
+            raise AirtableAPIError(resp.status_code, self._public_detail(resp)) from None
+        return resp
 
     def all(self, fields: list[str]) -> list[dict]:
         records, offset = [], ""
         while True:
             params = [("pageSize", "100")] + [("fields[]", f) for f in fields] + ([("offset", offset)] if offset else [])
-            resp = self.client.get(self.url, params=params)
-            resp.raise_for_status()
+            resp = self._send("GET", params=params)
             data = resp.json()
             records += data.get("records", [])
             offset = data.get("offset", "")
@@ -43,8 +88,11 @@ class Airtable:
     def create(self, rows: list[dict]) -> list[dict]:
         out = []
         for i in range(0, len(rows), 10):
-            resp = self.client.post(self.url, json={"records": [{"fields": r} for r in rows[i:i + 10]], "typecast": True})
-            resp.raise_for_status()
+            try:
+                resp = self._send("POST", json={"records": [{"fields": r} for r in rows[i:i + 10]], "typecast": True})
+            except AirtableAPIError as exc:
+                exc.created = out
+                raise
             out += resp.json().get("records", [])
         return out
 
@@ -106,8 +154,44 @@ def _cleared_by_guard(conn, rows: list[dict], want: int, dry_run: bool) -> tuple
     return ok, refused
 
 
+def _mark_handed_off(conn, rows: list[dict], created: list[dict]) -> None:
+    now = datetime.now(timezone.utc)
+    for row, rec in zip(rows, created):
+        conn.execute("UPDATE companies SET outreach_status = 'handed_off', handed_off_at = %s, handoff_ref = %s, "
+                     "updated_at = now() WHERE company_id = %s", (now, f"airtable:{rec['id']}", row["company_id"]))
+    conn.commit()
+
+
+def _defer_handoff(result: dict, exc: AirtableAPIError, *, handed_off: int) -> dict:
+    """Record a skipped Airtable handoff. Does not call Airtable again."""
+    count = 1
+    result.update(deferred=True, handed_off=handed_off, airtable_errors=count,
+                  airtable_status=exc.status, airtable_error=exc.detail)
+    status = f"HTTP {exc.status}" if exc.status else "no response"
+    noun = "error" if count == 1 else "errors"
+    message = (f"Airtable handoff deferred: {count} {noun} ({status}, {exc.detail}). "
+               f"Handed off: {handed_off}. No retry.")
+    log.warning("%s", message)
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(f"Airtable handoff deferred: {count} {noun} ({status}). Handed off: {handed_off}. No retry.\n")
+        except OSError:
+            log.warning("could not write the Airtable deferral count to the step summary")
+    return result
+
+
 def sync_and_handoff(conn, at: Airtable, cfg: dict, dry_run: bool = False) -> dict:
-    records = at.all(["Status", "Emailed At", "Email", "Signal"])
+    """Top up the sender's tray and read back sends.
+
+    Any Airtable error defers the rest of the handoff and returns. The failed
+    call is not retried, so a monthly billing-plan 429 cannot spend more quota.
+    """
+    try:
+        records = at.all(["Status", "Emailed At", "Email", "Signal"])
+    except AirtableAPIError as exc:
+        return _defer_handoff({"synced_sent": 0, "synced_unsubscribed": 0, "handed_off": 0}, exc, handed_off=0)
     result = {"airtable_records": len(records), "synced_sent": 0, "synced_unsubscribed": 0, "handed_off": 0}
 
     # 1) read back provider-confirmed outcomes for engine leads
@@ -150,11 +234,13 @@ def sync_and_handoff(conn, at: Airtable, cfg: dict, dry_run: bool = False) -> di
     if dry_run:
         result["would_hand_off"] = len(rows)
         return result
-    created = at.create([_fields(r, cfg) for r in rows])
-    now = datetime.now(timezone.utc)
-    for row, rec in zip(rows, created):
-        conn.execute("UPDATE companies SET outreach_status = 'handed_off', handed_off_at = %s, handoff_ref = %s, "
-                     "updated_at = now() WHERE company_id = %s", (now, f"airtable:{rec['id']}", row["company_id"]))
-    conn.commit()
+    try:
+        created = at.create([_fields(r, cfg) for r in rows])
+    except AirtableAPIError as exc:
+        created = list(exc.created)
+        if created:
+            _mark_handed_off(conn, rows, created)
+        return _defer_handoff(result, exc, handed_off=len(created))
+    _mark_handed_off(conn, rows, created)
     result["handed_off"] = len(created)
     return result
