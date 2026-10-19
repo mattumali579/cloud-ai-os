@@ -1,6 +1,10 @@
 """Lead engine pure-logic tests (no network, no database)."""
 from __future__ import annotations
 
+import argparse
+import logging
+
+import httpx
 import pytest
 
 from cloudos.leadgen.enrich import EmailFinding, Enrichment, extract_emails, rank_emails
@@ -261,3 +265,233 @@ def test_save_run_retries_a_dropped_connection(monkeypatch):
     monkeypatch.setattr(lead_engine.db, "get_conn", lambda: CM())
     lead_engine._save_run(7, {"ok": True})
     assert calls["n"] == 2
+
+
+API_KEY = "patSECRETVALUE"
+BASE_ID = "appSECRETBASE"
+BILLING_BODY = {"error": {"type": "PUBLIC_API_BILLING_LIMIT_EXCEEDED", "message": "API billing plan limit exceeded"}}
+
+
+class _Conn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, *_args, **_kwargs):
+        raise AssertionError("Airtable failure must not write the database")
+
+    def commit(self):
+        raise AssertionError("Airtable failure must not commit")
+
+
+class _Client:
+    def __init__(self, responses, calls):
+        self._responses = list(responses)
+        self._calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def request(self, method, url, **kwargs):
+        self._calls.append(method)
+        if not self._responses:
+            raise AssertionError(f"unexpected extra {method} after Airtable already failed")
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _response(status, body):
+    return httpx.Response(status, json=body)
+
+
+def _airtable(monkeypatch, responses, calls):
+    from cloudos.leadgen import handoff
+
+    monkeypatch.setattr(handoff.httpx, "Client", lambda **kw: _Client(responses, calls))
+    return handoff.Airtable(API_KEY, BASE_ID, "Leads")
+
+
+def _assert_secret_free(*chunks):
+    text = "\n".join(chunks)
+    assert API_KEY not in text
+    assert BASE_ID not in text
+    assert "api.airtable.com" not in text
+
+
+def test_airtable_list_follows_every_page_then_stops():
+    from cloudos.leadgen import handoff
+
+    calls = []
+    at = handoff.Airtable(API_KEY, BASE_ID, "Leads")
+    at.client = _Client([
+        _response(200, {"records": [{"id": "recA"}], "offset": "page-2"}),
+        _response(200, {"records": [{"id": "recB"}]}),
+    ], calls)
+    assert [r["id"] for r in at.all(["Status"])] == ["recA", "recB"]
+    assert calls == ["GET", "GET"]
+
+
+@pytest.mark.parametrize("status,body,label", [
+    (429, BILLING_BODY, "HTTP 429"),
+    (500, {"error": {"type": "SERVER_ERROR", "message": "temporarily unavailable"}}, "HTTP 500"),
+])
+def test_listing_error_defers_handoff_with_one_call(monkeypatch, tmp_path, caplog, status, body, label):
+    from cloudos.leadgen import handoff
+
+    calls = []
+    at = _airtable(monkeypatch, [_response(status, body)], calls)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    def _no_sleep(*_a, **_k):
+        raise AssertionError("retry sleep")
+
+    monkeypatch.setattr("time.sleep", _no_sleep)
+    with caplog.at_level(logging.WARNING, logger="cloudos.leadgen"):
+        result = handoff.sync_and_handoff(_Conn(), at, {"handoff": {}})
+    assert calls == ["GET"]
+    assert result["deferred"] is True
+    assert result["airtable_errors"] == 1
+    assert result["airtable_status"] == status
+    assert result["handed_off"] == 0
+    text = summary.read_text(encoding="utf-8")
+    assert text == f"Airtable handoff deferred: 1 error ({label}). Handed off: 0. No retry.\n"
+    assert "No retry" in caplog.text
+    _assert_secret_free(caplog.text, text, str(result))
+
+
+def test_quota_error_on_second_page_does_not_create_rows(monkeypatch, tmp_path, caplog):
+    from cloudos.leadgen import handoff
+
+    calls = []
+    at = _airtable(monkeypatch, [
+        _response(200, {"records": [{"id": "recA", "fields": {"Status": "Ready"}}], "offset": "page-2"}),
+        _response(429, BILLING_BODY),
+    ], calls)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    with caplog.at_level(logging.WARNING, logger="cloudos.leadgen"):
+        result = handoff.sync_and_handoff(_Conn(), at, {"handoff": {}})
+    assert calls == ["GET", "GET"]
+    assert result["deferred"] is True and result["airtable_errors"] == 1 and result["handed_off"] == 0
+    assert "API billing plan limit exceeded" in result["airtable_error"]
+    _assert_secret_free(caplog.text, summary.read_text(encoding="utf-8"), str(result))
+
+
+def test_create_stops_on_quota_and_keeps_rows_already_accepted(monkeypatch, tmp_path, caplog):
+    from cloudos.leadgen import handoff
+
+    calls = []
+    created_ids = [{"id": f"rec{i:02d}"} for i in range(10)]
+    at = _airtable(monkeypatch, [
+        _response(200, {"records": []}),
+        _response(200, {"records": created_ids}),
+        _response(429, BILLING_BODY),
+    ], calls)
+    rows = [{
+        "company_id": f"00000000-0000-0000-0000-{i:012d}",
+        "company_name": f"Co {i}", "domain": f"co{i}.test", "website": f"https://co{i}.test",
+        "industry": "roofing", "phone": "", "source": "osm", "qualification_level": "HIGH",
+        "qualification_reason": "ok", "personalization_facts": {}, "email": f"a{i}@co{i}.test",
+        "email_status": "validated", "email_source_url": f"https://co{i}.test/contact",
+    } for i in range(11)]
+    monkeypatch.setattr(handoff, "outreach_ready_rows", lambda conn, limit: rows)
+    monkeypatch.setattr("cloudos.conversations.guard.check_fail_closed", lambda *a, **k: {"allowed": True})
+    written = []
+
+    class Conn(_Conn):
+        def execute(self, sql, params=None):
+            written.append(params)
+
+        def commit(self):
+            written.append("commit")
+
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    cfg = {"handoff": {"offer": "x", "status": "Ready", "airtable_ready_window": 20, "airtable_record_ceiling": 900}}
+    with caplog.at_level(logging.WARNING, logger="cloudos.leadgen"):
+        result = handoff.sync_and_handoff(Conn(), at, cfg)
+    assert calls == ["GET", "POST", "POST"]
+    assert result["deferred"] is True and result["airtable_errors"] == 1 and result["handed_off"] == 10
+    marked = [p for p in written if isinstance(p, tuple)]
+    assert len(marked) == 10
+    assert {p[2] for p in marked} == {rows[i]["company_id"] for i in range(10)}
+    assert "Handed off: 10" in summary.read_text(encoding="utf-8")
+    _assert_secret_free(caplog.text, summary.read_text(encoding="utf-8"), str(result))
+
+
+def test_transport_error_defers_without_a_second_attempt(monkeypatch, tmp_path):
+    from cloudos.leadgen import handoff
+
+    calls = []
+    at = _airtable(monkeypatch, [httpx.ConnectError("down")], calls)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    result = handoff.sync_and_handoff(_Conn(), at, {"handoff": {}})
+    assert calls == ["GET"]
+    assert result == {
+        "synced_sent": 0, "synced_unsubscribed": 0, "handed_off": 0, "deferred": True,
+        "airtable_errors": 1, "airtable_status": None, "airtable_error": "request_failed",
+    }
+    assert summary.read_text(encoding="utf-8") == (
+        "Airtable handoff deferred: 1 error (no response). Handed off: 0. No retry.\n"
+    )
+
+
+def test_billing_message_cannot_carry_the_key_or_base_into_logs(monkeypatch, tmp_path, caplog):
+    from cloudos.leadgen import handoff
+
+    calls = []
+    leaked = {"error": {"type": "PUBLIC_API_BILLING_LIMIT_EXCEEDED",
+                        "message": f"API billing plan limit exceeded key={API_KEY} base={BASE_ID}"}}
+    at = _airtable(monkeypatch, [_response(429, leaked)], calls)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    with caplog.at_level(logging.WARNING, logger="cloudos.leadgen"):
+        result = handoff.sync_and_handoff(_Conn(), at, {"handoff": {}})
+    assert "[redacted]" in result["airtable_error"]
+    _assert_secret_free(caplog.text, summary.read_text(encoding="utf-8"), str(result))
+
+
+def test_handoff_command_exits_zero_when_airtable_quota_is_exceeded(monkeypatch, tmp_path, caplog, capsys):
+    import lead_engine
+    from cloudos.leadgen import handoff
+
+    calls = []
+    monkeypatch.setattr(handoff.httpx, "Client", lambda **kw: _Client([_response(429, BILLING_BODY)], calls))
+    monkeypatch.setattr(lead_engine.db, "get_conn", lambda: _Conn())
+    monkeypatch.setenv("AIRTABLE_API_KEY", API_KEY)
+    monkeypatch.setenv("AIRTABLE_BASE_ID", BASE_ID)
+    monkeypatch.setenv("AIRTABLE_TABLE_NAME", "Leads")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+
+    def _no_sleep(*_a, **_k):
+        raise AssertionError("retry sleep")
+
+    monkeypatch.setattr("time.sleep", _no_sleep)
+    with caplog.at_level(logging.WARNING, logger="cloudos.leadgen"):
+        code = lead_engine.cmd_handoff(None, argparse.Namespace(dry_run=False))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert calls == ["GET"]
+    assert '"deferred": true' in out and '"airtable_errors": 1' in out
+    summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert summary == "Airtable handoff deferred: 1 error (HTTP 429). Handed off: 0. No retry.\n"
+    _assert_secret_free(caplog.text, summary, out)
+
+
+def test_cycle_command_exits_zero_when_handoff_is_deferred(monkeypatch, capsys):
+    import lead_engine
+
+    monkeypatch.setattr(lead_engine, "_record_run", lambda mode, fn: {"refilled": True})
+    monkeypatch.setattr(lead_engine, "_handoff", lambda dry_run: {"deferred": True, "airtable_errors": 1, "handed_off": 0})
+    monkeypatch.setattr(lead_engine, "cmd_reports", lambda *_a, **_k: 0)
+    code = lead_engine.cmd_cycle(object(), argparse.Namespace(max_minutes=1, force=False, no_handoff=False))
+    assert code == 0
+    assert '"airtable_errors": 1' in capsys.readouterr().out
