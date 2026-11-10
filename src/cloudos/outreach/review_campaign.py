@@ -548,7 +548,12 @@ def _sendable(conn, leads: list[dict]) -> list[dict]:
     return kept
 
 
-def queue_approved(conn, *, postal_address: str, limit: int | None = None) -> dict:
+def queue_approved(conn, *, postal_address: str, limit: int | None = None, cfg: dict | None = None) -> dict:
+    # Imported here: sender imports this module at load, and the pause check lives there.
+    from cloudos.outreach.sender import PAUSE_REASON, prospect_send_enabled
+    if not prospect_send_enabled(cfg):
+        # Leave existing queue rows, copy, and contacts alone. Do not replenish.
+        return {"queued": 0, "blocked": 0, "paused": True, "stopped": PAUSE_REASON}
     if not postal_address.strip():
         return {"queued": 0, "stopped": "SENDER_POSTAL_ADDRESS is not set - nothing prepared"}
     # Queue copy that is already approved BEFORE any replenish scan, and commit

@@ -18,7 +18,9 @@ cycle, in order - each step survives the one before it failing:
   4. finish anything a crashed run left half-done (never resends)
   5. read the Hostinger inbox for replies and bounces
   6. one-time self-test email to the owner before the first prospect email ever
+     (skipped while prospect sending is paused — no SMTP at all)
   7. send due emails, paced, inside the send window, under today's cap
+     (refused unless campaign.enabled and OUTREACH_PROSPECT_SEND_ENABLED are both on)
   8. notices to AgentMail (and Discord for urgent ones), daily digests at 8 PM
   9. Airtable update (hourly, within the free-plan budget)
 
@@ -149,8 +151,11 @@ def campaign_selftest(conn, cfg: dict, mailbox, from_email: str) -> dict:
     The provider-confirmed outbound is recorded through the same queue path as a
     prospect email.  AgentMail then sends a real threaded reply back to the
     Hostinger inbox, which is polled and classified normally.  The test is
-    resumable and never sends its outbound twice.
+    resumable and never sends its outbound twice.  While prospect sending is
+    paused this returns before any insert or SMTP call.
     """
+    if not sender.prospect_send_enabled(cfg):
+        return {"ok": False, "paused": True, "stopped": sender.PAUSE_REASON}
     selftest_version = "hostinger-agentmail-roundtrip-v2"
     key = f"campaign_selftest:{review_campaign.CAMPAIGN}:{review_campaign.COPY_VERSION}:{selftest_version}"
     saved = _state(conn, key)
@@ -370,28 +375,35 @@ def cycle(minutes: float) -> dict:
                          "the newest replies in matt@fitnesshubb.com - if anyone asked to stop, their follow-ups "
                          "may still be scheduled.")["created"])
             step("sweep_after_replies", lambda: {k: v for k, v in sender.sweep(conn, cfg).items() if k != "rows"})
-            st = _state(conn, "selftest")
-            if not (st and st["value"].get("ok")):
-                step("selftest", lambda: selftest(conn, cfg, mailbox, from_email))
+            if not sender.prospect_send_enabled(cfg):
+                # Reply/bounce/unsubscribe handling above still ran. No owner self-test
+                # and no prospect SMTP until both resume switches are on.
+                res["selftest"] = {"skipped": sender.PAUSE_REASON}
+                res["send"] = {"sent": 0, "paused": True, "auth_failed": False, "ambiguous": 0,
+                               "stopped": sender.PAUSE_REASON}
+            else:
                 st = _state(conn, "selftest")
-            if st and st["value"].get("ok"):
-                # follow-ups only go out when this run managed to read the replies first
-                step("send", lambda: sender.run(conn, mailbox, cfg, from_email=from_email, minutes=minutes,
-                                                followups=replies_ok))
-                if (res.get("send") or {}).get("auth_failed"):
-                    step("auth_notice", lambda: agentmail.notify(
-                        conn, cfg, role="manager", severity="urgent", discord=_discord,
-                        dedupe_key=f"blocker:hostinger-auth:{datetime.now(timezone.utc).date()}",
-                        subject="Hostinger stopped accepting the outreach login",
-                        text="Sending paused mid-run because Hostinger refused the login. Nothing was sent twice; "
-                             "the rest waits and resumes by itself.")["created"])
-                ambiguous = (res.get("send") or {}).get("ambiguous", 0) + (res.get("recover") or {}).get("ambiguous", 0)
-                if ambiguous:
-                    step("ambiguous_notice", lambda: agentmail.notify(
-                        conn, cfg, role="manager", dedupe_key=f"ambiguous:{run_id}", severity="high",
-                        subject=f"{ambiguous} email(s) may or may not have gone out",
-                        text="A connection dropped in the middle of sending. To be safe these were NOT resent. "
-                             "They are marked Needs Review in Airtable."))
+                if not (st and st["value"].get("ok")):
+                    step("selftest", lambda: selftest(conn, cfg, mailbox, from_email))
+                    st = _state(conn, "selftest")
+                if st and st["value"].get("ok"):
+                    # follow-ups only go out when this run managed to read the replies first
+                    step("send", lambda: sender.run(conn, mailbox, cfg, from_email=from_email, minutes=minutes,
+                                                    followups=replies_ok))
+                    if (res.get("send") or {}).get("auth_failed"):
+                        step("auth_notice", lambda: agentmail.notify(
+                            conn, cfg, role="manager", severity="urgent", discord=_discord,
+                            dedupe_key=f"blocker:hostinger-auth:{datetime.now(timezone.utc).date()}",
+                            subject="Hostinger stopped accepting the outreach login",
+                            text="Sending paused mid-run because Hostinger refused the login. Nothing was sent twice; "
+                                 "the rest waits and resumes by itself.")["created"])
+                    ambiguous = (res.get("send") or {}).get("ambiguous", 0) + (res.get("recover") or {}).get("ambiguous", 0)
+                    if ambiguous:
+                        step("ambiguous_notice", lambda: agentmail.notify(
+                            conn, cfg, role="manager", dedupe_key=f"ambiguous:{run_id}", severity="high",
+                            subject=f"{ambiguous} email(s) may or may not have gone out",
+                            text="A connection dropped in the middle of sending. To be safe these were NOT resent. "
+                                 "They are marked Needs Review in Airtable."))
             mailbox.close()
         cap = None
         try:
@@ -495,6 +507,9 @@ def main(argv=None) -> int:
             if not out["ok"]:
                 return 1
         elif a.cmd == "campaign-selftest":
+            if not sender.prospect_send_enabled(cfg):
+                print(public({"ok": False, "paused": True, "stopped": sender.PAUSE_REASON}))
+                return 1
             mb = from_env(cfg)
             from_email = (os.environ.get(cfg["sender"]["from_email_env"]) or "").strip()
             if mb is None or not from_email:
