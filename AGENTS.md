@@ -20,3 +20,9 @@ For any advertising, social creative, product creative, affiliate creative, or s
 For outreach, lead-gen, email, SMS, or campaign execution, you MUST read and follow `docs/OUTREACH_EXECUTION_RULES.md`. An explicit outreach assignment from the owner counts as approval to send after sender readiness is verified; do not ask for duplicate approval.
 
 The professional 2026-09-22 GOOD reference is the baseline. The first flat/template batch is a negative example and should be rejected unless explicitly requested.
+
+## Jarvis glasses full-computer voice control
+
+When the request concerns Ray-Ban Meta glasses, Visor, Jarvis voice control, computer access, voice follow-ups or continuous multi-step Windows actions, first read `docs/JARVIS_GLASSES_IMPLEMENTATION.md` and `docs/JARVIS_GLASSES_PROGRESS.md`, then execute against the real local Windows workspace. The tracking/acceptance issue is https://github.com/mattumali579/cloud-ai-os/issues/22 and Cursor guidance is in `.cursor/rules/jarvis-glasses.mdc`.
+
+Treat the specification as an implementation task, not just an analysis request: inspect existing local-only files, identify the first broken hop, implement minimal fixes, test end-to-end, and update the progress ledger after every meaningful check. Preserve other changes and require approvals for destructive/sensitive operations. Do not claim the glasses control Jarvis until verified through actual physical glasses → phone → Windows action → spoken response.
