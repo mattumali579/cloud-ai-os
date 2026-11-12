@@ -1,0 +1,23 @@
+---
+description: "Use when implementing, debugging, or discussing Ray-Ban Meta glasses / Visor / Jarvis voice-to-Windows remote control. The actual implementation contract is docs/JARVIS_GLASSES_IMPLEMENTATION.md and GitHub issue #22."
+alwaysApply: false
+---
+
+# Jarvis glasses executable task instructions
+
+The owner's requested result is a **working Ray-Ban Meta glasses → Visor Android → authenticated private bridge → Jarvis Windows GUI automation → verified result → spoken response** system. This is NOT a request for a plan, one-shot command handler, search query, or conversational demo.
+
+Before doing any related work:
+1. **Read the entire `docs/JARVIS_GLASSES_IMPLEMENTATION.md`** and GitHub issue #22.
+2. Read `docs/JARVIS_GLASSES_PROGRESS.md` for current tested state (create/update it if missing).
+3. Examine the local, uncommitted Windows checkout before editing; old Jarvis/Visor patches might exist only there.
+4. Inspect available tools, phone router, host worker, Windows interactive session, Visor logs/capability docs, and network/auth.
+5. Execute the first broken step, verify it, and continue through the acceptance tests. Repair failures and retest; stop only for genuine human-controlled permissions or device/app limitations.
+6. Use one trusted Windows desktop automation tool with existing worker and Playwright. Avoid replacing established infrastructure with new servers, hardcoded commands for every app, or an unprotected remote shell.
+7. Preserve all owner modifications and safety confirmations for irreversible external actions. No keys in Git.
+8. Persist evidence and remaining steps to the progress document so interrupted Cursor agent contexts can resume accurately.
+9. Never report hardware success without an observed glasses-to-PC-and-back test. Distinguish actual results from mocks.
+
+**Target issue:** https://github.com/mattumali579/cloud-ai-os/issues/22
+
+For other, unrelated projects, do not initiate this task.
