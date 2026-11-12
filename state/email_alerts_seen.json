@@ -3,6 +3,7 @@
     "<010001a1bbc53f79-4ff7ff99-59d9-4d1b-afad-cc988aee3e88-000000@email.amazonses.com>": "2026-11-08T17:00:16.504037+00:00",
     "<010101a1c314ff3d-5dad0a69-2170-4621-a6f0-38e6a27c267f-000000@us-west-2.amazonses.com>": "2026-11-10T03:00:24.192149+00:00",
     "<010f01a19bff8811-44fec867-bc0c-4075-9a34-7ed14b4d0f98-000000@us-east-2.amazonses.com>": "2026-11-02T13:00:48.606753+00:00",
+    "<010f01a1d0a91638-330fa684-8ad5-4eaf-a4ed-ce949068500a-000000@us-east-2.amazonses.com>": "2026-11-12T19:00:38.217044+00:00",
     "<20261030215241.478738bdb5cf6a57@notifications.joinhandshake.com>": "2026-10-30T22:00:34.305309+00:00",
     "<20261030215306.a1fea20b80c2e00b@notifications.joinhandshake.com>": "2026-10-30T22:00:34.305309+00:00",
     "<20261030215321.82bb1b8accf0aa48@notifications.joinhandshake.com>": "2026-10-30T22:00:34.305309+00:00",
@@ -19,10 +20,7 @@
     "<4Rj88qaAtT-6suRKwtGS0w@notifications.google.com>": "2026-11-02T10:14:12.321588+00:00",
     "<6aef77bfa5413_12ab11c04062794@prd-archimedes-usw2-sidekiq-5d9b78c7bc-mmcw4.mail>": "2026-11-07T21:00:31.233817+00:00",
     "<6af0ad257d5ca_11416d882431459@prd-archimedes-usw2-sidekiq-5d9b78c7bc-8nlbd.mail>": "2026-11-08T18:08:33.491107+00:00",
-    "<7DKErGyByYNWwagScgMHZg@notifications.google.com>": "2026-10-29T17:44:32.595883+00:00",
-    "<GNGi-29CA-vVl1xTGN3U0w@notifications.google.com>": "2026-10-29T17:44:32.595883+00:00",
     "<IvYh_vNbAJMKzeXXfLSPTA@notifications.google.com>": "2026-10-30T20:00:22.035226+00:00",
-    "<Le0SI8WeE-LSTL13HaY9lA@notifications.google.com>": "2026-10-29T17:44:32.595883+00:00",
     "<RsHhEoF9Qku8iybjl1iZsw@geopod-ismtpd-90>": "2026-11-12T05:00:19.767819+00:00",
     "<S0b2xPayTv2pIq8WWpKXqA@geopod-ismtpd-13>": "2026-11-05T17:00:32.154889+00:00",
     "<XfarAibDS7e7BQBL4VLpWw@geopod-ismtpd-15>": "2026-11-07T17:00:35.497769+00:00",
@@ -32,9 +30,7 @@
     "<csK4-CPaGGyqieFYnsmppQ@notifications.google.com>": "2026-10-30T16:00:25.032847+00:00",
     "<gCiMzj1k0egFF5uMgkLLqQ@notifications.google.com>": "2026-11-10T13:00:15.962697+00:00",
     "<i_oOH3c3--sBtmsDRwdsDQ@notifications.google.com>": "2026-10-30T20:00:22.035226+00:00",
-    "<kp3Q1OFAk5yASMrbndQJGg@notifications.google.com>": "2026-10-29T17:44:32.595883+00:00",
-    "<ppCHpOo1SnCE7ywoe_fObQ@geopod-ismtpd-80>": "2026-11-02T10:14:12.321588+00:00",
-    "<qWDOB_Vz8Je4dOfU5hPtMw@notifications.google.com>": "2026-10-29T17:44:32.595883+00:00"
+    "<ppCHpOo1SnCE7ywoe_fObQ@geopod-ismtpd-80>": "2026-11-02T10:14:12.321588+00:00"
   },
-  "updated_at": "2026-11-12T17:00:41.218255+00:00"
+  "updated_at": "2026-11-12T19:00:38.941928+00:00"
 }
