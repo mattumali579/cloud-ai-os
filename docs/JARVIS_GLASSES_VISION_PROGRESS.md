@@ -4,7 +4,8 @@
 **Parent:** #22 / `docs/JARVIS_GLASSES_PROGRESS.md`  
 **Branch / worktree:** `cursor/issue-25-glasses-vision` @ `C:\Users\Admin\cloud-ai-os-issue25-wt`  
 **Dirty checkout preserved:** `C:\Users\Admin\cloud-ai-os` (master behind origin/master by 463; not pulled/reset)  
-**Cloud agent:** `bc-bfe59af4-560c-488c-8c0e-e861fbff7cc5` — no branch/PR found; treated as untrusted / incomplete
+**Cloud agent:** `bc-bfe59af4-560c-488c-8c0e-e861fbff7cc5` — no branch/PR found; treated as untrusted / incomplete  
+**Draft PR:** https://github.com/mattumali579/cloud-ai-os/pull/27 (`cursor/issue-25-glasses-vision`)
 
 ## Commands / results
 
