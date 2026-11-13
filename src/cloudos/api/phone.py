@@ -21,6 +21,22 @@ def execute_phone_task(task: str, agent: str) -> dict:
     if not task:
         raise CloudOSError(ErrorCode.VALIDATION_ERROR, "task is required")
 
+    # Glasses camera phrases stay on the vision route. They must not be handed
+    # to a model that can turn them into a web search.
+    from cloudos.glasses.vision.service import is_vision_utterance
+
+    if is_vision_utterance(task):
+        return {
+            "agent": "glasses-vision",
+            "output": (
+                "Held this as a glasses camera request. It was not sent to a model "
+                "or a web search. Use POST /v1/glasses/vision with the authorized photo."
+            ),
+            "files_created": [],
+            "duration_s": None,
+            "search": False,
+        }
+
     if agent in ("auto", "claude"):
         try:
             result = claude_cli.generate(
