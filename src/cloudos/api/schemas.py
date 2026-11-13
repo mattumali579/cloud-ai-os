@@ -27,6 +27,24 @@ class InvokeRequest(BaseModel):
     max_tokens: int = Field(default=1024, ge=1, le=65_536)
 
 
+class GlassesVisionRequest(BaseModel):
+    """One authorized glasses-vision turn. Images are optional stills, not a stream."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    utterance: str = Field(min_length=1, max_length=2_000)
+    image_base64: Optional[str] = Field(default=None, max_length=20_000_000)
+    mime: str = Field(default="image/x-portable-pixmap", max_length=80)
+    consent: bool = False
+    face_crop: bool = False
+    thermal_c: Optional[float] = Field(default=None, ge=-20, le=120)
+    thermal_state: Optional[str] = Field(default=None, max_length=32)
+    battery_percent: Optional[int] = Field(default=None, ge=0, le=100)
+    retain_frames: bool = False
+    device_token: Optional[str] = Field(default=None, max_length=200)
+    request_id: Optional[str] = Field(default=None, max_length=80)
+
+
 class PhoneTaskRequest(BaseModel):
     """Small, DB-independent task request accepted from the private phone UI."""
 
