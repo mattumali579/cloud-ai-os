@@ -1,0 +1,22 @@
+{
+  "name": "gesture-hud",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "copy-assets": "node scripts/copy-assets.mjs",
+    "dev": "npm run copy-assets && vite --host 127.0.0.1 --port 5177",
+    "build": "npm run copy-assets && tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5177",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "0.10.21"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  }
+}

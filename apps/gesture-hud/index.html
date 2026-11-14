@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gesture hologram HUD</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Gesture hologram</h1>
+        <p class="hint">
+          Hold both hands in the camera to stretch a colored portal between them.
+          Drop a hand to hide it. Press Next look to flip through 15 color looks.
+        </p>
+        <div class="controls">
+          <select id="camera" aria-label="Camera"></select>
+          <button class="primary" id="start" type="button">Start camera</button>
+          <button id="stop" type="button">Stop</button>
+          <button id="reset" type="button">Reset</button>
+          <button id="prevLook" type="button">Last look</button>
+          <button id="nextLook" type="button">Next look</button>
+          <label><input id="mirror" type="checkbox" checked /> Mirror</label>
+        </div>
+      </header>
+      <div id="stage" class="mirror">
+        <video id="cam" autoplay playsinline muted></video>
+        <div id="panel" hidden>
+          <video id="panelCam" autoplay playsinline muted></video>
+        </div>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div id="hud">
+        <div id="hudMode">MODE: 3D MESH</div>
+        <div id="hudFilter">LOOK: THERMAL + DUAL TONE · Next look or pinch thumb and pinky</div>
+      </div>
+      <div id="banner">
+        <div>
+          <h2>Hold the screen</h2>
+          <p id="bannerText">Press Start camera. This page asks for the webcam only after you press Start. Nothing is recorded or uploaded.</p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
