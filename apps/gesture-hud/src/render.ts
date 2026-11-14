@@ -76,9 +76,14 @@ export function drawPanelOutline(
   width: number,
   height: number,
   gripping: boolean,
+  opacity = 1,
 ): void {
+  if (opacity < 0.02) {
+    return;
+  }
   const corners = panelCorners(pose).map((point) => toPx(point, width, height));
   ctx.save();
+  ctx.globalAlpha = opacity;
   ctx.beginPath();
   ctx.moveTo(corners[0].x, corners[0].y);
   for (let i = 1; i < corners.length; i += 1) {
@@ -101,16 +106,18 @@ export function applyPanelStyle(
   width: number,
   height: number,
   gripping: boolean,
+  opacity = 0,
 ): void {
   const px = pose.cx * width;
   const py = pose.cy * height;
   const w = pose.width * width;
   const h = pose.height * height;
+  el.hidden = opacity < 0.02;
   el.style.width = `${w}px`;
   el.style.height = `${h}px`;
   el.style.left = `${px}px`;
   el.style.top = `${py}px`;
-  el.style.opacity = "1";
+  el.style.opacity = String(opacity);
   el.style.borderColor = gripping ? "rgba(170,255,255,0.95)" : "rgba(220,235,245,0.7)";
   el.style.boxShadow = gripping
     ? "0 0 24px rgba(70,220,255,0.45), inset 0 0 40px rgba(0,40,70,0.35)"

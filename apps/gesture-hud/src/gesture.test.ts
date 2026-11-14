@@ -84,7 +84,7 @@ describe("panel pose", () => {
   });
 });
 
-describe("smoothing and freeze", () => {
+describe("smoothing and open-close", () => {
   it("moves partway toward the target", () => {
     const from = { cx: 0, cy: 0, width: 0.2, height: 0.1, rotation: 0, tilt: 0 };
     const to = { cx: 1, cy: 1, width: 0.8, height: 0.4, rotation: 1, tilt: 0.5 };
@@ -93,21 +93,25 @@ describe("smoothing and freeze", () => {
     expect(mid.width).toBeCloseTo(0.5);
   });
 
-  it("grips with two pinches, then freezes on release", () => {
+  it("shows the filter when both hands pinch and hides it when both open", () => {
     const left = hand(tip(0.25, 0.5), tip(0.26, 0.5), "Left");
     const right = hand(tip(0.74, 0.5), tip(0.75, 0.5), "Right");
     let state = createGestureState(0);
+    expect(state.surface).toBe(0);
     state = stepGesture(state, [left, right], 16);
     expect(state.status).toBe("gripping");
     expect(state.gripping).toBe(true);
-    const held = { ...state.panel };
+    expect(state.surface).toBeGreaterThan(0.2);
     const openLeft = hand(tip(0.2, 0.5), tip(0.35, 0.5), "Left");
     const openRight = hand(tip(0.7, 0.5), tip(0.9, 0.5), "Right");
+    const shown = state.surface;
     state = stepGesture(state, [openLeft, openRight], 32);
     expect(state.gripping).toBe(false);
     expect(state.status).toBe("two-hands");
-    expect(state.panel.cx).toBeCloseTo(held.cx);
-    expect(state.panel.width).toBeCloseTo(held.width);
+    expect(state.surface).toBeLessThan(shown);
+    state = stepGesture(state, [left, right], 48);
+    expect(state.gripping).toBe(true);
+    expect(state.surface).toBeGreaterThan(0.2);
   });
 
   it("fades indicators after both hands are gone for more than a second", () => {

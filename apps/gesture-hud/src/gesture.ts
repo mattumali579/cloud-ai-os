@@ -4,6 +4,7 @@ import {
   lerp,
   lerpAngle,
   pinchAnchor,
+  pinchDistance,
   type Point,
   type TrackedHand,
 } from "./landmarks";
@@ -55,6 +56,7 @@ export type GestureState = {
   displayPanel: PanelPose;
   status: GripStatus;
   gripping: boolean;
+  surface: number;
   lastSeenAt: number | null;
   indicatorsVisible: boolean;
   fade: number;
@@ -66,6 +68,7 @@ export function createGestureState(now = 0): GestureState {
     displayPanel: { ...DEFAULT_PANEL },
     status: "idle",
     gripping: false,
+    surface: 0,
     lastSeenAt: now || null,
     indicatorsVisible: false,
     fade: 0,
@@ -78,6 +81,7 @@ export function resetPanel(state: GestureState): GestureState {
     panel: { ...DEFAULT_PANEL },
     displayPanel: { ...DEFAULT_PANEL },
     gripping: false,
+    surface: 0,
     status: state.status === "idle" ? "idle" : state.status,
   };
 }
@@ -139,11 +143,16 @@ export function stepGesture(
     panel: { ...state.panel },
     displayPanel: { ...state.displayPanel },
   };
-  const pinching = hands.filter((hand) => isPinching(hand.landmarks, config.pinchThreshold));
+  const release = config.pinchThreshold * 1.7;
+  const closed = hands.filter((hand) => {
+    const distance = pinchDistance(hand.landmarks);
+    return state.gripping ? distance <= release : isPinching(hand.landmarks, config.pinchThreshold);
+  });
 
   if (hands.length === 0) {
     next.status = "idle";
     next.gripping = false;
+    next.surface = lerp(state.surface, 0, 0.45);
     if (state.lastSeenAt != null && now - state.lastSeenAt > config.lostMs) {
       next.indicatorsVisible = false;
       next.fade = lerp(state.fade, 0, 0.2);
@@ -158,11 +167,12 @@ export function stepGesture(
   next.indicatorsVisible = true;
   next.fade = lerp(state.fade, 1, 0.35);
 
-  if (pinching.length >= 2) {
-    const { left, right } = handedAnchor(pinching);
+  if (closed.length >= 2) {
+    const { left, right } = handedAnchor(closed);
     if (left && right) {
       next.status = "gripping";
       next.gripping = true;
+      next.surface = lerp(state.surface, 1, 0.5);
       next.panel = poseFromAnchors(left, right, config);
       next.displayPanel = smoothPose(state.displayPanel, next.panel, config.smooth);
       return next;
@@ -170,6 +180,7 @@ export function stepGesture(
   }
 
   next.gripping = false;
+  next.surface = lerp(state.surface, 0, 0.5);
   next.status = hands.length >= 2 ? "two-hands" : "one-hand";
   next.displayPanel = next.panel;
   return next;

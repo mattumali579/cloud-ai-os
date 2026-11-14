@@ -85,7 +85,7 @@ async function start(): Promise<void> {
     running = true;
     stopBtn.disabled = false;
     resetBtn.disabled = false;
-    panel.hidden = false;
+    panel.hidden = true;
     hideBanner();
     state = createGestureState(performance.now());
     loop();
@@ -142,10 +142,17 @@ function loop(): void {
 
   state = stepGesture(state, hands, now, config);
   ctx.clearRect(0, 0, width, height);
-  drawPanelOutline(ctx, state.displayPanel, width, height, state.gripping);
+  drawPanelOutline(ctx, state.displayPanel, width, height, state.gripping, state.surface);
   drawHands(ctx, hands, width, height, state.fade);
   drawStatus(ctx, state, detector.status.fps, detector.status.lastMs, detector.status.delegate);
-  applyPanelStyle(panel, state.displayPanel, canvas.clientWidth, canvas.clientHeight, state.gripping);
+  applyPanelStyle(
+    panel,
+    state.displayPanel,
+    canvas.clientWidth,
+    canvas.clientHeight,
+    state.gripping,
+    state.surface,
+  );
   requestAnimationFrame(loop);
 }
 
