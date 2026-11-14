@@ -59,9 +59,12 @@ def conn(schema, monkeypatch):
 
 
 @pytest.fixture
-def cfg():
+def cfg(monkeypatch):
+    # These tests are the resumed sender. Production config stays paused.
+    monkeypatch.setenv("OUTREACH_PROSPECT_SEND_ENABLED", "true")
     c = sender.load_config()
     c = _copy.deepcopy(c)
+    c["campaign"]["enabled"] = True
     c["pacing"].update(send_days=[0, 1, 2, 3, 4, 5, 6], window_start="00:00", window_end="23:59",
                        provider_daily_limit=1000, daily_limit=1000)
     c["experiment"] = {"v3_share": 0.0, "v3_industries": []}      # existing tests pin the v2 control copy
