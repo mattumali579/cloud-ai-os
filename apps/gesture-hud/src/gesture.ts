@@ -1,10 +1,8 @@
 import {
   clamp,
-  isPinching,
   lerp,
   lerpAngle,
   pinchAnchor,
-  pinchDistance,
   type Point,
   type TrackedHand,
 } from "./landmarks";
@@ -143,12 +141,6 @@ export function stepGesture(
     panel: { ...state.panel },
     displayPanel: { ...state.displayPanel },
   };
-  const release = config.pinchThreshold * 1.7;
-  const closed = hands.filter((hand) => {
-    const distance = pinchDistance(hand.landmarks);
-    return state.gripping ? distance <= release : isPinching(hand.landmarks, config.pinchThreshold);
-  });
-
   if (hands.length === 0) {
     next.status = "idle";
     next.gripping = false;
@@ -167,21 +159,21 @@ export function stepGesture(
   next.indicatorsVisible = true;
   next.fade = lerp(state.fade, 1, 0.35);
 
-  if (closed.length >= 2) {
-    const { left, right } = handedAnchor(closed);
+  if (hands.length >= 2) {
+    const { left, right } = handedAnchor(hands);
+    next.status = "gripping";
+    next.gripping = true;
+    next.surface = lerp(state.surface, 1, 0.55);
     if (left && right) {
-      next.status = "gripping";
-      next.gripping = true;
-      next.surface = lerp(state.surface, 1, 0.5);
       next.panel = poseFromAnchors(left, right, config);
       next.displayPanel = smoothPose(state.displayPanel, next.panel, config.smooth);
-      return next;
     }
+    return next;
   }
 
   next.gripping = false;
   next.surface = lerp(state.surface, 0, 0.5);
-  next.status = hands.length >= 2 ? "two-hands" : "one-hand";
+  next.status = "one-hand";
   next.displayPanel = next.panel;
   return next;
 }

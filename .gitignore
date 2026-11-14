@@ -17,6 +17,9 @@ node_modules/
 apps/gesture-hud/dist/
 apps/gesture-hud/public/mediapipe/
 apps/gesture-hud/public/models/
+apps/gesture-hud/ref-retrolens.py
+apps/gesture-hud/instagram.jpg
+apps/gesture-hud/ref/
 .wrangler/
 # runtime logs, not source
 logs/

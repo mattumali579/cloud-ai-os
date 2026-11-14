@@ -137,6 +137,26 @@ input[type="range"] { width: 110px; }
   pointer-events: none;
 }
 
+#hud {
+  grid-row: 2;
+  grid-column: 1;
+  z-index: 3;
+  pointer-events: none;
+  padding: 18px 20px;
+  font: 13px ui-monospace, Consolas, monospace;
+  text-shadow: 0 1px 2px #000;
+}
+
+#hudMode {
+  color: #ffe14a;
+  font-weight: 700;
+}
+
+#hudFilter {
+  color: #fff;
+  margin-top: 4px;
+}
+
 #stage,
 #banner {
   grid-row: 2;

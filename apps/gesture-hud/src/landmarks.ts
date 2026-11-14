@@ -49,6 +49,15 @@ export function isPinching(hand: Point[], threshold: number): boolean {
   return pinchDistance(hand) <= threshold;
 }
 
+export function thumbPinkyDistance(hand: Point[]): number {
+  const thumb = hand[4];
+  const pinky = hand[20];
+  if (!thumb || !pinky) {
+    return 1;
+  }
+  return Math.hypot(thumb.x - pinky.x, thumb.y - pinky.y);
+}
+
 export function pinchAnchor(hand: Point[]): Point {
   const thumb = hand[THUMB_TIP];
   const index = hand[INDEX_TIP];

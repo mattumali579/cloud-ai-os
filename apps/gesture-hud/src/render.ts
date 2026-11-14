@@ -131,18 +131,19 @@ export function drawStatus(
   fps: number,
   detectMs: number,
   delegate: string,
+  filterName = "thermal",
 ): void {
   const lines = [
-    `${state.status}${state.gripping ? " · grip" : ""}`,
-    `${fps} fps · ${detectMs.toFixed(0)} ms · ${delegate}`,
+    `MODE: 3D  FILTER: ${filterName.toUpperCase()}  ${state.status}`,
+    `${fps} fps · ${detectMs.toFixed(0)} ms · ${delegate} · N next filter`,
   ];
   ctx.save();
   ctx.font = "12px ui-monospace, Consolas, monospace";
   ctx.fillStyle = "rgba(0,0,0,0.45)";
-  ctx.fillRect(12, 12, 230, 40);
-  ctx.fillStyle = "#d9f6ff";
+  ctx.fillRect(12, 12, 360, 40);
+  ctx.fillStyle = "#ffe14a";
   ctx.fillText(lines[0], 20, 28);
-  ctx.fillStyle = "#9ad7e6";
+  ctx.fillStyle = "#ffffff";
   ctx.fillText(lines[1], 20, 44);
   ctx.restore();
 }

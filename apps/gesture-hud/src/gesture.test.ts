@@ -14,9 +14,12 @@ import {
   mirrorHand,
   pinchAnchor,
   pinchDistance,
+  thumbPinkyDistance,
   type Point,
   type TrackedHand,
 } from "./landmarks";
+import { applyFilter } from "./filters";
+import { portalPolygons } from "./portal";
 
 function tip(x: number, y: number, z = 0): Point {
   return { x, y, z };
@@ -37,6 +40,15 @@ describe("pinch and mirror", () => {
     expect(pinchDistance(close.landmarks)).toBeLessThan(0.04);
     expect(isPinching(close.landmarks, 0.055)).toBe(true);
     expect(isPinching(open.landmarks, 0.055)).toBe(false);
+  });
+
+  it("measures thumb to pinky for filter switching", () => {
+    const landmarks = Array.from({ length: 21 }, () => tip(0.5, 0.5, 0));
+    landmarks[4] = tip(0.2, 0.2);
+    landmarks[20] = tip(0.21, 0.21);
+    expect(thumbPinkyDistance(landmarks)).toBeLessThan(0.03);
+    landmarks[20] = tip(0.8, 0.8);
+    expect(thumbPinkyDistance(landmarks)).toBeGreaterThan(0.5);
   });
 
   it("mirrors x and keeps y", () => {
@@ -93,7 +105,7 @@ describe("smoothing and open-close", () => {
     expect(mid.width).toBeCloseTo(0.5);
   });
 
-  it("shows the filter when both hands pinch and hides it when both open", () => {
+  it("shows the filter with two hands and hides it when a hand drops", () => {
     const left = hand(tip(0.25, 0.5), tip(0.26, 0.5), "Left");
     const right = hand(tip(0.74, 0.5), tip(0.75, 0.5), "Right");
     let state = createGestureState(0);
@@ -102,12 +114,10 @@ describe("smoothing and open-close", () => {
     expect(state.status).toBe("gripping");
     expect(state.gripping).toBe(true);
     expect(state.surface).toBeGreaterThan(0.2);
-    const openLeft = hand(tip(0.2, 0.5), tip(0.35, 0.5), "Left");
-    const openRight = hand(tip(0.7, 0.5), tip(0.9, 0.5), "Right");
     const shown = state.surface;
-    state = stepGesture(state, [openLeft, openRight], 32);
+    state = stepGesture(state, [left], 32);
     expect(state.gripping).toBe(false);
-    expect(state.status).toBe("two-hands");
+    expect(state.status).toBe("one-hand");
     expect(state.surface).toBeLessThan(shown);
     state = stepGesture(state, [left, right], 48);
     expect(state.gripping).toBe(true);
@@ -134,6 +144,32 @@ describe("smoothing and open-close", () => {
     expect(state.displayPanel.width).toBeCloseTo(0.46);
   });
 });
+
+describe("portal look", () => {
+  it("builds two 3D bands between the hands", () => {
+    const left = fullHand(0.25);
+    const right = fullHand(0.75);
+    const polys = portalPolygons([left, right]);
+    expect(polys).toHaveLength(2);
+    expect(polys[0]).toHaveLength(6);
+    expect(polys[1]).toHaveLength(6);
+  });
+
+  it("paints thermal colors hotter on bright pixels", () => {
+    const data = { data: new Uint8ClampedArray([10, 10, 10, 255, 250, 250, 250, 255]) } as ImageData;
+    applyFilter(data, "thermal");
+    const darkRed = data.data[0];
+    const hotRed = data.data[4];
+    expect(hotRed).toBeGreaterThan(darkRed);
+  });
+});
+
+function fullHand(x: number): TrackedHand {
+  const landmarks: Point[] = Array.from({ length: 21 }, (_, index) =>
+    tip(x, 0.3 + (index % 5) * 0.05, 0),
+  );
+  return { landmarks, handedness: x < 0.5 ? "Left" : "Right", score: 1 };
+}
 
 describe("frame sources", () => {
   it("refuses the glasses adapter in this webcam-only build", async () => {
