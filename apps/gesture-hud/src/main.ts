@@ -9,7 +9,7 @@ import {
   type GestureConfig,
   type GestureState,
 } from "./gesture";
-import { nextFilter, type FilterName } from "./filters";
+import { labelFor, nextFilter, prevFilter, type FilterName } from "./filters";
 import { drawPortals, portalPolygons, toPixels } from "./portal";
 import { drawHands, sizeCanvas } from "./render";
 import { thumbPinkyDistance, type TrackedHand } from "./landmarks";
@@ -28,6 +28,8 @@ const cameraSelect = document.querySelector<HTMLSelectElement>("#camera")!;
 const mirrorToggle = document.querySelector<HTMLInputElement>("#mirror")!;
 const hudMode = document.querySelector<HTMLElement>("#hudMode")!;
 const hudFilter = document.querySelector<HTMLElement>("#hudFilter")!;
+const nextLookBtn = document.querySelector<HTMLButtonElement>("#nextLook")!;
+const prevLookBtn = document.querySelector<HTMLButtonElement>("#prevLook")!;
 
 const camera = new WebcamFrameSource(video);
 const glasses = new GlassesFrameSource();
@@ -115,6 +117,15 @@ function reset(): void {
   state = resetPanel(state);
 }
 
+function cycleLook(direction: 1 | -1): void {
+  const now = performance.now();
+  if (now - lastFilterSwitch < 180) {
+    return;
+  }
+  filterName = direction === 1 ? nextFilter(filterName) : prevFilter(filterName);
+  lastFilterSwitch = now;
+}
+
 function loop(): void {
   if (!running) {
     return;
@@ -151,11 +162,11 @@ function loop(): void {
   if (state.surface > 0.02 && hands.length >= 2) {
     scratchCtx.drawImage(video, 0, 0, width, height);
     const polygons = portalPolygons(hands).map((poly) => toPixels(poly, width, height));
-    drawPortals(ctx, scratchCtx, polygons, [filterName, nextFilter(filterName)], state.surface);
+    drawPortals(ctx, scratchCtx, polygons, [filterName, nextFilter(filterName)], state.surface, now);
   }
   drawHands(ctx, hands, width, height, state.fade);
   hudMode.textContent = `MODE: 3D MESH  ${state.status.toUpperCase()}  ${detector.status.fps} fps`;
-  hudFilter.textContent = `FILTER: ${filterName.toUpperCase()} · pinch thumb and pinky or press N`;
+  hudFilter.textContent = `LOOK: ${labelFor(filterName)} + ${labelFor(nextFilter(filterName))} · Next look or pinch thumb and pinky`;
   panel.hidden = true;
   requestAnimationFrame(loop);
 }
@@ -165,6 +176,8 @@ startBtn.addEventListener("click", () => {
 });
 stopBtn.addEventListener("click", stop);
 resetBtn.addEventListener("click", reset);
+nextLookBtn.addEventListener("click", () => cycleLook(1));
+prevLookBtn.addEventListener("click", () => cycleLook(-1));
 mirrorToggle.addEventListener("change", () => {
   stage.classList.toggle("mirror", mirrorToggle.checked);
 });
@@ -182,7 +195,10 @@ void camera.listDevices().then(fillCameras).catch(() => undefined);
 
 window.addEventListener("keydown", (event) => {
   if (event.key === "n" || event.key === "N") {
-    filterName = nextFilter(filterName);
+    cycleLook(1);
+  }
+  if (event.key === "p" || event.key === "P") {
+    cycleLook(-1);
   }
 });
 

@@ -66,6 +66,7 @@ export function drawPortals(
   polygons: Pixel[][],
   filters: FilterName[],
   opacity: number,
+  now = 0,
 ): void {
   if (!stamp || opacity < 0.02 || polygons.length === 0) {
     return;
@@ -85,7 +86,7 @@ export function drawPortals(
       return;
     }
     const patch = source.getImageData(x, y, w, h);
-    applyFilter(patch, filters[index] ?? filters[0]);
+    applyFilter(patch, filters[index] ?? filters[0], now);
     stamp.width = w;
     stamp.height = h;
     stamp.getContext("2d")!.putImageData(patch, 0, 0);

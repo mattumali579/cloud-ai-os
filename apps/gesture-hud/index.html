@@ -10,14 +10,16 @@
       <header>
         <h1>Gesture hologram</h1>
         <p class="hint">
-          Hold both hands in the camera to stretch a thermal portal between them, like the reference clip.
-          Drop a hand to hide it. Press N to switch filters.
+          Hold both hands in the camera to stretch a colored portal between them.
+          Drop a hand to hide it. Press Next look to flip through 15 color looks.
         </p>
         <div class="controls">
           <select id="camera" aria-label="Camera"></select>
           <button class="primary" id="start" type="button">Start camera</button>
           <button id="stop" type="button">Stop</button>
           <button id="reset" type="button">Reset</button>
+          <button id="prevLook" type="button">Last look</button>
+          <button id="nextLook" type="button">Next look</button>
           <label><input id="mirror" type="checkbox" checked /> Mirror</label>
         </div>
       </header>
@@ -30,7 +32,7 @@
       </div>
       <div id="hud">
         <div id="hudMode">MODE: 3D MESH</div>
-        <div id="hudFilter">FILTER: THERMAL · pinch thumb and pinky or press N</div>
+        <div id="hudFilter">LOOK: THERMAL + DUAL TONE · Next look or pinch thumb and pinky</div>
       </div>
       <div id="banner">
         <div>

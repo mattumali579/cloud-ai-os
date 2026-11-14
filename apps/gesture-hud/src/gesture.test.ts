@@ -18,7 +18,7 @@ import {
   type Point,
   type TrackedHand,
 } from "./landmarks";
-import { applyFilter } from "./filters";
+import { applyFilter, FILTER_NAMES, nextFilter, prevFilter } from "./filters";
 import { portalPolygons } from "./portal";
 
 function tip(x: number, y: number, z = 0): Point {
@@ -156,13 +156,41 @@ describe("portal look", () => {
   });
 
   it("paints thermal colors hotter on bright pixels", () => {
-    const data = { data: new Uint8ClampedArray([10, 10, 10, 255, 250, 250, 250, 255]) } as ImageData;
+    const data = sample();
     applyFilter(data, "thermal");
     const darkRed = data.data[0];
     const hotRed = data.data[4];
     expect(hotRed).toBeGreaterThan(darkRed);
   });
+
+  it("has fifteen looks and wraps from last back to first", () => {
+    expect(FILTER_NAMES).toHaveLength(15);
+    expect(nextFilter("edge")).toBe("thermal");
+    expect(prevFilter("thermal")).toBe("edge");
+  });
+
+  it("runs every look without throwing", () => {
+    for (const name of FILTER_NAMES) {
+      const data = sample();
+      applyFilter(data, name, 1200);
+      expect(data.data.length).toBe(8);
+    }
+  });
+
+  it("flips bright pixels dark on invert", () => {
+    const data = sample();
+    applyFilter(data, "invert");
+    expect(data.data[4]).toBeLessThan(20);
+  });
 });
+
+function sample(): ImageData {
+  return {
+    data: new Uint8ClampedArray([10, 10, 10, 255, 250, 250, 250, 255]),
+    width: 2,
+    height: 1,
+  } as ImageData;
+}
 
 function fullHand(x: number): TrackedHand {
   const landmarks: Point[] = Array.from({ length: 21 }, (_, index) =>
