@@ -14,6 +14,9 @@ resumes/tailored/
 playwright-report/
 test-results/
 node_modules/
+apps/gesture-hud/dist/
+apps/gesture-hud/public/mediapipe/
+apps/gesture-hud/public/models/
 .wrangler/
 # runtime logs, not source
 logs/

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gesture hologram HUD</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Gesture hologram</h1>
+        <p class="hint">
+          Start the camera, pinch thumb+index on both hands, then drag, stretch, or tilt the glass panel.
+          Let go to freeze it. Reset puts it back.
+        </p>
+        <div class="controls">
+          <select id="camera" aria-label="Camera"></select>
+          <button class="primary" id="start" type="button">Start camera</button>
+          <button id="stop" type="button">Stop</button>
+          <button id="reset" type="button">Reset panel</button>
+          <label><input id="mirror" type="checkbox" checked /> Mirror</label>
+          <label class="slider">Pinch <input id="pinch" type="range" min="0.02" max="0.12" step="0.005" value="0.055" /> <span id="pinchValue">0.055</span></label>
+        </div>
+      </header>
+      <div id="stage" class="mirror">
+        <video id="cam" autoplay playsinline muted></video>
+        <div id="panel" hidden>
+          <video id="panelCam" autoplay playsinline muted></video>
+        </div>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div id="banner">
+        <div>
+          <h2>Hold the screen</h2>
+          <p id="bannerText">Press Start camera. This page asks for the webcam only after you press Start. Nothing is recorded or uploaded.</p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
