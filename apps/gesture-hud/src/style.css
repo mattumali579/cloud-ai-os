@@ -179,3 +179,51 @@ input[type="range"] { width: 110px; }
 #banner p { margin: 0; color: var(--muted); max-width: 520px; }
 
 .error { color: #ff8a8a !important; }
+
+.modes { width: 100%; }
+
+button.mode.active {
+  background: #1c4a58;
+  border-color: #7be7ff;
+}
+
+.tools {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tools[hidden],
+button[hidden] {
+  display: none !important;
+}
+
+.tools label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.tools input[type="number"] {
+  width: 72px;
+  background: #101820;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.tools .note {
+  margin: 0;
+  flex: 1 1 280px;
+}
+
+#hudExtra {
+  color: #9ee7ff;
+  margin-top: 4px;
+  max-width: 640px;
+}

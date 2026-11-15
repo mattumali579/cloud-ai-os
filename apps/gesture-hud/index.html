@@ -9,7 +9,7 @@
     <div id="app">
       <header>
         <h1>Gesture hologram</h1>
-        <p class="hint">
+        <p class="hint" id="hint">
           Hold both hands in the camera to stretch a colored portal between them.
           Drop a hand to hide it. Press Next look to flip through 15 color looks.
         </p>
@@ -22,6 +22,27 @@
           <button id="nextLook" type="button">Next look</button>
           <label><input id="mirror" type="checkbox" checked /> Mirror</label>
         </div>
+        <div class="controls modes" role="tablist" aria-label="Mode">
+          <button id="modeOriginal" class="mode active" type="button">Original Filter</button>
+          <button id="modeDistance" class="mode" type="button">Distance</button>
+          <button id="modeRoom" class="mode" type="button">ROOM</button>
+          <button id="resetRoom" type="button" hidden>Reset ROOM</button>
+          <button id="pauseRoom" type="button" hidden>Pause</button>
+        </div>
+        <div id="distanceTools" class="tools" hidden>
+          <label>Printed marker size (cm)
+            <input id="markerCm" type="number" min="1" max="80" step="0.1" value="10" />
+          </label>
+          <label>Tape distance (m)
+            <input id="tapeM" type="number" min="0.2" max="5" step="0.01" value="1" />
+          </label>
+          <button id="calibrate" type="button">Calibrate at tape distance</button>
+          <button id="printMarker" type="button">Print marker</button>
+          <p class="note">
+            Range is camera-to-printed-ArUco only. Tape the marker to an object to range that object.
+            Unmarked objects are not measured. If the marker is missing, the reading is distance unavailable.
+          </p>
+        </div>
       </header>
       <div id="stage" class="mirror">
         <video id="cam" autoplay playsinline muted></video>
@@ -33,6 +54,7 @@
       <div id="hud">
         <div id="hudMode">MODE: 3D MESH</div>
         <div id="hudFilter">LOOK: THERMAL + DUAL TONE · Next look or pinch thumb and pinky</div>
+        <div id="hudExtra"></div>
       </div>
       <div id="banner">
         <div>
