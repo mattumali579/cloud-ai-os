@@ -7,6 +7,7 @@ import {
   isClaw,
   isHangingDown,
   isFingerExtended,
+  palmCenter,
   isFingerFolded,
   isOpenPalm,
   isThreeDigit,
@@ -179,7 +180,9 @@ describe("Rasengan lock", () => {
     let state = stepRoom(createRoomState(), [clawPalmUp()], 0, CLAW_HOLD_MS);
     expect(state.power).toBe("rasengan");
     expect(state.displayRadius).toBe(0);
+    expect(state.rasenganRadius).toBeGreaterThanOrEqual(0.12);
     expect(state.rasenganRadius).toBeLessThanOrEqual(RASENGAN_MAX);
+    expect(state.rasenganCenter.y).toBeLessThan(palmCenter(clawPalmUp()).y - 0.12);
     expect(rasenganPixelRadius(state, 1280, 720)).toBeLessThanOrEqual(720 * RASENGAN_MAX);
     state = openRoom(0);
     state = stepRoom(state, [clawPalmUp()], 800, CLAW_HOLD_MS);
@@ -210,6 +213,7 @@ describe("Shambles three-digit twist", () => {
     let state = openRoom(0);
     state = stepRoom(state, [threeDigitReady()], 1000, READY_HOLD_MS);
     expect(state.shambles).toBe("ready");
+    expect(state.status).toBe("ARMED");
     state = stepRoom(state, [threeDigitSwitch()], 1500, SWAP_DEBOUNCE_MS);
     expect(state.props[0].x).toBeCloseTo(0.62);
     expect(state.props[1].x).toBeCloseTo(0.38);

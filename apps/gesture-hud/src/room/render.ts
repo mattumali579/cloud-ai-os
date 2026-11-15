@@ -219,7 +219,7 @@ export function drawRoom(
     ctx.fillStyle = "rgba(80, 200, 255, 0.95)";
     ctx.font = "22px ui-monospace, Consolas, monospace";
     ctx.textAlign = "center";
-    drawReadableText(ctx, "SHAMBLES READY", cx, cy - 28, mirrored);
+    drawReadableText(ctx, "ARMED", cx, cy - 28, mirrored);
   }
 
   if (state.swapTrail && state.swapFlash > 0) {

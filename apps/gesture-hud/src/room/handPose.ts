@@ -9,8 +9,9 @@ export const HAND_LOST_HOLD_MS = 700;
 export const DRAG_RADIUS = 0.09;
 export const PINCH_THRESHOLD = 0.055;
 export const DEFAULT_EXPAND_MS = 1800;
-export const RASENGAN_MIN = 0.05;
-export const RASENGAN_MAX = 0.11;
+export const RASENGAN_MIN = 0.12;
+export const RASENGAN_MAX = 0.22;
+export const RASENGAN_LIFT = 0.2;
 
 export type PalmFacing = "up" | "down" | "camera" | "user" | "ambiguous";
 

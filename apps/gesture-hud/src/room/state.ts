@@ -12,9 +12,11 @@ import {
   isPowerHand,
   isThreeDigit,
   pickActingHand,
+  RASENGAN_LIFT,
   RASENGAN_MAX,
   RASENGAN_MIN,
   palmCenter,
+  palmHang,
   pinchPoints,
   pulledBack,
   READY_GRACE_MS,
@@ -89,7 +91,7 @@ export function createRoomState(calibration?: PalmCalibration): RoomState {
     displayRadius: 0,
     openAmount: 0,
     rasenganCenter: { x: 0.5, y: 0.42, z: 0 },
-    rasenganRadius: 0.09,
+    rasenganRadius: 0.18,
     rasenganAmount: 0,
     props: DEFAULT_PROPS.map((prop) => ({ ...prop })),
     draggingId: null,
@@ -206,7 +208,8 @@ export function stepRoom(
         next.status = "ROOM";
       } else {
         next.power = "rasengan";
-        next.rasenganCenter = { x: palm.x, y: palm.y - 0.08, z: palm.z };
+        next.rasenganCenter = { x: palm.x, y: palm.y - RASENGAN_LIFT, z: palm.z };
+        next.rasenganRadius = 0.18;
         next.status = "RASENGAN";
       }
       next.holdMs = 0;
@@ -263,7 +266,7 @@ export function stepRoom(
       next.lastReadyAt = now;
       if (next.readyMs >= READY_HOLD_MS) {
         next.shambles = "ready";
-        next.status = "SHAMBLES READY";
+        next.status = "ARMED";
       } else {
         next.status = "SHAMBLES ARMING";
       }
@@ -291,9 +294,11 @@ export function stepRoom(
     }
   } else if (next.power === "rasengan") {
     const target = palm ?? next.rasenganCenter;
+    const extraLift = hand ? Math.max(0, -palmHang(hand)) : 0;
+    const lift = RASENGAN_LIFT + extraLift * 0.35;
     next.rasenganCenter = {
       x: lerp(state.rasenganCenter.x, target.x, 0.28),
-      y: lerp(state.rasenganCenter.y, target.y - 0.07, 0.28),
+      y: lerp(state.rasenganCenter.y, target.y - lift, 0.28),
       z: lerp(state.rasenganCenter.z, target.z, 0.28),
     };
     const palmSpan = hand
@@ -301,8 +306,8 @@ export function stepRoom(
           (hand.landmarks[5]?.x ?? 0) - (hand.landmarks[17]?.x ?? 0),
           (hand.landmarks[5]?.y ?? 0) - (hand.landmarks[17]?.y ?? 0),
         )
-      : 0.08;
-    const targetRadius = clamp(palmSpan * 0.85, RASENGAN_MIN, RASENGAN_MAX);
+      : 0.16;
+    const targetRadius = clamp(palmSpan * 1.7, RASENGAN_MIN, RASENGAN_MAX);
     next.rasenganRadius = lerp(state.rasenganRadius, targetRadius, 0.22);
     next.rasenganAmount = lerp(state.rasenganAmount, 1, 0.22);
     next.openAmount = 0;
@@ -339,6 +344,7 @@ export function forcePower(state: RoomState, power: PowerKind): RoomState {
       ...next,
       power: "rasengan",
       rasenganAmount: 1,
+      rasenganRadius: 0.18,
       status: "RASENGAN",
     };
   }
