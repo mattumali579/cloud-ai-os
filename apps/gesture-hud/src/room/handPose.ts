@@ -1,6 +1,6 @@
 import { clamp, isPinching, pinchAnchor, type Point, type TrackedHand } from "../landmarks";
 
-export const CLAW_HOLD_MS = 600;
+export const CLAW_HOLD_MS = 480;
 export const READY_HOLD_MS = 280;
 export const SWAP_DEBOUNCE_MS = 420;
 export const SWAP_COOLDOWN_MS = 800;
@@ -129,7 +129,41 @@ export function isCupped(hand: TrackedHand): boolean {
 }
 
 export function isPowerHand(hand: TrackedHand): boolean {
-  return isClaw(hand) || isCupped(hand);
+  return isClaw(hand) || isCupped(hand) || isHangingDown(hand) || isCuppedUp(hand);
+}
+
+export function palmHang(hand: TrackedHand): number {
+  const palm = palmCenter(hand);
+  const tips = [8, 12, 16, 20].map((id) => hand.landmarks[id]).filter(Boolean) as Point[];
+  if (tips.length === 0) {
+    return 0;
+  }
+  const meanTipY = tips.reduce((s, p) => s + p.y, 0) / tips.length;
+  return meanTipY - palm.y;
+}
+
+export function isHangingDown(hand: TrackedHand): boolean {
+  return !isThreeDigit(hand) && !isOpenPalm(hand) && palmHang(hand) > 0.03;
+}
+
+export function isCuppedUp(hand: TrackedHand): boolean {
+  return !isThreeDigit(hand) && !isOpenPalm(hand) && palmHang(hand) < -0.03 && fingerSpread(hand) < 0.28;
+}
+
+export function pickActingHand(hands: TrackedHand[]): TrackedHand | null {
+  if (hands.length === 0) {
+    return null;
+  }
+  const ranked = [...hands].sort((a, b) => {
+    const score = (hand: TrackedHand) =>
+      (isThreeDigit(hand) ? 4 : 0) +
+      (isHangingDown(hand) ? 3 : 0) +
+      (isCuppedUp(hand) ? 3 : 0) +
+      (isPowerHand(hand) ? 2 : 0) +
+      hand.score;
+    return score(b) - score(a);
+  });
+  return ranked[0];
 }
 
 export function isThreeDigit(hand: TrackedHand): boolean {

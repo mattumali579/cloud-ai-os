@@ -7,8 +7,11 @@ import {
   DRAG_RADIUS,
   fingersTowardCamera,
   HAND_LOST_HOLD_MS,
+  isCuppedUp,
+  isHangingDown,
   isPowerHand,
   isThreeDigit,
+  pickActingHand,
   RASENGAN_MAX,
   RASENGAN_MIN,
   palmCenter,
@@ -168,10 +171,12 @@ export function stepRoom(
     next.swapTrail = null;
   }
 
-  const hand = hands[0] ?? null;
+  const hand = pickActingHand(hands);
   const palm = hand ? palmCenter(hand) : state.lastPalm;
   const frame = hand ? classifyPalm(hand, state.calibration) : { facing: "ambiguous" as const, pitchY: 0, rollZ: 0, confidence: 0 };
   next.palmFacing = frame.facing;
+  const wantRoom = Boolean(hand && (isHangingDown(hand) || (isPowerHand(hand) && frame.facing === "down")));
+  const wantRasengan = Boolean(hand && (isCuppedUp(hand) || (isPowerHand(hand) && frame.facing === "up")));
   if (hand && palm) {
     next.lastPalm = palm;
     next.lastPalmAt = now;
@@ -184,14 +189,14 @@ export function stepRoom(
     }
   }
 
-  if (next.power === "none" && hand && isPowerHand(hand) && (frame.facing === "down" || frame.facing === "up")) {
+  if (next.power === "none" && hand && (wantRoom || wantRasengan) && !(wantRoom && wantRasengan)) {
     const same =
       !state.lastPalm ||
-      (palm != null && Math.hypot(palm.x - state.lastPalm.x, palm.y - state.lastPalm.y) < 0.05);
-    next.holdMs = same ? state.holdMs + dt : dt;
-    next.status = frame.facing === "down" ? "ARMING ROOM" : "ARMING RASENGAN";
+      (palm != null && Math.hypot(palm.x - state.lastPalm.x, palm.y - state.lastPalm.y) < 0.12);
+    next.holdMs = same ? state.holdMs + dt : Math.min(dt, state.holdMs * 0.5 + dt);
+    next.status = wantRoom ? "ARMING ROOM" : "ARMING RASENGAN";
     if (next.holdMs >= CLAW_HOLD_MS && palm) {
-      if (frame.facing === "down") {
+      if (wantRoom) {
         next.power = "room";
         next.open = true;
         next.frozenCenter = { ...palm };

@@ -245,7 +245,8 @@ function drawOriginal(ctx: CanvasRenderingContext2D, hands: TrackedHand[], now: 
   drawHands(ctx, hands, width, height, state.fade);
   hudMode.textContent = `MODE: ${modeLabel(mode)}  3D MESH  ${state.status.toUpperCase()}  ${detector.status.fps} fps`;
   hudFilter.textContent = `LOOK: ${labelFor(filterName)} + ${labelFor(nextFilter(filterName))} · Next look or pinch thumb and pinky`;
-  hudExtra.textContent = "";
+  hudExtra.textContent =
+    hands.length < 2 ? "Need both hands in view for the colored portal." : "";
 }
 
 function drawDistance(ctx: CanvasRenderingContext2D, now: number, width: number, height: number): void {
@@ -293,12 +294,13 @@ function drawRoomMode(
       : room.power === "rasengan"
         ? "Small spinning ball over the palm. It will not grow into ROOM. Close power to leave."
         : "Claw + palm down = ROOM. Claw + palm up = Rasengan. Flat open palm does nothing here.";
+  const seen = hands.length === 0 ? "NO HAND" : `${hands.length} HAND`;
   hudExtra.textContent =
     room.power === "room"
-      ? `${room.props[0].label} and ${room.props[1].label} are fake. Thumb-pinky look change is off.`
+      ? `${seen}. ${room.props[0].label} and ${room.props[1].label} are fake.`
       : room.status === "Create ROOM first"
         ? "Create ROOM first"
-        : `Palm guess: ${room.palmFacing}. Calibrate palm up/down if it misfires.`;
+        : `${seen}. ${room.status}. Palm guess: ${room.palmFacing}.`;
 }
 
 function loop(): void {
@@ -356,9 +358,15 @@ pauseRoomBtn.addEventListener("click", () => {
 });
 forceRoomBtn.addEventListener("click", () => {
   room = forcePower(room, "room");
+  if (!running) {
+    void start();
+  }
 });
 forceRasenganBtn.addEventListener("click", () => {
   room = forcePower(room, "rasengan");
+  if (!running) {
+    void start();
+  }
 });
 calPalmDownBtn.addEventListener("click", () => {
   const hand = lastHands[0];

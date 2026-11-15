@@ -5,6 +5,7 @@ import {
   classifyPalm,
   coverRadius,
   isClaw,
+  isHangingDown,
   isFingerExtended,
   isFingerFolded,
   isOpenPalm,
@@ -127,9 +128,11 @@ function openRoom(now = 0) {
 describe("claw vs open palm", () => {
   it("treats a curled claw as a claw and a flat palm as open", () => {
     expect(isClaw(clawPalmDown())).toBe(true);
+    expect(isHangingDown(clawPalmDown())).toBe(true);
     expect(isOpenPalm(clawPalmDown())).toBe(false);
     expect(isOpenPalm(openPalm())).toBe(true);
     expect(isClaw(openPalm())).toBe(false);
+    expect(isHangingDown(openPalm())).toBe(false);
   });
 
   it("classifies palm down vs palm up", () => {
