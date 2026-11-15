@@ -12,6 +12,7 @@ export const DEFAULT_EXPAND_MS = 1800;
 export const RASENGAN_MIN = 0.12;
 export const RASENGAN_MAX = 0.22;
 export const RASENGAN_LIFT = 0.2;
+export const FIST_HOLD_MS = 360;
 
 export type PalmFacing = "up" | "down" | "camera" | "user" | "ambiguous";
 
@@ -113,8 +114,23 @@ export function meanFingerCurl(hand: TrackedHand): number {
   return curls.reduce((s, v) => s + v, 0) / curls.length;
 }
 
-export function isClaw(hand: TrackedHand): boolean {
+export function isClosedFist(hand: TrackedHand): boolean {
   if (isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
+    return false;
+  }
+  const palm = palmCenter(hand);
+  const tips = [8, 12, 16, 20].map((id) => hand.landmarks[id]).filter(Boolean) as Point[];
+  if (tips.length < 4) {
+    return false;
+  }
+  const tipsIn = tips.every((tip) => dist(tip, palm) < 0.1);
+  const thumb = hand.landmarks[4];
+  const thumbIn = Boolean(thumb && dist(thumb, palm) < 0.11);
+  return meanFingerCurl(hand) > 0.55 && Math.abs(palmHang(hand)) < 0.045 && fingerSpread(hand) < 0.15 && tipsIn && thumbIn;
+}
+
+export function isClaw(hand: TrackedHand): boolean {
+  if (isClosedFist(hand) || isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
     return false;
   }
   const mean = meanFingerCurl(hand);
@@ -122,7 +138,7 @@ export function isClaw(hand: TrackedHand): boolean {
 }
 
 export function isCupped(hand: TrackedHand): boolean {
-  if (isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
+  if (isClosedFist(hand) || isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
     return false;
   }
   const mean = meanFingerCurl(hand);
@@ -144,11 +160,11 @@ export function palmHang(hand: TrackedHand): number {
 }
 
 export function isHangingDown(hand: TrackedHand): boolean {
-  return !isThreeDigit(hand) && !isOpenPalm(hand) && palmHang(hand) > 0.03;
+  return !isClosedFist(hand) && !isThreeDigit(hand) && !isOpenPalm(hand) && palmHang(hand) > 0.03;
 }
 
 export function isCuppedUp(hand: TrackedHand): boolean {
-  return !isThreeDigit(hand) && !isOpenPalm(hand) && palmHang(hand) < -0.03 && fingerSpread(hand) < 0.28;
+  return !isClosedFist(hand) && !isThreeDigit(hand) && !isOpenPalm(hand) && palmHang(hand) < -0.03 && fingerSpread(hand) < 0.28;
 }
 
 export function pickActingHand(hands: TrackedHand[]): TrackedHand | null {
@@ -157,6 +173,7 @@ export function pickActingHand(hands: TrackedHand[]): TrackedHand | null {
   }
   const ranked = [...hands].sort((a, b) => {
     const score = (hand: TrackedHand) =>
+      (isClosedFist(hand) ? 5 : 0) +
       (isThreeDigit(hand) ? 4 : 0) +
       (isHangingDown(hand) ? 3 : 0) +
       (isCuppedUp(hand) ? 3 : 0) +
@@ -167,14 +184,41 @@ export function pickActingHand(hands: TrackedHand[]): TrackedHand | null {
   return ranked[0];
 }
 
+function fingerReach(hand: TrackedHand, tip: number, mcp: number): number {
+  const wrist = hand.landmarks[0];
+  const t = hand.landmarks[tip];
+  const m = hand.landmarks[mcp];
+  if (!wrist || !t || !m) {
+    return 0;
+  }
+  return dist(t, wrist) / (dist(m, wrist) + 1e-6);
+}
+
+export function isThumbExtended(hand: TrackedHand): boolean {
+  const thumb = hand.landmarks[4];
+  const index = hand.landmarks[8];
+  const wrist = hand.landmarks[0];
+  const mcp = hand.landmarks[2] ?? hand.landmarks[1];
+  if (!thumb || !index || !wrist || !mcp) {
+    return false;
+  }
+  return dist(thumb, index) > 0.045 && dist(thumb, wrist) > dist(mcp, wrist) * 1.08;
+}
+
 export function isThreeDigit(hand: TrackedHand): boolean {
-  return (
-    isFingerExtended(hand, 8, 6, 5) &&
-    isFingerExtended(hand, 12, 10, 9) &&
-    isFingerFolded(hand, 16, 14, 13) &&
-    isFingerFolded(hand, 20, 18, 17) &&
-    dist(hand.landmarks[4] ?? palmCenter(hand), hand.landmarks[8] ?? palmCenter(hand)) > 0.04
-  );
+  const indexOut = isFingerExtended(hand, 8, 6, 5) || fingerReach(hand, 8, 5) > 1.35;
+  const middleOut = isFingerExtended(hand, 12, 10, 9) || fingerReach(hand, 12, 9) > 1.35;
+  const ringIn = isFingerFolded(hand, 16, 14, 13) || fingerReach(hand, 16, 13) < fingerReach(hand, 8, 5) * 0.78;
+  const pinkyIn = isFingerFolded(hand, 20, 18, 17) || fingerReach(hand, 20, 17) < fingerReach(hand, 8, 5) * 0.78;
+  return Boolean(isThumbExtended(hand) && indexOut && middleOut && ringIn && pinkyIn);
+}
+
+export function isShamblesArmedPose(hand: TrackedHand, facing: PalmFacing): boolean {
+  return isThreeDigit(hand) && (facing === "camera" || (facing !== "user" && fingersTowardCamera(hand)));
+}
+
+export function isShamblesSwitchPose(hand: TrackedHand, facing: PalmFacing): boolean {
+  return isThreeDigit(hand) && facing === "user";
 }
 
 export function palmNormal(hand: TrackedHand): Point {
@@ -217,9 +261,17 @@ export function classifyPalm(hand: TrackedHand, calibration: PalmCalibration = {
     ([8, 12, 16, 20].map((id) => hand.landmarks[id]).filter(Boolean) as Point[]).reduce((s, p) => s + p.y, 0) / 4;
   const hang = meanTipY - palm.y;
   let facing: PalmFacing = "ambiguous";
-  if (!isThreeDigit(hand) && hang > 0.02) {
+  if (isThreeDigit(hand)) {
+    if (n.z < -0.12) {
+      facing = "camera";
+    } else if (n.z > 0.12) {
+      facing = "user";
+    } else if (fingersAtCamera) {
+      facing = "camera";
+    }
+  } else if (hang > 0.02) {
     facing = "down";
-  } else if (!isThreeDigit(hand) && hang < -0.02) {
+  } else if (hang < -0.02) {
     facing = "up";
   } else if (n.y > downCut && Math.abs(n.y) >= Math.abs(n.z) * 0.7) {
     facing = "down";

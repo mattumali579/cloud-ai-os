@@ -290,10 +290,10 @@ function drawRoomMode(
   hudMode.textContent = `MODE: ${modeLabel(mode)}  ${room.status}  ${room.palmFacing.toUpperCase()}  ${detector.status.fps} fps`;
   hudFilter.textContent =
     room.power === "room"
-      ? "ROOM is locked until Close power. Three fingers at the camera = READY. Twist palm toward you = swap. Pinch to drag."
+      ? "ROOM stays until you make a fist. Thumb + index + middle out, palm at the camera = ARMED. Flip so you see the back of your hand = swap. Pinch to drag."
       : room.power === "rasengan"
-        ? "Small spinning ball over the palm. It will not grow into ROOM. Close power to leave."
-        : "Claw + palm down = ROOM. Claw + palm up = Rasengan. Flat open palm does nothing here.";
+        ? "Small spinning ball over the palm. Make a fist to close it."
+        : "Claw + palm down = ROOM. Claw + palm up = Rasengan. Make a fist to close. Flat open palm does nothing here.";
   const seen = hands.length === 0 ? "NO HAND" : `${hands.length} HAND`;
   hudExtra.textContent =
     room.power === "room"

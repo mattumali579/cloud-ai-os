@@ -10,7 +10,11 @@ import {
   palmCenter,
   isFingerFolded,
   isOpenPalm,
+  isClosedFist,
+  isShamblesArmedPose,
+  isShamblesSwitchPose,
   isThreeDigit,
+  FIST_HOLD_MS,
   READY_HOLD_MS,
   SWAP_COOLDOWN_MS,
   SWAP_DEBOUNCE_MS,
@@ -119,6 +123,28 @@ function threeDigitSwitch(): TrackedHand {
   return hand;
 }
 
+function closedFist(): TrackedHand {
+  const hand = baseHand();
+  hand.landmarks[0] = tip(0.5, 0.56, 0);
+  hand.landmarks[5] = tip(0.58, 0.5, 0);
+  hand.landmarks[9] = tip(0.53, 0.5, 0);
+  hand.landmarks[13] = tip(0.49, 0.5, 0);
+  hand.landmarks[17] = tip(0.45, 0.5, 0);
+  for (const [mcp, pip, t] of [
+    [5, 6, 8],
+    [9, 10, 12],
+    [13, 14, 16],
+    [17, 18, 20],
+  ] as const) {
+    const m = hand.landmarks[mcp];
+    hand.landmarks[pip] = tip(m.x, m.y + 0.02, m.z);
+    hand.landmarks[t] = tip(m.x - 0.01, m.y + 0.01, m.z);
+  }
+  hand.landmarks[2] = tip(0.52, 0.52, 0);
+  hand.landmarks[4] = tip(0.5, 0.51, 0);
+  return hand;
+}
+
 function openRoom(now = 0) {
   let state = createRoomState();
   const claw = clawPalmDown();
@@ -201,6 +227,10 @@ describe("Shambles three-digit twist", () => {
     expect(isThreeDigit(right)).toBe(true);
     expect(isThreeDigit(threeDigitReady("Left"))).toBe(true);
     expect(isThreeDigit(openPalm())).toBe(false);
+    expect(isThreeDigit(closedFist())).toBe(false);
+    expect(isShamblesArmedPose(right, classifyPalm(right).facing)).toBe(true);
+    expect(isShamblesSwitchPose(threeDigitSwitch(), classifyPalm(threeDigitSwitch()).facing)).toBe(true);
+    expect(isShamblesSwitchPose(right, classifyPalm(right).facing)).toBe(false);
   });
 
   it("says Create ROOM first if the twist happens with no ROOM", () => {
@@ -229,6 +259,29 @@ describe("Shambles three-digit twist", () => {
     state = stepRoom(state, [], 1000 + 800, 800);
     expect(state.shambles).toBe("idle");
     expect(state.props[0].x).toBeCloseTo(0.38);
+  });
+
+  it("does not swap from the back-of-hand pose unless it was ARMED first", () => {
+    let state = openRoom(0);
+    state = stepRoom(state, [threeDigitSwitch()], 1000, SWAP_DEBOUNCE_MS);
+    expect(state.props[0].x).toBeCloseTo(0.38);
+    expect(state.shambles).not.toBe("swapped");
+  });
+
+  it("closes ROOM and Rasengan after a held fist", () => {
+    expect(isClosedFist(closedFist())).toBe(true);
+    expect(isClosedFist(clawPalmDown())).toBe(false);
+    expect(isClosedFist(threeDigitReady())).toBe(false);
+    let room = openRoom(0);
+    room = stepRoom(room, [closedFist()], 800, FIST_HOLD_MS);
+    expect(room.power).toBe("none");
+    expect(room.status).toBe("CLOSED");
+    let rasengan = stepRoom(createRoomState(), [clawPalmUp()], 0, CLAW_HOLD_MS);
+    expect(rasengan.power).toBe("rasengan");
+    rasengan = stepRoom(rasengan, [closedFist()], 900, FIST_HOLD_MS);
+    expect(rasengan.power).toBe("none");
+    const idle = stepRoom(createRoomState(), [closedFist()], 0, CLAW_HOLD_MS);
+    expect(idle.power).toBe("none");
   });
 
   it("keeps labels on the same props when positions swap", () => {

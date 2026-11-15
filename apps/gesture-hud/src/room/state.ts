@@ -5,11 +5,14 @@ import {
   coverRadius,
   DEFAULT_EXPAND_MS,
   DRAG_RADIUS,
-  fingersTowardCamera,
+  FIST_HOLD_MS,
   HAND_LOST_HOLD_MS,
+  isClosedFist,
   isCuppedUp,
   isHangingDown,
   isPowerHand,
+  isShamblesArmedPose,
+  isShamblesSwitchPose,
   isThreeDigit,
   pickActingHand,
   RASENGAN_LIFT,
@@ -62,6 +65,7 @@ export type RoomState = {
   swapHoldMs: number;
   swapCooldownUntil: number;
   lastReadyAt: number | null;
+  fistMs: number;
   swapFlash: number;
   swapTrail: { from: Point; to: Point; otherFrom: Point; otherTo: Point } | null;
   status: string;
@@ -100,6 +104,7 @@ export function createRoomState(calibration?: PalmCalibration): RoomState {
     swapHoldMs: 0,
     swapCooldownUntil: 0,
     lastReadyAt: null,
+    fistMs: 0,
     swapFlash: 0,
     swapTrail: null,
     status: "idle",
@@ -177,8 +182,13 @@ export function stepRoom(
   const palm = hand ? palmCenter(hand) : state.lastPalm;
   const frame = hand ? classifyPalm(hand, state.calibration) : { facing: "ambiguous" as const, pitchY: 0, rollZ: 0, confidence: 0 };
   next.palmFacing = frame.facing;
-  const wantRoom = Boolean(hand && (isHangingDown(hand) || (isPowerHand(hand) && frame.facing === "down")));
-  const wantRasengan = Boolean(hand && (isCuppedUp(hand) || (isPowerHand(hand) && frame.facing === "up")));
+  const closedFist = Boolean(hand && isClosedFist(hand));
+  const wantRoom = Boolean(
+    hand && !closedFist && (isHangingDown(hand) || (isPowerHand(hand) && frame.facing === "down")),
+  );
+  const wantRasengan = Boolean(
+    hand && !closedFist && (isCuppedUp(hand) || (isPowerHand(hand) && frame.facing === "up")),
+  );
   if (hand && palm) {
     next.lastPalm = palm;
     next.lastPalmAt = now;
@@ -189,6 +199,16 @@ export function stepRoom(
     if (next.shambles === "ready" || next.shambles === "rotate") {
       next.shambles = "idle";
     }
+  }
+
+  if (closedFist && (next.power === "room" || next.power === "rasengan")) {
+    next.fistMs = state.fistMs + dt;
+    next.status = "CLOSING";
+    if (next.fistMs >= FIST_HOLD_MS) {
+      return { ...resetRoom(next), status: "CLOSED" };
+    }
+  } else {
+    next.fistMs = 0;
   }
 
   if (next.power === "none" && hand && (wantRoom || wantRasengan) && !(wantRoom && wantRasengan)) {
@@ -252,10 +272,13 @@ export function stepRoom(
       next.draggingId = null;
     }
 
-    const three = hand && isThreeDigit(hand);
-    const toward = hand ? fingersTowardCamera(hand) : false;
-    const armed = three && frame.facing !== "user" && (frame.facing === "camera" || toward);
-    const switching = three && (frame.facing === "user" || (state.lastPalm && palm && pulledBack(state.lastPalm, palm)));
+    const three = Boolean(hand && isThreeDigit(hand));
+    const armed = Boolean(hand && isShamblesArmedPose(hand, frame.facing));
+    const switching = Boolean(
+      hand &&
+        (isShamblesSwitchPose(hand, frame.facing) ||
+          (three && state.shambles === "ready" && state.lastPalm && palm && pulledBack(state.lastPalm, palm))),
+    );
     if (now < next.swapCooldownUntil) {
       next.status = "SHAMBLES COOLDOWN";
       if (!armed) {
