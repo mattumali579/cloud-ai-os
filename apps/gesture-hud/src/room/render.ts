@@ -224,8 +224,8 @@ export function drawRoom(
 
   if (state.swapTrail && state.swapFlash > 0) {
     ctx.globalAlpha = amount * state.swapFlash;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.lineWidth = 5;
     const pairs = [
       [state.swapTrail.from, state.swapTrail.to],
       [state.swapTrail.otherFrom, state.swapTrail.otherTo],
@@ -235,11 +235,16 @@ export function drawRoom(
       ctx.moveTo(from.x * width, from.y * height);
       ctx.lineTo(to.x * width, to.y * height);
       ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(from.x * width, from.y * height, 22 * state.swapFlash, 0, Math.PI * 2);
+      ctx.arc(to.x * width, to.y * height, 28 * state.swapFlash, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,255,255,0.45)";
+      ctx.fill();
     }
-    ctx.fillStyle = "rgba(255,255,255,0.55)";
-    ctx.beginPath();
-    ctx.arc(cx, cy, 36 * state.swapFlash, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.font = "28px ui-monospace, Consolas, monospace";
+    ctx.textAlign = "center";
+    drawReadableText(ctx, "SWAPPED", cx, cy - 64, mirrored);
   }
 
   if (state.open) {

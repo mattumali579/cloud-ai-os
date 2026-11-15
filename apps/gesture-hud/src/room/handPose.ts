@@ -2,9 +2,9 @@ import { clamp, isPinching, pinchAnchor, type Point, type TrackedHand } from "..
 
 export const CLAW_HOLD_MS = 480;
 export const READY_HOLD_MS = 280;
-export const SWAP_DEBOUNCE_MS = 420;
+export const SWAP_DEBOUNCE_MS = 140;
 export const SWAP_COOLDOWN_MS = 800;
-export const READY_GRACE_MS = 280;
+export const READY_GRACE_MS = 700;
 export const HAND_LOST_HOLD_MS = 700;
 export const DRAG_RADIUS = 0.09;
 export const PINCH_THRESHOLD = 0.055;
@@ -12,7 +12,7 @@ export const DEFAULT_EXPAND_MS = 1800;
 export const RASENGAN_MIN = 0.12;
 export const RASENGAN_MAX = 0.22;
 export const RASENGAN_LIFT = 0.2;
-export const FIST_HOLD_MS = 360;
+export const FIST_HOLD_MS = 240;
 
 export type PalmFacing = "up" | "down" | "camera" | "user" | "ambiguous";
 
@@ -118,15 +118,16 @@ export function isClosedFist(hand: TrackedHand): boolean {
   if (isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
     return false;
   }
+  const folded =
+    isFingerFolded(hand, 8, 6, 5) &&
+    isFingerFolded(hand, 12, 10, 9) &&
+    isFingerFolded(hand, 16, 14, 13) &&
+    isFingerFolded(hand, 20, 18, 17);
   const palm = palmCenter(hand);
   const tips = [8, 12, 16, 20].map((id) => hand.landmarks[id]).filter(Boolean) as Point[];
-  if (tips.length < 4) {
-    return false;
-  }
-  const tipsIn = tips.every((tip) => dist(tip, palm) < 0.1);
-  const thumb = hand.landmarks[4];
-  const thumbIn = Boolean(thumb && dist(thumb, palm) < 0.11);
-  return meanFingerCurl(hand) > 0.55 && Math.abs(palmHang(hand)) < 0.045 && fingerSpread(hand) < 0.15 && tipsIn && thumbIn;
+  const meanTip = tips.length ? tips.reduce((s, tip) => s + dist(tip, palm), 0) / tips.length : 1;
+  const hanging = palmHang(hand) > 0.045;
+  return folded && !hanging && meanFingerCurl(hand) > 0.5 && fingerSpread(hand) < 0.18 && meanTip < 0.14;
 }
 
 export function isClaw(hand: TrackedHand): boolean {
@@ -213,12 +214,12 @@ export function isThreeDigit(hand: TrackedHand): boolean {
   return Boolean(isThumbExtended(hand) && indexOut && middleOut && ringIn && pinkyIn);
 }
 
-export function isShamblesArmedPose(hand: TrackedHand, facing: PalmFacing): boolean {
-  return isThreeDigit(hand) && (facing === "camera" || (facing !== "user" && fingersTowardCamera(hand)));
+export function isShamblesArmedPose(hand: TrackedHand, facing: PalmFacing, rollZ = 0): boolean {
+  return isThreeDigit(hand) && facing !== "user" && (facing === "camera" || rollZ < -0.1);
 }
 
-export function isShamblesSwitchPose(hand: TrackedHand, facing: PalmFacing): boolean {
-  return isThreeDigit(hand) && facing === "user";
+export function isShamblesSwitchPose(hand: TrackedHand, facing: PalmFacing, rollZ = 0): boolean {
+  return isThreeDigit(hand) && (facing === "user" || rollZ > 0.1);
 }
 
 export function palmNormal(hand: TrackedHand): Point {

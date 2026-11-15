@@ -244,9 +244,19 @@ describe("Shambles three-digit twist", () => {
     state = stepRoom(state, [threeDigitReady()], 1000, READY_HOLD_MS);
     expect(state.shambles).toBe("ready");
     expect(state.status).toBe("ARMED");
+    const cubeBefore = state.props.find((prop) => prop.id === "cube")!;
+    const sphereBefore = state.props.find((prop) => prop.id === "sphere")!;
+    expect(cubeBefore.x).toBeCloseTo(0.38);
+    expect(sphereBefore.x).toBeCloseTo(0.62);
     state = stepRoom(state, [threeDigitSwitch()], 1500, SWAP_DEBOUNCE_MS);
-    expect(state.props[0].x).toBeCloseTo(0.62);
-    expect(state.props[1].x).toBeCloseTo(0.38);
+    const cube = state.props.find((prop) => prop.id === "cube")!;
+    const sphere = state.props.find((prop) => prop.id === "sphere")!;
+    expect(cube.x).toBeCloseTo(sphereBefore.x);
+    expect(cube.y).toBeCloseTo(sphereBefore.y);
+    expect(sphere.x).toBeCloseTo(cubeBefore.x);
+    expect(sphere.y).toBeCloseTo(cubeBefore.y);
+    expect(cube.label).toBe("BLUE CUBE");
+    expect(sphere.label).toBe("PINK SPHERE");
     expect(state.swapFlash).toBeGreaterThan(0);
     const x = state.props[0].x;
     state = stepRoom(state, [threeDigitSwitch()], 1500 + SWAP_COOLDOWN_MS - 20, SWAP_DEBOUNCE_MS);
@@ -280,6 +290,14 @@ describe("Shambles three-digit twist", () => {
     expect(rasengan.power).toBe("rasengan");
     rasengan = stepRoom(rasengan, [closedFist()], 900, FIST_HOLD_MS);
     expect(rasengan.power).toBe("none");
+    expect(rasengan.rasenganAmount).toBe(0);
+    const cameraFist = closedFist();
+    cameraFist.landmarks[8] = { ...cameraFist.landmarks[8], y: cameraFist.landmarks[5].y - 0.02 };
+    cameraFist.landmarks[12] = { ...cameraFist.landmarks[12], y: cameraFist.landmarks[9].y - 0.02 };
+    expect(isClosedFist(cameraFist)).toBe(true);
+    let forced = stepRoom(createRoomState(), [clawPalmUp()], 0, CLAW_HOLD_MS);
+    forced = stepRoom(forced, [cameraFist], 400, FIST_HOLD_MS);
+    expect(forced.power).toBe("none");
     const idle = stepRoom(createRoomState(), [closedFist()], 0, CLAW_HOLD_MS);
     expect(idle.power).toBe("none");
   });
@@ -289,8 +307,10 @@ describe("Shambles three-digit twist", () => {
       { id: "cube", label: "BLUE CUBE", x: 0.2, y: 0.2, depth: 0.1 },
       { id: "sphere", label: "PINK SPHERE", x: 0.8, y: 0.8, depth: 0.9 },
     ]);
-    expect(swapped[0].label).toBe("BLUE CUBE");
-    expect(swapped[0].x).toBe(0.8);
+    expect(swapped.find((prop) => prop.id === "cube")?.x).toBe(0.8);
+    expect(swapped.find((prop) => prop.id === "sphere")?.x).toBe(0.2);
+    expect(swapped.find((prop) => prop.id === "cube")?.label).toBe("BLUE CUBE");
+    expect(swapped.find((prop) => prop.id === "sphere")?.label).toBe("PINK SPHERE");
   });
 });
 

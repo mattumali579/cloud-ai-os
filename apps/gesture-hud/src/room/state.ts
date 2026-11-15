@@ -65,6 +65,7 @@ export type RoomState = {
   swapHoldMs: number;
   swapCooldownUntil: number;
   lastReadyAt: number | null;
+  lastArmedRollZ: number | null;
   fistMs: number;
   swapFlash: number;
   swapTrail: { from: Point; to: Point; otherFrom: Point; otherTo: Point } | null;
@@ -104,6 +105,7 @@ export function createRoomState(calibration?: PalmCalibration): RoomState {
     swapHoldMs: 0,
     swapCooldownUntil: 0,
     lastReadyAt: null,
+    lastArmedRollZ: null,
     fistMs: 0,
     swapFlash: 0,
     swapTrail: null,
@@ -127,20 +129,31 @@ function near(a: Point, b: { x: number; y: number }, radius: number): boolean {
 }
 
 export function swapProps(props: RoomProp[]): RoomProp[] {
-  if (props.length < 2) {
+  const cube = props.find((prop) => prop.id === "cube");
+  const sphere = props.find((prop) => prop.id === "sphere");
+  if (!cube || !sphere) {
     return props.map((prop) => ({ ...prop }));
   }
-  const a = props[0];
-  const b = props[1];
-  return [
-    { ...a, x: b.x, y: b.y, depth: b.depth },
-    { ...b, x: a.x, y: a.y, depth: a.depth },
-  ];
+  const cubeSpot = { x: cube.x, y: cube.y, depth: cube.depth };
+  const sphereSpot = { x: sphere.x, y: sphere.y, depth: sphere.depth };
+  return props.map((prop) => {
+    if (prop.id === "cube") {
+      return { ...prop, ...sphereSpot };
+    }
+    if (prop.id === "sphere") {
+      return { ...prop, ...cubeSpot };
+    }
+    return { ...prop };
+  });
 }
 
 function fireSwap(state: RoomState, now: number): RoomState {
   const before = state.props.map((prop) => ({ ...prop }));
   const props = swapProps(state.props);
+  const cubeBefore = before.find((prop) => prop.id === "cube") ?? before[0];
+  const sphereBefore = before.find((prop) => prop.id === "sphere") ?? before[1];
+  const cubeAfter = props.find((prop) => prop.id === "cube") ?? props[0];
+  const sphereAfter = props.find((prop) => prop.id === "sphere") ?? props[1];
   return {
     ...state,
     props,
@@ -151,10 +164,10 @@ function fireSwap(state: RoomState, now: number): RoomState {
     swapFlash: 1,
     status: "SWAPPED",
     swapTrail: {
-      from: { x: before[0].x, y: before[0].y, z: 0 },
-      to: { x: props[0].x, y: props[0].y, z: 0 },
-      otherFrom: { x: before[1].x, y: before[1].y, z: 0 },
-      otherTo: { x: props[1].x, y: props[1].y, z: 0 },
+      from: { x: cubeBefore.x, y: cubeBefore.y, z: 0 },
+      to: { x: cubeAfter.x, y: cubeAfter.y, z: 0 },
+      otherFrom: { x: sphereBefore.x, y: sphereBefore.y, z: 0 },
+      otherTo: { x: sphereAfter.x, y: sphereAfter.y, z: 0 },
     },
   };
 }
@@ -204,12 +217,15 @@ export function stepRoom(
   if (closedFist && (next.power === "room" || next.power === "rasengan")) {
     next.fistMs = state.fistMs + dt;
     next.status = "CLOSING";
+    if (next.power === "rasengan") {
+      next.rasenganAmount = lerp(state.rasenganAmount, 0, 0.45);
+    }
     if (next.fistMs >= FIST_HOLD_MS) {
       return { ...resetRoom(next), status: "CLOSED" };
     }
-  } else {
-    next.fistMs = 0;
+    return next;
   }
+  next.fistMs = 0;
 
   if (next.power === "none" && hand && (wantRoom || wantRasengan) && !(wantRoom && wantRasengan)) {
     const same =
@@ -273,11 +289,20 @@ export function stepRoom(
     }
 
     const three = Boolean(hand && isThreeDigit(hand));
-    const armed = Boolean(hand && isShamblesArmedPose(hand, frame.facing));
+    const armed = Boolean(hand && isShamblesArmedPose(hand, frame.facing, frame.rollZ));
+    const switchPose = Boolean(hand && isShamblesSwitchPose(hand, frame.facing, frame.rollZ));
+    const wasReady =
+      next.shambles === "ready" ||
+      next.shambles === "rotate" ||
+      (state.lastReadyAt != null && now - state.lastReadyAt < READY_GRACE_MS);
+    const flippedFromRoll =
+      three &&
+      state.lastArmedRollZ != null &&
+      frame.rollZ - state.lastArmedRollZ > 0.18;
     const switching = Boolean(
-      hand &&
-        (isShamblesSwitchPose(hand, frame.facing) ||
-          (three && state.shambles === "ready" && state.lastPalm && palm && pulledBack(state.lastPalm, palm))),
+      switchPose ||
+        flippedFromRoll ||
+        (three && wasReady && state.lastPalm && palm && pulledBack(state.lastPalm, palm)),
     );
     if (now < next.swapCooldownUntil) {
       next.status = "SHAMBLES COOLDOWN";
@@ -287,6 +312,7 @@ export function stepRoom(
     } else if (armed) {
       next.readyMs = state.shambles === "ready" || state.shambles === "rotate" ? state.readyMs + dt : dt;
       next.lastReadyAt = now;
+      next.lastArmedRollZ = frame.rollZ;
       if (next.readyMs >= READY_HOLD_MS) {
         next.shambles = "ready";
         next.status = "ARMED";
@@ -294,10 +320,7 @@ export function stepRoom(
         next.status = "SHAMBLES ARMING";
       }
       next.swapHoldMs = 0;
-    } else if (
-      (next.shambles === "ready" || (state.lastReadyAt != null && now - state.lastReadyAt < READY_GRACE_MS)) &&
-      switching
-    ) {
+    } else if (wasReady && switching) {
       next.shambles = "rotate";
       next.swapHoldMs = state.swapHoldMs + dt;
       next.status = "ROTATE";
