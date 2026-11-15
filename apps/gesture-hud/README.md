@@ -30,8 +30,12 @@ Home calibration: stand at a tape-measured distance, show the marker, press **Ca
 
 Physical tape-measure checks (0.5 m, 1 m, 1.5 m, 2 m, five readings each) are **not done until you run them**. Unit tests are not that check.
 
-## ROOM and Shambles
+## Powers (ROOM, Shambles, Rasengan)
 
-Hold an open palm still for about half a second. A blue energy volume grows around the hand. Two labeled virtual props sit inside it (blue cube, pink sphere). Pinch one hand near a prop to drag it. Pinch both index fingers to thumbs at once to swap their places. **Reset ROOM** clears it. **Pause** freezes ROOM. **Original Filter** returns to the portal.
+On **Powers**:
+- Clawed hand, palm down, held still → ROOM grows until it fills the camera view, then stays put. It does not follow your hand.
+- Clawed hand, palm up, held still → Rasengan, a small spinning ball over the palm. Close power before ROOM.
+- Inside ROOM, thumb + index + middle at the camera = READY. Twist so your palm faces you = the two fake objects swap once.
+- Force ROOM / Force Rasengan are backups if the camera guesses the palm wrong. Calibrate palm up/down with your real hand in view.
 
-Nothing is recorded or uploaded.
+Nothing is recorded or uploaded. Palm tilt is a guess until you try it on the webcam.

@@ -70,6 +70,7 @@ export class HandDetector {
     }
     const hands: TrackedHand[] = [];
     const landmarks = result.landmarks ?? [];
+    const worldLandmarks = result.worldLandmarks ?? [];
     const handedness = result.handedness ?? [];
     for (let i = 0; i < landmarks.length; i += 1) {
       const label = (handedness[i]?.[0]?.categoryName ?? "").toLowerCase().startsWith("left")
@@ -80,6 +81,7 @@ export class HandDetector {
         handedness: label,
         score,
         landmarks: landmarks[i].map((point) => ({ x: point.x, y: point.y, z: point.z })),
+        worldLandmarks: worldLandmarks[i]?.map((point) => ({ x: point.x, y: point.y, z: point.z })),
       });
     }
     return hands;

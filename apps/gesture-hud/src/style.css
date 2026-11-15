@@ -198,6 +198,7 @@ button.mode.active {
 }
 
 .tools[hidden],
+#powerTools[hidden],
 button[hidden] {
   display: none !important;
 }

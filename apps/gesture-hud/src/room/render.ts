@@ -18,6 +18,59 @@ function projectSphere(
   };
 }
 
+export function drawRasengan(
+  ctx: CanvasRenderingContext2D,
+  state: RoomState,
+  width: number,
+  height: number,
+  now: number,
+): void {
+  if (state.rasenganAmount < 0.02) {
+    return;
+  }
+  const cx = state.rasenganCenter.x * width;
+  const cy = state.rasenganCenter.y * height;
+  const r = Math.max(22, state.rasenganRadius * Math.min(width, height));
+  const t = now * 0.004;
+  ctx.save();
+  ctx.globalAlpha = state.rasenganAmount;
+  const core = ctx.createRadialGradient(cx - r * 0.15, cy - r * 0.2, r * 0.05, cx, cy, r);
+  core.addColorStop(0, "rgba(255,255,255,0.95)");
+  core.addColorStop(0.2, "rgba(180,245,255,0.9)");
+  core.addColorStop(0.55, "rgba(40,170,255,0.55)");
+  core.addColorStop(1, "rgba(0,40,120,0)");
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 1.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(200,255,255,0.75)";
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 7; i += 1) {
+    ctx.beginPath();
+    for (let a = 0; a <= 24; a += 1) {
+      const ang = t * (1.6 + i * 0.13) + (a / 24) * Math.PI * 2;
+      const spin = r * (0.25 + (a / 24) * 0.7);
+      const x = cx + Math.cos(ang + i) * spin * Math.cos(i * 0.5);
+      const y = cy + Math.sin(ang * 1.4 + i) * spin * 0.72;
+      if (a === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+  }
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  for (let i = 0; i < 18; i += 1) {
+    const ang = t * 3 + i * 0.7;
+    const rad = r * (0.2 + ((i * 17) % 10) / 18);
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(ang) * rad, cy + Math.sin(ang * 1.3) * rad * 0.8, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 export function drawRoom(
   ctx: CanvasRenderingContext2D,
   state: RoomState,
@@ -26,13 +79,21 @@ export function drawRoom(
   now: number,
   mirrored: boolean,
 ): void {
+  drawRasengan(ctx, state, width, height, now);
   const amount = state.openAmount;
   if (amount < 0.02) {
     return;
   }
   const cx = state.displayCenter.x * width;
   const cy = state.displayCenter.y * height;
-  const radius = state.displayRadius * Math.min(width, height);
+  const fill = Math.max(
+    Math.hypot(cx, cy),
+    Math.hypot(width - cx, cy),
+    Math.hypot(cx, height - cy),
+    Math.hypot(width - cx, height - cy),
+  );
+  const grow = state.maxRadius > 0 ? Math.min(1, state.displayRadius / state.maxRadius) : 0;
+  const radius = fill * Math.max(grow, 0.04);
   const t = now * 0.001;
 
   ctx.save();

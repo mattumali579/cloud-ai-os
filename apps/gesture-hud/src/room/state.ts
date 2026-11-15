@@ -1,17 +1,27 @@
-import { clamp, lerp, type Point, type TrackedHand } from "../landmarks";
+import { lerp, type Point, type TrackedHand } from "../landmarks";
 import {
-  bothPinching,
+  CLAW_HOLD_MS,
+  classifyPalm,
+  coverRadius,
+  DEFAULT_EXPAND_MS,
   DRAG_RADIUS,
-  fingerSpan,
+  fingersTowardCamera,
   HAND_LOST_HOLD_MS,
-  OPEN_HOLD_MS,
-  OPEN_STABLE,
-  openHands,
+  isClaw,
+  isThreeDigit,
   palmCenter,
   pinchPoints,
+  pulledBack,
+  READY_GRACE_MS,
+  READY_HOLD_MS,
   SWAP_COOLDOWN_MS,
-  SWAP_HOLD_MS,
+  SWAP_DEBOUNCE_MS,
+  type PalmCalibration,
+  type PalmFacing,
 } from "./handPose";
+
+export type PowerKind = "none" | "room" | "rasengan";
+export type ShamblesPhase = "idle" | "ready" | "rotate" | "swapped";
 
 export type RoomProp = {
   id: "cube" | "sphere";
@@ -22,22 +32,35 @@ export type RoomProp = {
 };
 
 export type RoomState = {
+  power: PowerKind;
   open: boolean;
   holdMs: number;
   lastPalm: Point | null;
   lastPalmAt: number | null;
   center: Point;
-  radius: number;
+  frozenCenter: Point | null;
+  maxRadius: number;
+  expandMs: number;
+  expandElapsed: number;
   displayCenter: Point;
   displayRadius: number;
   openAmount: number;
+  rasenganCenter: Point;
+  rasenganRadius: number;
+  rasenganAmount: number;
   props: RoomProp[];
   draggingId: RoomProp["id"] | null;
+  shambles: ShamblesPhase;
+  readyMs: number;
   swapHoldMs: number;
   swapCooldownUntil: number;
+  lastReadyAt: number | null;
   swapFlash: number;
   swapTrail: { from: Point; to: Point; otherFrom: Point; otherTo: Point } | null;
+  status: string;
+  palmFacing: PalmFacing;
   paused: boolean;
+  calibration: PalmCalibration;
 };
 
 export const DEFAULT_PROPS: RoomProp[] = [
@@ -45,40 +68,50 @@ export const DEFAULT_PROPS: RoomProp[] = [
   { id: "sphere", label: "PINK SPHERE", x: 0.62, y: 0.52, depth: 0.62 },
 ];
 
-export function createRoomState(): RoomState {
+export function createRoomState(calibration?: PalmCalibration): RoomState {
   return {
+    power: "none",
     open: false,
     holdMs: 0,
     lastPalm: null,
     lastPalmAt: null,
     center: { x: 0.5, y: 0.48, z: 0 },
-    radius: 0.42,
+    frozenCenter: null,
+    maxRadius: coverRadius(0.5, 0.48),
+    expandMs: DEFAULT_EXPAND_MS,
+    expandElapsed: 0,
     displayCenter: { x: 0.5, y: 0.48, z: 0 },
     displayRadius: 0,
     openAmount: 0,
+    rasenganCenter: { x: 0.5, y: 0.42, z: 0 },
+    rasenganRadius: 0.09,
+    rasenganAmount: 0,
     props: DEFAULT_PROPS.map((prop) => ({ ...prop })),
     draggingId: null,
+    shambles: "idle",
+    readyMs: 0,
     swapHoldMs: 0,
     swapCooldownUntil: 0,
+    lastReadyAt: null,
     swapFlash: 0,
     swapTrail: null,
+    status: "idle",
+    palmFacing: "ambiguous",
     paused: false,
+    calibration: calibration ?? { upY: null, downY: null },
   };
 }
 
 export function resetRoom(state: RoomState): RoomState {
   return {
-    ...createRoomState(),
+    ...createRoomState(state.calibration),
     paused: state.paused,
+    expandMs: state.expandMs,
   };
 }
 
 function near(a: Point, b: { x: number; y: number }, radius: number): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) <= radius;
-}
-
-function clampRadius(value: number): number {
-  return clamp(value, 0.26, 0.62);
 }
 
 export function swapProps(props: RoomProp[]): RoomProp[] {
@@ -93,6 +126,27 @@ export function swapProps(props: RoomProp[]): RoomProp[] {
   ];
 }
 
+function fireSwap(state: RoomState, now: number): RoomState {
+  const before = state.props.map((prop) => ({ ...prop }));
+  const props = swapProps(state.props);
+  return {
+    ...state,
+    props,
+    shambles: "swapped",
+    swapCooldownUntil: now + SWAP_COOLDOWN_MS,
+    swapHoldMs: 0,
+    readyMs: 0,
+    swapFlash: 1,
+    status: "SWAPPED",
+    swapTrail: {
+      from: { x: before[0].x, y: before[0].y, z: 0 },
+      to: { x: props[0].x, y: props[0].y, z: 0 },
+      otherFrom: { x: before[1].x, y: before[1].y, z: 0 },
+      otherTo: { x: props[1].x, y: props[1].y, z: 0 },
+    },
+  };
+}
+
 export function stepRoom(
   state: RoomState,
   hands: TrackedHand[],
@@ -103,7 +157,7 @@ export function stepRoom(
     return { ...state, props: state.props.map((prop) => ({ ...prop })) };
   }
 
-  const next: RoomState = {
+  let next: RoomState = {
     ...state,
     props: state.props.map((prop) => ({ ...prop })),
     swapFlash: Math.max(0, state.swapFlash - dt / 280),
@@ -112,79 +166,167 @@ export function stepRoom(
     next.swapTrail = null;
   }
 
-  const opened = openHands(hands);
-  const palmHand = opened[0] ?? null;
-  if (palmHand) {
-    const palm = palmCenter(palmHand);
-    const stable =
-      !state.lastPalm ||
-      Math.hypot(palm.x - state.lastPalm.x, palm.y - state.lastPalm.y) < OPEN_STABLE;
+  const hand = hands[0] ?? null;
+  const palm = hand ? palmCenter(hand) : state.lastPalm;
+  const frame = hand ? classifyPalm(hand, state.calibration) : { facing: "ambiguous" as const, pitchY: 0, rollZ: 0, confidence: 0 };
+  next.palmFacing = frame.facing;
+  if (hand && palm) {
     next.lastPalm = palm;
     next.lastPalmAt = now;
-    next.holdMs = stable ? state.holdMs + dt : 0;
-    next.center = palm;
-    next.radius = clampRadius(fingerSpan(palmHand) * 3.6);
-    if (!state.open && next.holdMs >= OPEN_HOLD_MS) {
-      next.open = true;
-    }
-  } else if (state.lastPalmAt != null && now - state.lastPalmAt < HAND_LOST_HOLD_MS) {
-    next.holdMs = state.holdMs;
-  } else {
+  } else if (state.lastPalmAt != null && now - state.lastPalmAt > HAND_LOST_HOLD_MS) {
     next.holdMs = 0;
+    next.readyMs = 0;
     next.draggingId = null;
+    if (next.shambles === "ready" || next.shambles === "rotate") {
+      next.shambles = "idle";
+    }
   }
 
-  const targetOpen = next.open ? 1 : 0;
-  next.openAmount = lerp(state.openAmount, targetOpen, next.open ? 0.18 : 0.12);
-  next.displayCenter = {
-    x: lerp(state.displayCenter.x, next.center.x, 0.22),
-    y: lerp(state.displayCenter.y, next.center.y, 0.22),
-    z: lerp(state.displayCenter.z, next.center.z, 0.22),
-  };
-  next.displayRadius = lerp(state.displayRadius, next.open ? next.radius : 0, 0.16);
-
-  if (!next.open) {
-    next.swapHoldMs = 0;
-    next.draggingId = null;
-    return next;
+  if (next.power === "none" && hand && isClaw(hand) && (frame.facing === "down" || frame.facing === "up")) {
+    const same =
+      !state.lastPalm ||
+      (palm != null && Math.hypot(palm.x - state.lastPalm.x, palm.y - state.lastPalm.y) < 0.05);
+    next.holdMs = same ? state.holdMs + dt : dt;
+    next.status = frame.facing === "down" ? "ARMING ROOM" : "ARMING RASENGAN";
+    if (next.holdMs >= CLAW_HOLD_MS && palm) {
+      if (frame.facing === "down") {
+        next.power = "room";
+        next.open = true;
+        next.frozenCenter = { ...palm };
+        next.center = { ...palm };
+        next.maxRadius = coverRadius(palm.x, palm.y);
+        next.expandElapsed = 0;
+        next.status = "ROOM";
+      } else {
+        next.power = "rasengan";
+        next.rasenganCenter = { x: palm.x, y: palm.y - 0.08, z: palm.z };
+        next.status = "RASENGAN";
+      }
+      next.holdMs = 0;
+    }
+  } else if (next.power === "none") {
+    next.holdMs = 0;
+    if (hand && isThreeDigit(hand)) {
+      next.status = "Create ROOM first";
+    } else {
+      next.status = hand && isClaw(hand) ? "CLAW · need palm up or down" : "idle";
+    }
   }
 
-  const pinches = pinchPoints(hands);
-  if (pinches.length === 1) {
-    const pinch = pinches[0];
-    if (next.draggingId) {
-      const prop = next.props.find((item) => item.id === next.draggingId);
-      if (prop) {
-        prop.x = pinch.x;
-        prop.y = pinch.y;
+  if (next.power === "room") {
+    next.expandElapsed =
+      state.power === "room" ? Math.min(next.expandMs, state.expandElapsed + dt) : 0;
+    const grow = next.expandElapsed / next.expandMs;
+    const frozen = next.frozenCenter ?? next.center;
+    next.displayCenter = frozen;
+    next.center = frozen;
+    next.displayRadius = next.maxRadius * grow;
+    next.openAmount = 1;
+    next.rasenganAmount = 0;
+    next.open = true;
+
+    const pinches = pinchPoints(hands);
+    if (pinches.length === 1) {
+      const pinch = pinches[0];
+      if (next.draggingId) {
+        const prop = next.props.find((item) => item.id === next.draggingId);
+        if (prop) {
+          prop.x = pinch.x;
+          prop.y = pinch.y;
+        }
+      } else {
+        const hit = next.props.find((item) => near(pinch, item, DRAG_RADIUS));
+        next.draggingId = hit?.id ?? null;
       }
     } else {
-      const hit = next.props.find((prop) => near(pinch, prop, DRAG_RADIUS));
-      next.draggingId = hit?.id ?? null;
+      next.draggingId = null;
+    }
+
+    const three = hand && isThreeDigit(hand);
+    const toward = hand ? fingersTowardCamera(hand) : false;
+    const armed = three && toward && frame.facing !== "user";
+    const switching = three && (frame.facing === "user" || (state.lastPalm && palm && pulledBack(state.lastPalm, palm)));
+    if (now < next.swapCooldownUntil) {
+      next.status = "SHAMBLES COOLDOWN";
+      if (!armed) {
+        next.shambles = "idle";
+      }
+    } else if (armed) {
+      next.readyMs = state.shambles === "ready" || state.shambles === "rotate" ? state.readyMs + dt : dt;
+      next.lastReadyAt = now;
+      if (next.readyMs >= READY_HOLD_MS) {
+        next.shambles = "ready";
+        next.status = "SHAMBLES READY";
+      } else {
+        next.status = "SHAMBLES ARMING";
+      }
+      next.swapHoldMs = 0;
+    } else if (
+      (next.shambles === "ready" || (state.lastReadyAt != null && now - state.lastReadyAt < READY_GRACE_MS)) &&
+      switching
+    ) {
+      next.shambles = "rotate";
+      next.swapHoldMs = state.swapHoldMs + dt;
+      next.status = "ROTATE";
+      if (next.swapHoldMs >= SWAP_DEBOUNCE_MS) {
+        next = fireSwap(next, now);
+      }
+    } else if (next.shambles === "swapped" && !armed) {
+      next.shambles = "idle";
+      next.status = "ROOM";
+    } else if (!three) {
+      next.readyMs = 0;
+      next.swapHoldMs = 0;
+      if (next.shambles !== "swapped") {
+        next.shambles = "idle";
+        next.status = "ROOM";
+      }
+    }
+  } else if (next.power === "rasengan") {
+    const target = palm ?? next.rasenganCenter;
+    next.rasenganCenter = {
+      x: lerp(state.rasenganCenter.x, target.x, 0.28),
+      y: lerp(state.rasenganCenter.y, target.y - 0.07, 0.28),
+      z: lerp(state.rasenganCenter.z, target.z, 0.28),
+    };
+    next.rasenganRadius = lerp(state.rasenganRadius, 0.09, 0.2);
+    next.rasenganAmount = lerp(state.rasenganAmount, 1, 0.22);
+    next.openAmount = 0;
+    next.displayRadius = 0;
+    next.status = "RASENGAN";
+    if (hand && isThreeDigit(hand)) {
+      next.status = "Create ROOM first";
     }
   } else {
-    next.draggingId = null;
+    next.openAmount = lerp(state.openAmount, 0, 0.2);
+    next.displayRadius = lerp(state.displayRadius, 0, 0.2);
+    next.rasenganAmount = lerp(state.rasenganAmount, 0, 0.25);
   }
 
-  const canSwap = now >= next.swapCooldownUntil && !next.draggingId;
-  if (canSwap && bothPinching(hands)) {
-    next.swapHoldMs = state.swapHoldMs + dt;
-    if (next.swapHoldMs >= SWAP_HOLD_MS && state.swapHoldMs < SWAP_HOLD_MS) {
-      const before = next.props.map((prop) => ({ ...prop }));
-      next.props = swapProps(next.props);
-      next.swapCooldownUntil = now + SWAP_COOLDOWN_MS;
-      next.swapHoldMs = 0;
-      next.swapFlash = 1;
-      next.swapTrail = {
-        from: { x: before[0].x, y: before[0].y, z: 0 },
-        to: { x: next.props[0].x, y: next.props[0].y, z: 0 },
-        otherFrom: { x: before[1].x, y: before[1].y, z: 0 },
-        otherTo: { x: next.props[1].x, y: next.props[1].y, z: 0 },
-      };
-    }
-  } else if (!bothPinching(hands)) {
-    next.swapHoldMs = 0;
-  }
+  return next;
+}
 
+export function forcePower(state: RoomState, power: PowerKind): RoomState {
+  const next = resetRoom(state);
+  if (power === "room") {
+    const center = { x: 0.5, y: 0.48, z: 0 };
+    return {
+      ...next,
+      power: "room",
+      open: true,
+      frozenCenter: center,
+      center,
+      maxRadius: coverRadius(center.x, center.y),
+      status: "ROOM",
+    };
+  }
+  if (power === "rasengan") {
+    return {
+      ...next,
+      power: "rasengan",
+      rasenganAmount: 1,
+      status: "RASENGAN",
+    };
+  }
   return next;
 }

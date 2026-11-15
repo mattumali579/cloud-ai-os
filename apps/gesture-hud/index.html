@@ -25,9 +25,21 @@
         <div class="controls modes" role="tablist" aria-label="Mode">
           <button id="modeOriginal" class="mode active" type="button">Original Filter</button>
           <button id="modeDistance" class="mode" type="button">Distance</button>
-          <button id="modeRoom" class="mode" type="button">ROOM</button>
-          <button id="resetRoom" type="button" hidden>Reset ROOM</button>
+          <button id="modeRoom" class="mode" type="button">Powers</button>
+          <button id="resetRoom" type="button" hidden>Close power</button>
           <button id="pauseRoom" type="button" hidden>Pause</button>
+        </div>
+        <div id="powerTools" class="tools" hidden>
+          <button id="forceRoom" type="button">Force ROOM</button>
+          <button id="forceRasengan" type="button">Force Rasengan</button>
+          <button id="calPalmDown" type="button">Calibrate palm down</button>
+          <button id="calPalmUp" type="button">Calibrate palm up</button>
+          <label>Grow speed
+            <input id="growMs" type="range" min="800" max="4000" step="100" value="1800" />
+          </label>
+          <p class="note">
+            Palm down + claw starts ROOM. Palm up + claw starts Rasengan. In ROOM, three fingers at the camera is READY, then twist palm toward you to swap. Close power to leave. This camera only guesses palm tilt.
+          </p>
         </div>
         <div id="distanceTools" class="tools" hidden>
           <label>Printed marker size (cm)

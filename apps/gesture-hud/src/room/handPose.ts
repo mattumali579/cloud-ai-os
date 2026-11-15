@@ -1,15 +1,52 @@
-import { isPinching, pinchAnchor, type Point, type TrackedHand } from "../landmarks";
+import { clamp, isPinching, pinchAnchor, type Point, type TrackedHand } from "../landmarks";
 
-export const OPEN_HOLD_MS = 600;
-export const SWAP_HOLD_MS = 320;
-export const SWAP_COOLDOWN_MS = 750;
-export const OPEN_STABLE = 0.038;
-export const PINCH_THRESHOLD = 0.055;
-export const DRAG_RADIUS = 0.09;
+export const CLAW_HOLD_MS = 600;
+export const READY_HOLD_MS = 280;
+export const SWAP_DEBOUNCE_MS = 420;
+export const SWAP_COOLDOWN_MS = 800;
+export const READY_GRACE_MS = 280;
 export const HAND_LOST_HOLD_MS = 700;
+export const DRAG_RADIUS = 0.09;
+export const PINCH_THRESHOLD = 0.055;
+export const DEFAULT_EXPAND_MS = 1800;
 
-const TIPS = [8, 12, 16, 20] as const;
-const PIPS = [6, 10, 14, 18] as const;
+export type PalmFacing = "up" | "down" | "camera" | "user" | "ambiguous";
+
+export type PalmCalibration = {
+  upY: number | null;
+  downY: number | null;
+};
+
+export type PalmFrame = {
+  facing: PalmFacing;
+  pitchY: number;
+  rollZ: number;
+  confidence: number;
+};
+
+function pt(hand: TrackedHand, index: number, world = false): Point | undefined {
+  return (world ? hand.worldLandmarks : hand.landmarks)?.[index];
+}
+
+function sub(a: Point, b: Point): Point {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+function cross(a: Point, b: Point): Point {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function mag(a: Point): number {
+  return Math.hypot(a.x, a.y, a.z);
+}
+
+function dist(a: Point, b: Point): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
 
 export function palmCenter(hand: TrackedHand): Point {
   const ids = [0, 5, 9, 13, 17];
@@ -22,51 +59,137 @@ export function palmCenter(hand: TrackedHand): Point {
   };
 }
 
-export function fingerSpan(hand: TrackedHand): number {
-  const wrist = hand.landmarks[0];
-  const middle = hand.landmarks[12];
-  if (!wrist || !middle) {
-    return 0.12;
+export function fingerCurl(hand: TrackedHand, tip: number, pip: number, mcp: number): number {
+  const t = hand.landmarks[tip];
+  const p = hand.landmarks[pip];
+  const m = hand.landmarks[mcp];
+  if (!t || !p || !m) {
+    return 0;
   }
-  return Math.hypot(wrist.x - middle.x, wrist.y - middle.y);
+  const a = { x: m.x - p.x, y: m.y - p.y, z: m.z - p.z };
+  const b = { x: t.x - p.x, y: t.y - p.y, z: t.z - p.z };
+  const denom = mag(a) * mag(b) + 1e-6;
+  const cos = clamp((a.x * b.x + a.y * b.y + a.z * b.z) / denom, -1, 1);
+  return (cos + 1) / 2;
 }
 
-export function isOpenHand(hand: TrackedHand): boolean {
-  const wrist = hand.landmarks[0];
-  if (!wrist) {
-    return false;
-  }
-  let extended = 0;
-  for (let i = 0; i < TIPS.length; i += 1) {
-    const tip = hand.landmarks[TIPS[i]];
-    const pip = hand.landmarks[PIPS[i]];
-    if (!tip || !pip) {
-      continue;
-    }
-    const tipDist = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
-    const pipDist = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
-    if (tipDist > pipDist * 1.18) {
-      extended += 1;
-    }
-  }
-  const spread = Math.hypot(
-    (hand.landmarks[8]?.x ?? 0) - (hand.landmarks[20]?.x ?? 0),
-    (hand.landmarks[8]?.y ?? 0) - (hand.landmarks[20]?.y ?? 0),
+export function isFingerExtended(hand: TrackedHand, tip: number, pip: number, mcp: number): boolean {
+  return fingerCurl(hand, tip, pip, mcp) < 0.38;
+}
+
+export function isFingerFolded(hand: TrackedHand, tip: number, pip: number, mcp: number): boolean {
+  return fingerCurl(hand, tip, pip, mcp) > 0.42;
+}
+
+export function isOpenPalm(hand: TrackedHand): boolean {
+  return (
+    isFingerExtended(hand, 8, 6, 5) &&
+    isFingerExtended(hand, 12, 10, 9) &&
+    isFingerExtended(hand, 16, 14, 13) &&
+    isFingerExtended(hand, 20, 18, 17)
   );
-  return extended >= 4 && spread > 0.08 && !isPinching(hand.landmarks, PINCH_THRESHOLD);
 }
 
-export function openHands(hands: TrackedHand[]): TrackedHand[] {
-  return hands.filter(isOpenHand);
-}
-
-export function bothPinching(hands: TrackedHand[]): boolean {
-  if (hands.length < 2) {
+export function isClaw(hand: TrackedHand): boolean {
+  if (isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
     return false;
   }
-  return hands.filter((hand) => isPinching(hand.landmarks, PINCH_THRESHOLD)).length >= 2;
+  const curls = [
+    fingerCurl(hand, 8, 6, 5),
+    fingerCurl(hand, 12, 10, 9),
+    fingerCurl(hand, 16, 14, 13),
+    fingerCurl(hand, 20, 18, 17),
+  ];
+  const mean = curls.reduce((s, v) => s + v, 0) / curls.length;
+  return mean > 0.34 && mean < 0.97 && curls.every((c) => c > 0.2);
+}
+
+export function isThreeDigit(hand: TrackedHand): boolean {
+  return (
+    isFingerExtended(hand, 8, 6, 5) &&
+    isFingerExtended(hand, 12, 10, 9) &&
+    isFingerFolded(hand, 16, 14, 13) &&
+    isFingerFolded(hand, 20, 18, 17) &&
+    dist(hand.landmarks[4] ?? palmCenter(hand), hand.landmarks[8] ?? palmCenter(hand)) > 0.04
+  );
+}
+
+export function palmNormal(hand: TrackedHand): Point {
+  const useWorld = Boolean(hand.worldLandmarks && hand.worldLandmarks.length >= 18);
+  const wrist = pt(hand, 0, useWorld);
+  const index = pt(hand, 5, useWorld);
+  const pinky = pt(hand, 17, useWorld);
+  if (!wrist || !index || !pinky) {
+    return { x: 0, y: 0, z: -1 };
+  }
+  let n = cross(sub(index, wrist), sub(pinky, wrist));
+  const len = mag(n) || 1;
+  n = { x: n.x / len, y: n.y / len, z: n.z / len };
+  if (hand.handedness === "Left") {
+    n = { x: -n.x, y: -n.y, z: -n.z };
+  }
+  return n;
+}
+
+export function classifyPalm(hand: TrackedHand, calibration: PalmCalibration = { upY: null, downY: null }): PalmFrame {
+  const n = palmNormal(hand);
+  const tips = [8, 12, 16, 20]
+    .map((id) => hand.landmarks[id])
+    .filter(Boolean) as Point[];
+  const mcps = [5, 9, 13, 17]
+    .map((id) => hand.landmarks[id])
+    .filter(Boolean) as Point[];
+  const tipZ = tips.reduce((s, p) => s + p.z, 0) / (tips.length || 1);
+  const mcpZ = mcps.reduce((s, p) => s + p.z, 0) / (mcps.length || 1);
+  const fingersAtCamera = tipZ < mcpZ - 0.012;
+  let downCut = 0.32;
+  let upCut = -0.32;
+  if (calibration.upY != null && calibration.downY != null) {
+    const mid = (calibration.upY + calibration.downY) / 2;
+    downCut = mid + 0.08;
+    upCut = mid - 0.08;
+  }
+  const palm = palmCenter(hand);
+  const meanTipY =
+    ([8, 12, 16, 20].map((id) => hand.landmarks[id]).filter(Boolean) as Point[]).reduce((s, p) => s + p.y, 0) / 4;
+  const hang = meanTipY - palm.y;
+  let facing: PalmFacing = "ambiguous";
+  if (!isThreeDigit(hand) && hang > 0.02) {
+    facing = "down";
+  } else if (!isThreeDigit(hand) && hang < -0.02) {
+    facing = "up";
+  } else if (n.y > downCut && Math.abs(n.y) >= Math.abs(n.z) * 0.7) {
+    facing = "down";
+  } else if (n.y < upCut && Math.abs(n.y) >= Math.abs(n.z) * 0.7) {
+    facing = "up";
+  } else if (n.z < -0.35 || (fingersAtCamera && n.z < 0 && Math.abs(n.z) > Math.abs(n.y))) {
+    facing = "camera";
+  } else if (n.z > 0.28 && Math.abs(n.z) > Math.abs(n.y)) {
+    facing = "user";
+  }
+  const confidence = Math.max(Math.abs(n.y), Math.abs(n.z));
+  return { facing, pitchY: n.y, rollZ: n.z, confidence };
+}
+
+export function fingersTowardCamera(hand: TrackedHand): boolean {
+  const tips = [4, 8, 12].map((id) => hand.landmarks[id]).filter(Boolean) as Point[];
+  const mcps = [1, 5, 9].map((id) => hand.landmarks[id]).filter(Boolean) as Point[];
+  if (tips.length < 3 || mcps.length < 3) {
+    return false;
+  }
+  const tipZ = tips.reduce((s, p) => s + p.z, 0) / 3;
+  const mcpZ = mcps.reduce((s, p) => s + p.z, 0) / 3;
+  return tipZ < mcpZ - 0.01;
+}
+
+export function coverRadius(cx: number, cy: number): number {
+  return Math.max(Math.hypot(cx, cy), Math.hypot(1 - cx, cy), Math.hypot(cx, 1 - cy), Math.hypot(1 - cx, 1 - cy)) * 1.08;
 }
 
 export function pinchPoints(hands: TrackedHand[]): Point[] {
   return hands.filter((hand) => isPinching(hand.landmarks, PINCH_THRESHOLD)).map((hand) => pinchAnchor(hand.landmarks));
+}
+
+export function pulledBack(from: Point, to: Point): boolean {
+  return to.z - from.z > 0.045 || dist(from, to) > 0.11;
 }

@@ -32,6 +32,7 @@ export type Handed = "Left" | "Right";
 
 export type TrackedHand = {
   landmarks: Point[];
+  worldLandmarks?: Point[];
   handedness: Handed;
   score: number;
 };

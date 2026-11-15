@@ -18,18 +18,20 @@ import { parseCamera, pinholeFromSize, serializeCamera } from "./distance/camera
 import { drawMarkerOverlay } from "./distance/draw";
 import { printSheetHtml, HOME_CALIBRATION_STEPS } from "./distance/markerSvg";
 import { MarkerDistanceProvider, type DistanceReading } from "./distance/provider";
-import { createRoomState, resetRoom, stepRoom, type RoomState } from "./room/state";
+import { classifyPalm } from "./room/handPose";
+import { createRoomState, forcePower, resetRoom, stepRoom, type RoomState } from "./room/state";
 import { drawRoom } from "./room/render";
 import "./style.css";
 
 const CAMERA_STORE = "gesture-hud-camera-v1";
+const PALM_STORE = "gesture-hud-palm-v1";
 const HINTS: Record<HudMode, string> = {
   original:
     "Hold both hands in the camera to stretch a colored portal between them. Drop a hand to hide it. Press Next look to flip through 15 color looks.",
   distance:
     "Print the ArUco marker, measure the outer black square, then hold it in the webcam. Range is camera-to-marker only.",
   room:
-    "Hold an open palm still for a moment to open ROOM. Pinch one hand to drag a prop. Pinch both index-thumbs to swap them. Nothing physical moves.",
+    "Palm down plus a clawed hand opens ROOM. Palm up plus a claw starts Rasengan. In ROOM, three fingers at the camera, then twist your palm toward you to swap the two fake objects.",
 };
 
 const stage = document.querySelector<HTMLElement>("#stage")!;
@@ -54,6 +56,12 @@ const modeDistanceBtn = document.querySelector<HTMLButtonElement>("#modeDistance
 const modeRoomBtn = document.querySelector<HTMLButtonElement>("#modeRoom")!;
 const resetRoomBtn = document.querySelector<HTMLButtonElement>("#resetRoom")!;
 const pauseRoomBtn = document.querySelector<HTMLButtonElement>("#pauseRoom")!;
+const powerTools = document.querySelector<HTMLElement>("#powerTools")!;
+const forceRoomBtn = document.querySelector<HTMLButtonElement>("#forceRoom")!;
+const forceRasenganBtn = document.querySelector<HTMLButtonElement>("#forceRasengan")!;
+const calPalmDownBtn = document.querySelector<HTMLButtonElement>("#calPalmDown")!;
+const calPalmUpBtn = document.querySelector<HTMLButtonElement>("#calPalmUp")!;
+const growMs = document.querySelector<HTMLInputElement>("#growMs")!;
 const distanceTools = document.querySelector<HTMLElement>("#distanceTools")!;
 const markerCm = document.querySelector<HTMLInputElement>("#markerCm")!;
 const tapeM = document.querySelector<HTMLInputElement>("#tapeM")!;
@@ -66,7 +74,19 @@ void glasses;
 const detector = new HandDetector();
 const config: GestureConfig = { ...DEFAULT_GESTURE };
 let state: GestureState = createGestureState();
-let room: RoomState = createRoomState();
+function loadPalm() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PALM_STORE) ?? "");
+    return {
+      upY: typeof parsed.upY === "number" ? parsed.upY : null,
+      downY: typeof parsed.downY === "number" ? parsed.downY : null,
+    };
+  } catch {
+    return { upY: null, downY: null };
+  }
+}
+
+let room: RoomState = createRoomState(loadPalm());
 let running = false;
 let skip = 0;
 let lastHands: TrackedHand[] = [];
@@ -118,6 +138,7 @@ function fillCameras(devices: MediaDeviceInfo[]): void {
 function applyMode(): void {
   hint.textContent = HINTS[mode];
   distanceTools.hidden = mode !== "distance";
+  powerTools.hidden = mode !== "room";
   resetRoomBtn.hidden = mode !== "room";
   pauseRoomBtn.hidden = mode !== "room";
   nextLookBtn.disabled = mode !== "original";
@@ -131,7 +152,7 @@ function applyMode(): void {
 function setMode(next: HudMode): void {
   mode = next;
   if (next !== "room") {
-    room = createRoomState();
+    room = createRoomState(room.calibration);
   }
   applyMode();
 }
@@ -265,13 +286,19 @@ function drawRoomMode(
   ctx.clearRect(0, 0, width, height);
   drawRoom(ctx, room, width, height, roomAnim, mirrorToggle.checked);
   drawHands(ctx, hands, width, height, room.open ? 0.55 : 0.85);
-  hudMode.textContent = `MODE: ${modeLabel(mode)}  ${room.open ? "OPEN" : "CLOSED"}  ${room.paused ? "PAUSED" : "LIVE"}  ${detector.status.fps} fps`;
-  hudFilter.textContent = room.open
-    ? "Open palm holds ROOM. One-hand pinch drags a prop. Both index-thumb pinches swap them."
-    : "Hold an open palm still to grow ROOM. Thumb-pinky look change is off in this mode.";
-  hudExtra.textContent = room.open
-    ? `${room.props[0].label} and ${room.props[1].label} are virtual. Reset ROOM or Original Filter to leave.`
-    : "";
+  hudMode.textContent = `MODE: ${modeLabel(mode)}  ${room.status}  ${room.palmFacing.toUpperCase()}  ${detector.status.fps} fps`;
+  hudFilter.textContent =
+    room.power === "room"
+      ? "ROOM is locked until Close power. Three fingers at the camera = READY. Twist palm toward you = swap. Pinch to drag."
+      : room.power === "rasengan"
+        ? "Rasengan follows the palm. Close power before ROOM. This is not a real chakra ball."
+        : "Claw + palm down = ROOM. Claw + palm up = Rasengan. Flat open palm does nothing here.";
+  hudExtra.textContent =
+    room.power === "room"
+      ? `${room.props[0].label} and ${room.props[1].label} are fake. Thumb-pinky look change is off.`
+      : room.status === "Create ROOM first"
+        ? "Create ROOM first"
+        : `Palm guess: ${room.palmFacing}. Calibrate palm up/down if it misfires.`;
 }
 
 function loop(): void {
@@ -326,6 +353,37 @@ resetRoomBtn.addEventListener("click", () => {
 pauseRoomBtn.addEventListener("click", () => {
   room = { ...room, paused: !room.paused };
   applyMode();
+});
+forceRoomBtn.addEventListener("click", () => {
+  room = forcePower(room, "room");
+});
+forceRasenganBtn.addEventListener("click", () => {
+  room = forcePower(room, "rasengan");
+});
+calPalmDownBtn.addEventListener("click", () => {
+  const hand = lastHands[0];
+  if (!hand) {
+    return;
+  }
+  room = {
+    ...room,
+    calibration: { ...room.calibration, downY: classifyPalm(hand, room.calibration).pitchY },
+  };
+  localStorage.setItem(PALM_STORE, JSON.stringify(room.calibration));
+});
+calPalmUpBtn.addEventListener("click", () => {
+  const hand = lastHands[0];
+  if (!hand) {
+    return;
+  }
+  room = {
+    ...room,
+    calibration: { ...room.calibration, upY: classifyPalm(hand, room.calibration).pitchY },
+  };
+  localStorage.setItem(PALM_STORE, JSON.stringify(room.calibration));
+});
+growMs.addEventListener("input", () => {
+  room = { ...room, expandMs: Number(growMs.value) };
 });
 markerCm.addEventListener("change", () => {
   distance.setMarkerSideCm(Number(markerCm.value));

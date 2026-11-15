@@ -8,5 +8,5 @@ export function modeLabel(mode: HudMode): string {
   if (mode === "distance") {
     return "DISTANCE";
   }
-  return "ROOM";
+  return "POWERS";
 }
