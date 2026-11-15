@@ -7,5 +7,6 @@ These stills are Matt's real webcam poses from Nov 15, 2026. They are pose examp
 - hand-pose-09: not a power — flat open hand
 - hand-pose-14: Shambles geometry — three fingers, palm toward camera
 - hand-pose-18: Shambles swap end — three fingers, back of hand toward camera
+- hand-pose-close-fist: close ROOM or Rasengan — tight fist, thumb across the fingers, palm toward camera
 
-Pinned GitHub copy: commit `232152b` on `references/issue-31-hand-poses-20261115`.
+Pinned GitHub copy: commit `232152b` on `references/issue-31-hand-poses-20261115`. Close-fist photo: commit `dcca566`.

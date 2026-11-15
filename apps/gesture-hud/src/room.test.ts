@@ -14,7 +14,9 @@ import {
   isShamblesArmedPose,
   isShamblesSwitchPose,
   isThreeDigit,
+  FIST_COOLDOWN_MS,
   FIST_HOLD_MS,
+  isThumbAcrossFist,
   READY_HOLD_MS,
   SWAP_COOLDOWN_MS,
   SWAP_DEBOUNCE_MS,
@@ -123,8 +125,8 @@ function threeDigitSwitch(): TrackedHand {
   return hand;
 }
 
-function closedFist(): TrackedHand {
-  const hand = baseHand();
+function closedFist(handedness: TrackedHand["handedness"] = "Right"): TrackedHand {
+  const hand = baseHand(handedness);
   hand.landmarks[0] = tip(0.5, 0.56, 0);
   hand.landmarks[5] = tip(0.58, 0.5, 0);
   hand.landmarks[9] = tip(0.53, 0.5, 0);
@@ -140,8 +142,8 @@ function closedFist(): TrackedHand {
     hand.landmarks[pip] = tip(m.x, m.y + 0.02, m.z);
     hand.landmarks[t] = tip(m.x - 0.01, m.y + 0.01, m.z);
   }
-  hand.landmarks[2] = tip(0.52, 0.52, 0);
-  hand.landmarks[4] = tip(0.5, 0.51, 0);
+  hand.landmarks[2] = tip(0.56, 0.5, 0);
+  hand.landmarks[4] = tip(hand.landmarks[6].x, hand.landmarks[6].y, 0);
   return hand;
 }
 
@@ -279,25 +281,34 @@ describe("Shambles three-digit twist", () => {
   });
 
   it("closes ROOM and Rasengan after a held fist", () => {
+    expect(isThumbAcrossFist(closedFist())).toBe(true);
     expect(isClosedFist(closedFist())).toBe(true);
+    expect(isClosedFist(closedFist("Left"))).toBe(true);
     expect(isClosedFist(clawPalmDown())).toBe(false);
+    expect(isClosedFist(clawPalmUp())).toBe(false);
     expect(isClosedFist(threeDigitReady())).toBe(false);
+    expect(isClosedFist(openPalm())).toBe(false);
     let room = openRoom(0);
-    room = stepRoom(room, [closedFist()], 800, FIST_HOLD_MS);
+    room = stepRoom(room, [closedFist()], 800, FIST_HOLD_MS - 40);
+    expect(room.power).toBe("room");
+    expect(room.status).toBe("CLOSING");
+    room = stepRoom(room, [], 820, 40);
+    expect(room.power).toBe("room");
+    expect(room.fistMs).toBe(0);
+    room = stepRoom(room, [closedFist()], 900, FIST_HOLD_MS);
     expect(room.power).toBe("none");
     expect(room.status).toBe("CLOSED");
+    expect(room.props[0].x).toBeCloseTo(0.38);
+    room = stepRoom(room, [closedFist()], 920, 20);
+    expect(room.power).toBe("none");
+    expect(room.status).toBe("RELEASE FIST");
+    room = stepRoom(room, [clawPalmDown()], 920 + FIST_COOLDOWN_MS + 80, CLAW_HOLD_MS);
+    expect(room.power).toBe("room");
     let rasengan = stepRoom(createRoomState(), [clawPalmUp()], 0, CLAW_HOLD_MS);
     expect(rasengan.power).toBe("rasengan");
     rasengan = stepRoom(rasengan, [closedFist()], 900, FIST_HOLD_MS);
     expect(rasengan.power).toBe("none");
     expect(rasengan.rasenganAmount).toBe(0);
-    const cameraFist = closedFist();
-    cameraFist.landmarks[8] = { ...cameraFist.landmarks[8], y: cameraFist.landmarks[5].y - 0.02 };
-    cameraFist.landmarks[12] = { ...cameraFist.landmarks[12], y: cameraFist.landmarks[9].y - 0.02 };
-    expect(isClosedFist(cameraFist)).toBe(true);
-    let forced = stepRoom(createRoomState(), [clawPalmUp()], 0, CLAW_HOLD_MS);
-    forced = stepRoom(forced, [cameraFist], 400, FIST_HOLD_MS);
-    expect(forced.power).toBe("none");
     const idle = stepRoom(createRoomState(), [closedFist()], 0, CLAW_HOLD_MS);
     expect(idle.power).toBe("none");
   });

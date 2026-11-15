@@ -131,11 +131,19 @@ export function drawRoom(
 ): void {
   drawRasengan(ctx, state, width, height, now);
   const amount = state.openAmount;
+  const cx = (state.power === "rasengan" ? state.rasenganCenter.x : state.displayCenter.x) * width;
+  const cy = (state.power === "rasengan" ? state.rasenganCenter.y : state.displayCenter.y) * height;
+  if (state.status === "CLOSING" || state.dismissing) {
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 220, 120, 0.95)";
+    ctx.font = "26px ui-monospace, Consolas, monospace";
+    ctx.textAlign = "center";
+    drawReadableText(ctx, "CLOSING", cx, cy - 28, mirrored);
+    ctx.restore();
+  }
   if (amount < 0.02) {
     return;
   }
-  const cx = state.displayCenter.x * width;
-  const cy = state.displayCenter.y * height;
   const fill = Math.max(
     Math.hypot(cx, cy),
     Math.hypot(width - cx, cy),

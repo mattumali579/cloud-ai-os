@@ -292,8 +292,8 @@ function drawRoomMode(
     room.power === "room"
       ? "ROOM stays until you make a fist. Thumb + index + middle, palm at the camera = ARMED. Flip to the back of your hand to swap the cube and the sphere."
       : room.power === "rasengan"
-        ? "Small spinning ball over the palm. Close your fist to stop it."
-        : "Claw + palm down = ROOM. Claw + palm up = Rasengan. Close your fist to stop either one.";
+        ? "Small spinning ball over the palm. Close a tight fist, thumb over the fingers, to stop it."
+        : "Claw + palm down = ROOM. Claw + palm up = Rasengan. Tight fist, thumb over the fingers, stops either one.";
   const seen = hands.length === 0 ? "NO HAND" : `${hands.length} HAND`;
   hudExtra.textContent =
     room.power === "room"

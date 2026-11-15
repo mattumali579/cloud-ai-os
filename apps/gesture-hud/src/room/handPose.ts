@@ -12,7 +12,9 @@ export const DEFAULT_EXPAND_MS = 1800;
 export const RASENGAN_MIN = 0.12;
 export const RASENGAN_MAX = 0.22;
 export const RASENGAN_LIFT = 0.2;
-export const FIST_HOLD_MS = 240;
+export const FIST_HOLD_MS = 400;
+export const FIST_FADE_MS = 280;
+export const FIST_COOLDOWN_MS = 450;
 
 export type PalmFacing = "up" | "down" | "camera" | "user" | "ambiguous";
 
@@ -114,8 +116,21 @@ export function meanFingerCurl(hand: TrackedHand): number {
   return curls.reduce((s, v) => s + v, 0) / curls.length;
 }
 
+export function isThumbAcrossFist(hand: TrackedHand): boolean {
+  const thumb = hand.landmarks[4];
+  const indexPip = hand.landmarks[6];
+  const middlePip = hand.landmarks[10];
+  const indexMcp = hand.landmarks[5];
+  const indexTip = hand.landmarks[8];
+  if (!thumb || !indexPip || !middlePip || !indexMcp || !indexTip) {
+    return false;
+  }
+  const across = Math.min(dist(thumb, indexPip), dist(thumb, middlePip), dist(thumb, indexMcp));
+  return across < 0.12 && dist(thumb, indexTip) < 0.16;
+}
+
 export function isClosedFist(hand: TrackedHand): boolean {
-  if (isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
+  if (isThreeDigit(hand) || isOpenPalm(hand)) {
     return false;
   }
   const folded =
@@ -126,8 +141,15 @@ export function isClosedFist(hand: TrackedHand): boolean {
   const palm = palmCenter(hand);
   const tips = [8, 12, 16, 20].map((id) => hand.landmarks[id]).filter(Boolean) as Point[];
   const meanTip = tips.length ? tips.reduce((s, tip) => s + dist(tip, palm), 0) / tips.length : 1;
-  const hanging = palmHang(hand) > 0.045;
-  return folded && !hanging && meanFingerCurl(hand) > 0.5 && fingerSpread(hand) < 0.18 && meanTip < 0.14;
+  const hanging = palmHang(hand) > 0.04;
+  return (
+    folded &&
+    isThumbAcrossFist(hand) &&
+    !hanging &&
+    meanFingerCurl(hand) > 0.48 &&
+    fingerSpread(hand) < 0.16 &&
+    meanTip < 0.13
+  );
 }
 
 export function isClaw(hand: TrackedHand): boolean {

@@ -5,6 +5,8 @@ import {
   coverRadius,
   DEFAULT_EXPAND_MS,
   DRAG_RADIUS,
+  FIST_COOLDOWN_MS,
+  FIST_FADE_MS,
   FIST_HOLD_MS,
   HAND_LOST_HOLD_MS,
   isClosedFist,
@@ -67,6 +69,9 @@ export type RoomState = {
   lastReadyAt: number | null;
   lastArmedRollZ: number | null;
   fistMs: number;
+  fistLock: boolean;
+  fistCooldownUntil: number;
+  dismissing: boolean;
   swapFlash: number;
   swapTrail: { from: Point; to: Point; otherFrom: Point; otherTo: Point } | null;
   status: string;
@@ -107,6 +112,9 @@ export function createRoomState(calibration?: PalmCalibration): RoomState {
     lastReadyAt: null,
     lastArmedRollZ: null,
     fistMs: 0,
+    fistLock: false,
+    fistCooldownUntil: 0,
+    dismissing: false,
     swapFlash: 0,
     swapTrail: null,
     status: "idle",
@@ -214,20 +222,45 @@ export function stepRoom(
     }
   }
 
-  if (closedFist && (next.power === "room" || next.power === "rasengan")) {
+  if (!hand) {
+    next.fistMs = 0;
+  }
+
+  const powerActive = next.power === "room" || next.power === "rasengan";
+  if (state.dismissing || (closedFist && powerActive && state.fistMs + dt >= FIST_HOLD_MS)) {
+    next.dismissing = true;
+    next.status = "CLOSING";
+    next.shambles = "idle";
+    next.draggingId = null;
+    const fade = clamp(dt / FIST_FADE_MS, 0, 1);
+    next.openAmount = state.openAmount * (1 - fade);
+    next.rasenganAmount = state.rasenganAmount * (1 - fade);
+    next.displayRadius = state.displayRadius * (1 - fade);
+    if (next.openAmount < 0.05 && next.rasenganAmount < 0.05) {
+      return {
+        ...resetRoom(next),
+        status: "CLOSED",
+        fistLock: closedFist,
+        fistCooldownUntil: now + FIST_COOLDOWN_MS,
+      };
+    }
+    return next;
+  }
+
+  if (closedFist && powerActive) {
     next.fistMs = state.fistMs + dt;
     next.status = "CLOSING";
-    if (next.power === "rasengan") {
-      next.rasenganAmount = lerp(state.rasenganAmount, 0, 0.45);
-    }
-    if (next.fistMs >= FIST_HOLD_MS) {
-      return { ...resetRoom(next), status: "CLOSED" };
-    }
     return next;
   }
   next.fistMs = 0;
 
-  if (next.power === "none" && hand && (wantRoom || wantRasengan) && !(wantRoom && wantRasengan)) {
+  if (!closedFist) {
+    next.fistLock = false;
+  }
+  const blocked =
+    next.fistLock || closedFist || now < next.fistCooldownUntil;
+
+  if (next.power === "none" && !blocked && hand && (wantRoom || wantRasengan) && !(wantRoom && wantRasengan)) {
     const same =
       !state.lastPalm ||
       (palm != null && Math.hypot(palm.x - state.lastPalm.x, palm.y - state.lastPalm.y) < 0.12);
@@ -252,7 +285,9 @@ export function stepRoom(
     }
   } else if (next.power === "none") {
     next.holdMs = 0;
-    if (hand && isThreeDigit(hand)) {
+    if (blocked && closedFist) {
+      next.status = "RELEASE FIST";
+    } else if (hand && isThreeDigit(hand)) {
       next.status = "Create ROOM first";
     } else {
       next.status = hand && isPowerHand(hand) ? "CUPPED · need palm up or down" : "idle";
