@@ -13,6 +13,8 @@ import {
   SWAP_COOLDOWN_MS,
   SWAP_DEBOUNCE_MS,
 } from "./room/handPose";
+import { rasenganPixelRadius } from "./room/render";
+import { RASENGAN_MAX } from "./room/handPose";
 import { createRoomState, stepRoom, swapProps } from "./room/state";
 import { FILTER_NAMES, nextFilter } from "./filters";
 
@@ -79,6 +81,10 @@ function openPalm(): TrackedHand {
   bend(hand, 9, 10, 12, false, false);
   bend(hand, 13, 14, 16, false, false);
   bend(hand, 17, 18, 20, false, false);
+  hand.landmarks[8] = tip(0.32, 0.28, 0);
+  hand.landmarks[12] = tip(0.48, 0.22, 0);
+  hand.landmarks[16] = tip(0.62, 0.26, 0);
+  hand.landmarks[20] = tip(0.78, 0.34, 0);
   return hand;
 }
 
@@ -169,6 +175,9 @@ describe("Rasengan lock", () => {
   it("starts Rasengan from claw palm-up and will not replace an open ROOM", () => {
     let state = stepRoom(createRoomState(), [clawPalmUp()], 0, CLAW_HOLD_MS);
     expect(state.power).toBe("rasengan");
+    expect(state.displayRadius).toBe(0);
+    expect(state.rasenganRadius).toBeLessThanOrEqual(RASENGAN_MAX);
+    expect(rasenganPixelRadius(state, 1280, 720)).toBeLessThanOrEqual(720 * RASENGAN_MAX);
     state = openRoom(0);
     state = stepRoom(state, [clawPalmUp()], 800, CLAW_HOLD_MS);
     expect(state.power).toBe("room");

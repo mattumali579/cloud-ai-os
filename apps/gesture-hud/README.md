@@ -33,8 +33,8 @@ Physical tape-measure checks (0.5 m, 1 m, 1.5 m, 2 m, five readings each) are **
 ## Powers (ROOM, Shambles, Rasengan)
 
 On **Powers**:
-- Clawed hand, palm down, held still → ROOM grows until it fills the camera view, then stays put. It does not follow your hand.
-- Clawed hand, palm up, held still → Rasengan, a small spinning ball over the palm. Close power before ROOM.
+- Clawed / cupped hand, palm down, held still → ROOM grows until it fills the camera view, then stays put. It does not follow your hand.
+- Cupped hand, palm up, held still → Rasengan, a small spinning energy ball over the palm. It does not grow into ROOM. Close power before ROOM.
 - Inside ROOM, thumb + index + middle at the camera = READY. Twist so your palm faces you = the two fake objects swap once.
 - Force ROOM / Force Rasengan are backups if the camera guesses the palm wrong. Calibrate palm up/down with your real hand in view.
 

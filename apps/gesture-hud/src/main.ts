@@ -291,7 +291,7 @@ function drawRoomMode(
     room.power === "room"
       ? "ROOM is locked until Close power. Three fingers at the camera = READY. Twist palm toward you = swap. Pinch to drag."
       : room.power === "rasengan"
-        ? "Rasengan follows the palm. Close power before ROOM. This is not a real chakra ball."
+        ? "Small spinning ball over the palm. It will not grow into ROOM. Close power to leave."
         : "Claw + palm down = ROOM. Claw + palm up = Rasengan. Flat open palm does nothing here.";
   hudExtra.textContent =
     room.power === "room"

@@ -1,4 +1,4 @@
-import { lerp, type Point, type TrackedHand } from "../landmarks";
+import { clamp, lerp, type Point, type TrackedHand } from "../landmarks";
 import {
   CLAW_HOLD_MS,
   classifyPalm,
@@ -7,8 +7,10 @@ import {
   DRAG_RADIUS,
   fingersTowardCamera,
   HAND_LOST_HOLD_MS,
-  isClaw,
+  isPowerHand,
   isThreeDigit,
+  RASENGAN_MAX,
+  RASENGAN_MIN,
   palmCenter,
   pinchPoints,
   pulledBack,
@@ -182,7 +184,7 @@ export function stepRoom(
     }
   }
 
-  if (next.power === "none" && hand && isClaw(hand) && (frame.facing === "down" || frame.facing === "up")) {
+  if (next.power === "none" && hand && isPowerHand(hand) && (frame.facing === "down" || frame.facing === "up")) {
     const same =
       !state.lastPalm ||
       (palm != null && Math.hypot(palm.x - state.lastPalm.x, palm.y - state.lastPalm.y) < 0.05);
@@ -209,7 +211,7 @@ export function stepRoom(
     if (hand && isThreeDigit(hand)) {
       next.status = "Create ROOM first";
     } else {
-      next.status = hand && isClaw(hand) ? "CLAW · need palm up or down" : "idle";
+      next.status = hand && isPowerHand(hand) ? "CUPPED · need palm up or down" : "idle";
     }
   }
 
@@ -244,7 +246,7 @@ export function stepRoom(
 
     const three = hand && isThreeDigit(hand);
     const toward = hand ? fingersTowardCamera(hand) : false;
-    const armed = three && toward && frame.facing !== "user";
+    const armed = three && frame.facing !== "user" && (frame.facing === "camera" || toward);
     const switching = three && (frame.facing === "user" || (state.lastPalm && palm && pulledBack(state.lastPalm, palm)));
     if (now < next.swapCooldownUntil) {
       next.status = "SHAMBLES COOLDOWN";
@@ -289,7 +291,14 @@ export function stepRoom(
       y: lerp(state.rasenganCenter.y, target.y - 0.07, 0.28),
       z: lerp(state.rasenganCenter.z, target.z, 0.28),
     };
-    next.rasenganRadius = lerp(state.rasenganRadius, 0.09, 0.2);
+    const palmSpan = hand
+      ? Math.hypot(
+          (hand.landmarks[5]?.x ?? 0) - (hand.landmarks[17]?.x ?? 0),
+          (hand.landmarks[5]?.y ?? 0) - (hand.landmarks[17]?.y ?? 0),
+        )
+      : 0.08;
+    const targetRadius = clamp(palmSpan * 0.85, RASENGAN_MIN, RASENGAN_MAX);
+    next.rasenganRadius = lerp(state.rasenganRadius, targetRadius, 0.22);
     next.rasenganAmount = lerp(state.rasenganAmount, 1, 0.22);
     next.openAmount = 0;
     next.displayRadius = 0;

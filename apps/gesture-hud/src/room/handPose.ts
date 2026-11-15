@@ -9,6 +9,8 @@ export const HAND_LOST_HOLD_MS = 700;
 export const DRAG_RADIUS = 0.09;
 export const PINCH_THRESHOLD = 0.055;
 export const DEFAULT_EXPAND_MS = 1800;
+export const RASENGAN_MIN = 0.05;
+export const RASENGAN_MAX = 0.11;
 
 export type PalmFacing = "up" | "down" | "camera" | "user" | "ambiguous";
 
@@ -81,27 +83,53 @@ export function isFingerFolded(hand: TrackedHand, tip: number, pip: number, mcp:
   return fingerCurl(hand, tip, pip, mcp) > 0.42;
 }
 
+export function fingerSpread(hand: TrackedHand): number {
+  const index = hand.landmarks[8];
+  const pinky = hand.landmarks[20];
+  if (!index || !pinky) {
+    return 0;
+  }
+  return dist(index, pinky);
+}
+
 export function isOpenPalm(hand: TrackedHand): boolean {
   return (
     isFingerExtended(hand, 8, 6, 5) &&
     isFingerExtended(hand, 12, 10, 9) &&
     isFingerExtended(hand, 16, 14, 13) &&
-    isFingerExtended(hand, 20, 18, 17)
+    isFingerExtended(hand, 20, 18, 17) &&
+    fingerSpread(hand) > 0.18
   );
 }
 
-export function isClaw(hand: TrackedHand): boolean {
-  if (isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
-    return false;
-  }
+export function meanFingerCurl(hand: TrackedHand): number {
   const curls = [
     fingerCurl(hand, 8, 6, 5),
     fingerCurl(hand, 12, 10, 9),
     fingerCurl(hand, 16, 14, 13),
     fingerCurl(hand, 20, 18, 17),
   ];
-  const mean = curls.reduce((s, v) => s + v, 0) / curls.length;
-  return mean > 0.34 && mean < 0.97 && curls.every((c) => c > 0.2);
+  return curls.reduce((s, v) => s + v, 0) / curls.length;
+}
+
+export function isClaw(hand: TrackedHand): boolean {
+  if (isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
+    return false;
+  }
+  const mean = meanFingerCurl(hand);
+  return mean > 0.34 && mean < 0.97;
+}
+
+export function isCupped(hand: TrackedHand): boolean {
+  if (isThreeDigit(hand) || isOpenPalm(hand) || isPinching(hand.landmarks, PINCH_THRESHOLD)) {
+    return false;
+  }
+  const mean = meanFingerCurl(hand);
+  return mean > 0.12 && mean < 0.7 && fingerSpread(hand) < 0.22;
+}
+
+export function isPowerHand(hand: TrackedHand): boolean {
+  return isClaw(hand) || isCupped(hand);
 }
 
 export function isThreeDigit(hand: TrackedHand): boolean {
