@@ -55,6 +55,14 @@ python -m pytest tests/test_glasses_vision.py tests/test_glasses_gesture.py test
 87 passed, 1 warning in 0.75s
 ```
 
+GitHub Actions on the selection commit `d4db70d`: https://github.com/mattumali579/cloud-ai-os/actions/runs/43845683289
+
+```text
+87 passed, 1 warning in 0.95s
+```
+
+Python 3.11.18. `OPENAI_API_KEY` and the other model keys were empty. JUnit artifact: https://github.com/mattumali579/cloud-ai-os/actions/runs/43845683289/artifacts/14215720176
+
 The 66-pass run (https://github.com/mattumali579/cloud-ai-os/actions/runs/43842665105) is the pre-selection baseline. The 78-pass run (https://github.com/mattumali579/cloud-ai-os/actions/runs/43844641209) covers gestures and a generated HEIC, not this crowd-selection suite. There is no screenshot of glasses. The preview check is a PPM pixel assertion in `tests/test_glasses_selection.py`.
 
 ### D. Status
