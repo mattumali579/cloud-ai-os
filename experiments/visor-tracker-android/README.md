@@ -1,57 +1,58 @@
-# Visor Tracker — live overlay for Android
+# Visor Fast Tracking (Android)
 
-This experimental, free companion app draws MediaPipe detection boxes **on top of the phone's expanded Visor Live View**. It is not a HUD inside standard Ray-Ban Meta glasses (which have no display). Source project and existing Jarvis services remain intact.
+Free on-device object/hand/face detection with labeled boxes rendered **over the phone's full-screen Visor Live View**. Compatible target: Samsung Galaxy S22 Ultra (Android 16) and Ray-Ban Meta using Visor.
 
-## How it works
+**This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
-1. The user grants Android **Display over other apps** permission and starts the overlay.
-2. The user opens Visor's native Live View **in full screen**. Native Visor video continues independently.
-3. A user-started foreground service subscribes to Visor's token-protected `LIVE_FRAMES` Messenger service.
-4. MediaPipe detects objects every processed frame; optional hand scans occur every second processed frame, and faces every fourth.
-5. An Android `TYPE_APPLICATION_OVERLAY` window draws transparent labeled boxes. It does not intercept touches, replace Visor video, upload frames, or need Tailscale/Jarvis.
+## Architecture
 
-Visor developer JPEG frames are available **at most once every 200 ms (5 detections/second ceiling)**, plus model processing overhead. The interpolated overlay drawing updates more frequently than detection but does **not** improve the actual detector throughput. Native Visor video may run much faster; the overlay is a separate layer.
+- Official **Visor Development Kit (VDK) v0.1.1** from Maven Central: `com.macedonga.visor:kit:0.1.1`.
+- User grants `Scope.CAMERA` from Visor's consent screen; no Developer Mode token or separate local server needed.
+- `Visor.camera.live(LiveConfig { quality = LOW; frameRate = 30; audio = false })` joins the existing stream when one runs. On a new stream, 30 FPS is **requested**, not guaranteed. Visor picks the actual rate and size when Live View was already running.
+- `LiveVideoDecoder` decodes HEVC/H.264 on Android MediaCodec, returning hardware-decoded YUV frames. `YuvSnapshot` copies selected frames to bounded 384px RGB for MediaPipe without blocking the video decoder.
+- Object detection: MediaPipe EfficientDet-Lite0; optional hands and faces are staggered. Slow AI frames are dropped rather than queued. The detector's maximum requested cadence is approximately 15 Hz, but inference may be slower on hardware.
+- `MotionTracker` uses inexpensive grayscale block matching to follow box motion on intervening decoded frames, bounded to avoid stale boxes. This is lightweight image tracking, **not** 30 AI detections per second.
+- `TrackingOverlayView` draws transparent boxes with cover/crop transform matching Visor's expanded Live View. The Android user-started foreground service keeps tracking alive during app switching; the Stop notification terminates it.
+- The notification displays measured **video FPS, AI FPS, box/tracking FPS**, and detection count. Results depend on heat, camera quality, movement and phone hardware.
 
-The current implementation **does not consume the VDK codec stream**. Achieving >5 fresh detections per second requires integrating a higher-rate video stream and measuring on actual phone hardware. Do not advertise 30 FPS tracking without testing.
+The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
-## Android setup
+## Install / run
 
-1. Keep your original Visor installed; enable Visor **Settings → Advanced → Developer Mode** and copy the current token.
-2. Install the **Visor Live Overlay** APK, a separate package (`com.mattumali.visortracker.overlay`); it will not replace or uninstall earlier Tracker apps.
-3. Open Visor Live Overlay and select **Allow display over other apps** in Android settings.
-4. Paste the token; leave **Also detect hands and faces** unchecked for the fastest object-only mode.
-5. Tap **START LIVE VIEW OVERLAY**, then switch to Visor and start Live View. Leave it **expanded**, not in the stepped/windowed mode. Detection boxes should appear over the video.
-6. Stop using the Android foreground notification's **Stop overlay** action, or reopen the overlay app and tap STOP.
+1. Keep **Visor** installed and set up on the glasses.
+2. Install **Visor Fast Tracking** (package `com.mattumali.visortracker.stream`). This is a separate package, so earlier Tracker APKs may remain installed and need not be removed.
+3. Open Visor Fast Tracking and tap **Allow display over other apps**; enable it in Android Settings.
+4. Tap **Grant Visor camera access**; on Visor's consent screen allow **Camera** for the companion app.
+5. For best responsiveness, leave **Also detect hands and faces** unchecked.
+6. Tap **START FAST OVERLAY** and open Visor's Live View, fully expanded (not mini-window/stepped).
+7. Check bounding boxes directly over the Visor live picture and read **Video / AI / boxes FPS** from the tracker foreground notification. Stop with the notification's **Stop** action or reopen the companion.
 
-The application remembers the token privately on-device; rotate the token in Visor if it may have been exposed. The system overlay may remain visible on top of other apps while enabled; explicitly stop it when leaving Visor. Android may require user authorization for foreground notifications.
+If permissions were denied, go to Visor **Settings → Apps** to review the companion app's Camera scope. The overlay itself also needs Android's permission to draw over other apps. A camera authorization failure is not fixed by pasting a Developer Mode token.
 
-## Build and tests
+## Build
 
-Requires JDK 17, Android SDK Platform 35 and Gradle 8.7:
+Isolated app build; the rest of the Jarvis repo is untouched:
 
-```powershell
-cd experiments/visor-tracker-android
-gradle --no-daemon assembleDebug testDebugUnitTest
-```
+- Android SDK API 36, JDK 17
+- Gradle 8.14.4, Android Gradle Plugin 8.13.2, Kotlin 2.4.20
+- Local command: `gradle --no-daemon assembleDebug testDebugUnitTest`
+- APK: `app/build/outputs/apk/debug/app-debug.apk`
+- CI: `.github/workflows/visor-tracker-android.yml`
 
-The workflow builds the APK and unit-tests tracking IDs and Visor's full-screen cover/crop transform. Three MediaPipe models are downloaded from Google's official hosting during build.
+GitHub Actions artifacts are ZIP files containing the APK. Extract `app-debug.apk` before installing; do not attempt to install the ZIP.
 
-APK output: `app/build/outputs/apk/debug/app-debug.apk`. Artifact on GitHub Actions is a **ZIP** containing that installable APK. Download and extract the APK before installing.
+### Signing limitation (important)
 
-### Signing and update limitation
+GitHub Actions currently generates a temporary debug signing key per new runner. Android only accepts APK updates signed by the **same private key**. A package-name change is an install-as-new workaround, not an update fix. To support seamless future updates, the user must provide a secure persistent signing keystore through CI secrets or sign repeat builds locally with a single securely stored key. **Do not commit signing keys to GitHub.**
 
-GitHub Actions currently generates an ephemeral Android **debug signing key** on each fresh runner. APKs from separate runs cannot generally update each other in-place because Android requires matching signing certificates. Changing `versionCode` does not fix this. This new overlay uses its own app ID to **coexist with** existing installed Tracker apps, so **no uninstall of those apps is required**.
+## Verification ladder
 
-For future seamless in-place overlay updates, set up one stable private signing keystore with a release signing configuration; never commit the private key into this public repository. Until that is done, do not promise update-in-place support for this GitHub workflow.
+- **Source verification**: Visor's VDK `Camera.live`, `LiveVideoDecoder`, scope permissions, and `KitLive.watch` support this design.
+- **Automated**: Gradle build plus JVM tests for box projection, tracking IDs, RGB/YUV conversion and grayscale motion. See CI result.
+- **Device (not yet verified)**: real Visor Camera scope grant, VDK subscription while native Live View is shown, Android 16 overlay placement/touch-through, device FPS and thermals. Do not claim 30-FPS tracking from CI alone.
 
-## Verified vs still unverified
-
-- Source: Visor developer service action, frame messages and frame interval checked against `macedonga/visor`'s `DeveloperIntents.kt` and `FrameService.kt`.
-- Automated: GitHub Actions build and unit tests only, after a green run.
-- Physical test **required**: Android 16 system overlay permission, frame subscription on Samsung S22 Ultra, alignment with Visor's full-screen view, true detection FPS,  thermal/battery behaviour and touch-through behavior.
-- There is no supported way to render these boxes inside non-display Ray-Ban Meta glasses.
-
-Visor source:
-- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/DeveloperIntents.kt
-- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/FrameService.kt
-- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/media/LiveScreen.kt
+VDK source and official docs:
+- https://github.com/macedonga/visor-kit/blob/main/android/src/main/kotlin/com/macedonga/visor/kit/Camera.kt
+- https://github.com/macedonga/visor-kit/blob/main/android/src/main/kotlin/com/macedonga/visor/kit/LiveDecoders.kt
+- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/KitLive.kt
+- https://visor.macedonga.com/developers/docs/camera-and-captures/
