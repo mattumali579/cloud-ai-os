@@ -1,3 +1,5 @@
+import java.net.URL
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -46,11 +48,13 @@ val downloadVisionModels by tasks.registering {
         visionModels.forEach { (name, source) ->
             val output = destination.resolve(name)
             if (!output.exists() || output.length() == 0L) {
-                val connection = java.net.URL(source).openConnection().apply {
+                val connection = URL(source).openConnection().apply {
                     connectTimeout = 20_000
                     readTimeout = 60_000
                 }
-                connection.getInputStream().use { input -> output.outputStream().use(input::copyTo) }
+                connection.getInputStream().use { input ->
+                    output.outputStream().use { stream -> input.copyTo(stream) }
+                }
             }
             check(output.length() > 0L) { "Downloaded empty MediaPipe model: $name" }
         }
