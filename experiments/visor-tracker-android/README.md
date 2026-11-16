@@ -4,11 +4,11 @@ A free, on-device companion app for Ray-Ban Meta glasses using Visor Live View. 
 
 ## Verified Visor camera interface
 
-Visor's Developer Mode documentation describes the service action `com.macedonga.visor.action.LIVE_FRAMES`: bind it with package `com.macedonga.visor`, subscribe with message `what=1`, provide the Developer Mode `token` and optional `interval_ms` (minimum 200), set `replyTo` to the app's Messenger, and read message `what=3` with `jpeg` bytes and `time`. Message `what=4` reports refusal (`TOKEN` or `OFF`). Visor emits no frames when Live View is not running and stops frames when Developer Mode is off or the token is rotated.
+Visor's Developer Mode source defines the service action `com.macedonga.visor.action.LIVE_FRAMES`: bind it with package `com.macedonga.visor`, subscribe with message `what=1`, provide the Developer Mode `token` and optional `interval_ms` (minimum 200), set `replyTo` to the app's Messenger, and read message `what=3` with `jpeg` bytes and `time`. Message `what=4` reports refusal (`TOKEN` or `OFF`). Visor emits no frames when Live View is not running and stops frames when Developer Mode is off or the token is rotated.
 
-Official references:
-- https://github.com/macedonga/visor/blob/main/docs/developer-mode.md
-- https://github.com/macedonga/visor/releases (Live frames and the token were added in Visor 1.4.9; compatible with the 3.x developer-mode interface described above).
+Official source:
+- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/DeveloperIntents.kt
+- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/FrameService.kt
 
 The feed is still JPEG frames, rate-limited to one every 200 ms. This app requests 250 ms (~4 fps) to leave some processing headroom on a Galaxy S22 Ultra. If model inference falls behind, it drops frames instead of accumulating delay.
 
