@@ -24,6 +24,7 @@ import com.macedonga.visor.kit.protocol.Scope
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,10 +44,16 @@ import kotlinx.coroutines.launch
 class OverlayTrackingService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private val motionWorker = Executors.newSingleThreadExecutor()
+    private val motionBusy = AtomicBoolean(false)
+    private val motionTracker = MotionTracker()
+    private val pendingDetection = AtomicReference<DetectionBaseline?>(null)
+    private data class DetectionBaseline(val detections: FrameDetections, val gray: GrayFrame)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val processing = AtomicBoolean(false)
     private val decodedFrames = AtomicInteger(0)
     private val inferenceFrames = AtomicInteger(0)
+    private val motionFrames = AtomicInteger(0)
     private val windows by lazy { getSystemService(Context.WINDOW_SERVICE) as WindowManager }
 
     private var overlay: TrackingOverlayView? = null
@@ -137,6 +144,7 @@ class OverlayTrackingService : Service() {
                 streamBeginMs = lastReportAtMs
                 decodedFrames.set(0)
                 inferenceFrames.set(0)
+                motionFrames.set(0)
                 report("VDK connected; waiting for Visor Live View")
 
                 val requested = LiveConfig {
@@ -148,43 +156,74 @@ class OverlayTrackingService : Service() {
                     if (!running) return@LiveVideoDecoder
                     decodedFrames.incrementAndGet()
                     val now = SystemClock.elapsedRealtime()
-                    // Don't starve the decoder. No stale frames build up behind inference.
-                    if (now - lastOfferedAtMs < MIN_INFERENCE_INTERVAL_MS ||
-                        !processing.compareAndSet(false, true)
-                    ) return@LiveVideoDecoder
-                    lastOfferedAtMs = now
-                    try {
-                        // MediaCodec returns/invalidates Image as soon as callback finishes.
-                        val snapshot = YuvSnapshot.capture(image)
-                        worker.execute {
-                            var bitmap: Bitmap? = null
-                            try {
-                                if (!running) return@execute
-                                bitmap = snapshot.toBitmap()
-                                val detections = pipeline?.detect(bitmap) ?: return@execute
-                                inferenceFrames.incrementAndGet()
-                                lastBoxCount = detections.boxes.size
-                                mainHandler.post {
-                                    if (running) overlay?.updateFrame(detections)
+
+                    // Fast gray-only tracking follows objects between AI inference results.
+                    // It also runs when the detector is busy, but its single-slot worker
+                    // never accumulates stale frames behind the video.
+                    var gray: GrayFrame? = null
+                    if (motionBusy.compareAndSet(false, true)) {
+                        try {
+                            gray = GrayFrame.capture(image)
+                            val motionInput = gray
+                            motionWorker.execute {
+                                try {
+                                    pendingDetection.getAndSet(null)?.let {
+                                        motionTracker.reset(it.detections, it.gray)
+                                    }
+                                    motionTracker.advance(motionInput)?.let { predicted ->
+                                        motionFrames.incrementAndGet()
+                                        mainHandler.post {
+                                            if (running) overlay?.updateFrame(predicted)
+                                        }
+                                    }
+                                } catch (error: Exception) {
+                                    report("Motion tracking failed: " + (error.message ?: "unknown"))
+                                } finally {
+                                    motionBusy.set(false)
                                 }
-                            } catch (error: Exception) {
-                                report("Decode/detection failed: " + (error.message ?: "unknown"))
-                            } finally {
-                                bitmap?.recycle()
-                                processing.set(false)
                             }
+                        } catch (error: Exception) {
+                            motionBusy.set(false)
+                            report("Grayscale extraction failed: " + (error.message ?: "unknown"))
                         }
-                    } catch (error: Exception) {
-                        processing.set(false)
-                        report("Hardware frame conversion failed: " + (error.message ?: "unknown"))
+                    }
+
+                    // The full AI detector is slower; never delay the hardware decoder.
+                    if (now - lastOfferedAtMs >= MIN_INFERENCE_INTERVAL_MS &&
+                        processing.compareAndSet(false, true)) {
+                        lastOfferedAtMs = now
+                        try {
+                            val baselineGray = gray ?: GrayFrame.capture(image)
+                            val snapshot = YuvSnapshot.capture(image)
+                            worker.execute {
+                                var bitmap: Bitmap? = null
+                                try {
+                                    if (!running) return@execute
+                                    bitmap = snapshot.toBitmap()
+                                    val detections = pipeline?.detect(bitmap) ?: return@execute
+                                    inferenceFrames.incrementAndGet()
+                                    lastBoxCount = detections.boxes.size
+                                    pendingDetection.set(DetectionBaseline(detections, baselineGray))
+                                } catch (error: Exception) {
+                                    report("Decode/detection failed: " + (error.message ?: "unknown"))
+                                } finally {
+                                    bitmap?.recycle()
+                                    processing.set(false)
+                                }
+                            }
+                        } catch (error: Exception) {
+                            processing.set(false)
+                            report("Hardware frame conversion failed: " + (error.message ?: "unknown"))
+                        }
                     }
                     if (now - lastReportAtMs >= REPORT_MS) {
                         val seconds = (now - lastReportAtMs).coerceAtLeast(1) / 1000f
                         val videoFps = decodedFrames.getAndSet(0) / seconds
                         val detectFps = inferenceFrames.getAndSet(0) / seconds
+                        val trackingFps = motionFrames.getAndSet(0) / seconds
                         lastReportAtMs = now
-                        report("Video %.1f FPS | detection %.1f FPS | %d boxes".format(
-                            videoFps, detectFps, lastBoxCount))
+                        report("Video %.1f FPS | AI %.1f FPS | boxes %.1f FPS | %d objects".format(
+                            videoFps, detectFps, trackingFps, lastBoxCount))
                     }
                 }.use { decoder ->
                     // Visor serves the very same video being shown in its own Live View.
@@ -257,6 +296,8 @@ class OverlayTrackingService : Service() {
         pipeline = null
         if (old != null) worker.execute { old.close() }
         worker.shutdown()
+        motionWorker.shutdown()
+        pendingDetection.set(null)
         lastStatus = "Overlay stopped"
         super.onDestroy()
     }
