@@ -28,7 +28,7 @@ android {
 }
 
 dependencies {
-    implementation("com.google.mediapipe:tasks-vision:0.10.22")
+    implementation("com.google.mediapipe:tasks-vision:0.10.35")
     implementation("org.opencv:opencv:4.10.0")
     testImplementation("junit:junit:4.13.2")
 }
