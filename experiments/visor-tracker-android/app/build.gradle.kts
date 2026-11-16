@@ -10,7 +10,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.mattumali.visortracker"
+        applicationId = "com.mattumali.visortracker.fresh"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
