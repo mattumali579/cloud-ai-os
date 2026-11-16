@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.mattumali.visortracker"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.mattumali.visortracker.stream"
