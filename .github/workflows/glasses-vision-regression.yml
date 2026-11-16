@@ -1,0 +1,73 @@
+name: Glasses vision offline regression
+
+# The GitHub runner has no glasses, microphone, or Windows desktop.
+# This is a real recurring software regression check, NOT physical end-to-end proof.
+# It uses no ChatGPT/LLM provider secrets, and tests only local synthetic frames.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/glasses-vision-regression.yml"
+      - "src/cloudos/glasses/**"
+      - "src/cloudos/api/**"
+      - "tests/test_glasses_vision.py"
+      - "tests/test_api.py"
+      - "pyproject.toml"
+  push:
+    branches:
+      - master
+      - "cursor/glasses-vision-*"
+    paths:
+      - ".github/workflows/glasses-vision-regression.yml"
+      - "src/cloudos/glasses/**"
+      - "src/cloudos/api/**"
+      - "tests/test_glasses_vision.py"
+      - "tests/test_api.py"
+      - "pyproject.toml"
+  schedule:
+    # Schedule triggers only on the default branch, once this PR is merged.
+    - cron: "31 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: glasses-vision-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: No-LLM offline vision + API tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Prevent accidentally inheriting an inference account from workflow config.
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      GOOGLE_API_KEY: ""
+      GEMINI_API_KEY: ""
+      CHATGPT_API_KEY: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install local package and test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Test offline vision and existing API routing
+        run: |
+          mkdir -p test-results
+          python -m pytest tests/test_glasses_vision.py tests/test_api.py -q --tb=short --junitxml=test-results/vision-junit.xml
+      - name: Preserve evidence on pass or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glasses-vision-regression-${{ github.run_id }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
