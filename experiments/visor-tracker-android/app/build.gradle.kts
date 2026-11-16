@@ -17,7 +17,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/visionAssets"))
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/visionAssets").get().asFile)
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
