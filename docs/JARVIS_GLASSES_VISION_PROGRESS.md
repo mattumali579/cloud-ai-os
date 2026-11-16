@@ -22,12 +22,13 @@ The workflow the owner committed (`.github/workflows/glasses-vision-regression.y
 
 | Run | Event | Result | Evidence |
 |---|---|---|---|
-| https://github.com/mattumali579/cloud-ai-os/actions/runs/43842665105 | `pull_request` | success | Job log: `66 passed, 1 warning in 0.80s` on Python 3.11.18. API keys in that job were empty. |
-| https://github.com/mattumali579/cloud-ai-os/actions/runs/43842651759 | `push` of the same commit | success | Same workflow file. |
+| https://github.com/mattumali579/cloud-ai-os/actions/runs/43844641209 | `pull_request` on `3622f20` | success | Job log: `78 passed, 1 warning in 0.80s` on Python 3.11.18. Installed `pillow-heif` 1.8.1. `OPENAI_API_KEY` and the other model keys were empty. |
+| https://github.com/mattumali579/cloud-ai-os/actions/runs/43844629043 | `push` of the same commit | success | Same workflow file. |
+| https://github.com/mattumali579/cloud-ai-os/actions/runs/43842665105 | `pull_request` on `467b92a` | success | Earlier color-region suite only: `66 passed, 1 warning in 0.80s`. |
 
-That run is the color-region suite only. It does not cover the gesture or YOLO tests added after it. A new run starts when this branch is pushed. No OpenAI, Anthropic, or Gemini key is used. The daily cron runs only on the default branch after merge.
+No OpenAI, Anthropic, or Gemini key is used. The daily cron runs only on the default branch after merge. The 78-test run includes the gesture and synthetic HEIC tests. It does not install MediaPipe or a YOLO weight file.
 
-Local result on this cloud agent, Python 3.12.3, after the gesture and HEIC changes:
+Local result on this cloud agent, Python 3.12.3, same count as the GitHub run above:
 
 ```text
 /opt/cloudos-venv/bin/python -m pytest tests/test_glasses_vision.py tests/test_glasses_gesture.py tests/test_api.py -q
