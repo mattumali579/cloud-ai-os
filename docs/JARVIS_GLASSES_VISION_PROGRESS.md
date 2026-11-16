@@ -1,9 +1,29 @@
 # Jarvis Glasses Vision — Progress Ledger
 
-**Updated:** 2026-11-16
+**Updated:** 2026-11-16 04:30 America/Chicago
 **Issue:** https://github.com/mattumali579/cloud-ai-os/issues/25
 **Parent:** https://github.com/mattumali579/cloud-ai-os/issues/22
-**Branch:** `cursor/glasses-vision-7cc5` (PR #26, draft). The dirty Windows checkout at `C:\Users\Admin\cloud-ai-os` was not opened, reset, or overwritten.
+**Branch:** `cursor/glasses-vision-7cc5` (PR #26, draft). Worktree `C:\Users\Admin\cloud-ai-os-pr26-wt`. The dirty Windows checkout at `C:\Users\Admin\cloud-ai-os` was not reset, pulled, or overwritten.
+
+## Windows host hop (2026-11-16, this PC)
+
+This process is the owner's Windows host. It did not restart `CloudAIOS-JarvisGlasses`, Docker, or Tailscale. It did not send a glasses assistant prompt.
+
+| Check | Result | Evidence |
+|---|---|---|
+| `visor_url` | `ws://192.168.1.96:7333/rpc` | `%LOCALAPPDATA%\CloudAIOS\jarvis-glasses.json` (no token in Git) |
+| TCP 192.168.1.96:7333 | closed (`TimeoutError` in 2s) | `python -m cloudos.glasses.vision probe` |
+| ICMP 192.168.1.96 | 100% loss | `ping -n 1 -w 1000 192.168.1.96` |
+| ARP | `.96` absent; PC is `192.168.1.194` | `arp -a` |
+| Tailscale phone `matts-s22-ultra` | offline, last seen 2d ago | `tailscale status` |
+| rclone | not on PATH | `shutil.which("rclone")` |
+| Google Drive File Stream | not installed | `C:\Program Files\Google\Drive File Stream` missing |
+| `visor_kit` / Pillow / pillow-heif | present in existing `.venv` | import specs True |
+| MediaPipe / onnxruntime | absent | import specs False |
+| `OPENAI_API_KEY` | empty | process env |
+| `CloudAIOS-JarvisGlasses` | Running, handshake timeouts | `logs\jarvis-glasses.log` (read-only) |
+
+PC TESTED: the Visor door on the configured LAN IP is down. PHYSICAL GLASSES VERIFIED: no. Next action: turn the S22 on, open Visor on Wi-Fi (keep the Live View split tunnel), then re-run `python -m cloudos.glasses.vision probe` from the PR worktree. Do not git-reset the dirty tree.
 
 Four labels are separate on purpose.
 
@@ -149,7 +169,8 @@ Local result on this cloud agent, Python 3.12.3, same count as the GitHub run ab
 
 | Feature | CODED | SIMULATED TESTED | PC TESTED | PHYSICAL GLASSES VERIFIED | Notes |
 |---|---|---|---|---|---|
-| Authorized capture adapters | yes | yes: scripted VDK client, PPM, refusal of `content://` and of invalid HEIC | no | no | |
+| Authorized capture adapters | yes | yes: scripted VDK client, PPM, refusal of `content://` and of invalid HEIC | TCP probe only | no | `visor_url` 192.168.1.96:7333 timed out on this PC |
+| Visor TCP probe CLI | yes (`python -m cloudos.glasses.vision probe`) | yes: closed-port fixture refuses `--capture` | yes: real LAN timeout | no | Does not call an assistant |
 | Synthetic HEIC still | yes, optional `pillow-heif`  (BSD-3-Clause; bundles libheif) | yes: an 8×6 generated HEIC round-tripped to RGB `(220, 30, 30)` and through `camera.live.photo` Base64 | no | no | This was not a glasses file. |
 | Coarse color regions | yes | yes, red/blue blocks | no | no | Not objects. |
 | 21-point gestures (pinch, open palm, fist) | yes, geometry on MediaPipe indices | yes, sample poses | no | no | Not the MediaPipe gesture recognizer. |
@@ -177,12 +198,15 @@ Local result on this cloud agent, Python 3.12.3, same count as the GitHub run ab
 
 6. **No physical loop.** No glasses, phone, Live View, or Tailscale session was available. The Windows tree was not modified. Next action on that machine: do not git-reset the dirty tree. Copy this package beside the local bridge, keep the Tailscale split tunnel, and run one Developer-mode or VDK still while wearing the glasses. Do not send a normal assistant prompt to test it. Speak with `voice.reply`.
 
+7. **Configured Visor host is unreachable from this PC (2026-11-16).** Evidence: `ws://192.168.1.96:7333/rpc` TCP timeout 2s; ping 100% loss; ARP has no `.96`; Tailscale `matts-s22-ultra` offline 2d. `python -m cloudos.glasses.vision probe --capture` refused the still. Next action: power on the S22, open Visor on LAN Wi-Fi, keep the split tunnel, re-run the probe. Do not change Live View exclusions.
+
 ## How to run
 
 ```text
 python -m pip install -e ".[dev,glasses]"
-python -m pytest tests/test_glasses_vision.py tests/test_glasses_gesture.py tests/test_api.py -q
+python -m pytest tests/test_glasses_vision.py tests/test_glasses_gesture.py tests/test_glasses_selection.py tests/test_glasses_archive.py tests/test_api.py -q
 python -m cloudos.glasses.vision capability
+python -m cloudos.glasses.vision probe
 ```
 
 `glasses` installs Pillow and pillow-heif only. It does not install MediaPipe, onnxruntime, or Ultralytics, and it does not fetch weights.

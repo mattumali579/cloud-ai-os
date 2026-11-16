@@ -6,7 +6,7 @@ The private Drive folder is the one named **Jarvis Vision Archive** at the My Dr
 
 ## What is not done yet
 
-This cloud agent is not the Windows host. It did not see Google Drive for desktop, and `rclone` is not installed here. No file was uploaded. An authenticated upload is a separate step from these offline tests, and both are separate from a physical glasses session.
+Windows host check on 2026-11-16: `rclone` is not on PATH, Google Drive File Stream is not installed, and `GLASSES_ARCHIVE_RCLONE_REMOTE` is unset. No file was uploaded. An authenticated upload is a separate step from these offline tests, and both are separate from a physical glasses session.
 
 ## One-time setup on the Windows host
 

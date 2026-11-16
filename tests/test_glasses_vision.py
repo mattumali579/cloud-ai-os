@@ -491,3 +491,51 @@ def test_capability_command_prints_the_audit():
     from cloudos.glasses.vision.__main__ import main
 
     assert main(["capability"]) == 0
+
+
+def test_visor_probe_refuses_capture_when_tcp_is_closed():
+    from cloudos.glasses.vision.visor_probe import parse_visor_url, probe_visor
+
+    host, port, path = parse_visor_url("ws://192.168.1.96:7333/rpc")
+    assert (host, port, path) == ("192.168.1.96", 7333, "/rpc")
+
+    def closed(_address, timeout=None):
+        raise TimeoutError("timed out")
+
+    report = probe_visor(
+        "ws://192.168.1.96:7333/rpc",
+        capture=True,
+        opener=closed,
+    )
+    assert report["tcp_open"] is False
+    assert report["capture"] == "refused"
+    assert "not called" in report["capture_reason"]
+    assert report["hardware_verified"] is False
+    assert report["assistant_dispatched"] is False
+    assert report["paid_inference"] is False
+    assert report["inventory"]["hardware_verified"] is False
+
+
+def test_visor_probe_command_uses_explicit_url(capsys):
+    from cloudos.glasses.vision.__main__ import main
+
+    def closed(_address, timeout=None):
+        raise TimeoutError("timed out")
+
+    from cloudos.glasses.vision import visor_probe
+
+    original = visor_probe.tcp_probe
+
+    def fake_tcp(host, port, *, timeout=2.0, opener=None):
+        return {"open": False, "error": "TimeoutError: timed out"}
+
+    visor_probe.tcp_probe = fake_tcp
+    try:
+        code = main(["probe", "--url", "ws://192.168.1.96:7333/rpc", "--capture"])
+    finally:
+        visor_probe.tcp_probe = original
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["tcp_open"] is False
+    assert payload["capture"] == "refused"
+    assert payload["assistant_dispatched"] is False
