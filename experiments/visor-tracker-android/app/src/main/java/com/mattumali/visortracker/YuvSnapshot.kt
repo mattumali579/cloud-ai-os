@@ -19,10 +19,13 @@ class YuvSnapshot private constructor(
         val data: ByteArray,
         val rowStride: Int,
         val pixelStride: Int,
+        val offsetX: Int,
+        val offsetY: Int,
     ) {
         fun get(x: Int, y: Int): Int {
-            val index = y * rowStride + x * pixelStride
-            return if (index >= 0 && index < data.size) data[index].toInt() and 255 else 128
+            val index = (y + offsetY) * rowStride + (x + offsetX) * pixelStride
+            require(index >= 0 && index < data.size) { "YUV plane cropped outside its buffer" }
+            return data[index].toInt() and 255
         }
     }
 
@@ -49,14 +52,13 @@ class YuvSnapshot private constructor(
                 "Expected hardware-decoded YUV_420_888; got format " + image.format
             }
             val crop = image.cropRect
-            require(crop.left == 0 && crop.top == 0) {
-                "Unexpected nonzero video crop " + crop.toShortString()
-            }
-            val planes = image.planes.map { plane ->
+            val planes = image.planes.mapIndexed { index, plane ->
                 val buffer = plane.buffer.duplicate()
                 val data = ByteArray(buffer.remaining())
                 buffer.get(data)
-                Plane(data, plane.rowStride, plane.pixelStride)
+                val subsampling = if (index == 0) 1 else 2
+                Plane(data, plane.rowStride, plane.pixelStride,
+                    crop.left / subsampling, crop.top / subsampling)
             }
             return YuvSnapshot(crop.width(), crop.height(), planes[0], planes[1], planes[2])
         }
