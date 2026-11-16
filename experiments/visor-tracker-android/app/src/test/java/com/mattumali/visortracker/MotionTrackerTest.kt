@@ -11,7 +11,7 @@ class MotionTrackerTest {
         val height = 80
         val pixels = ByteArray(width * height) { 25 }
         for (y in 30 until 50) for (x in 30 + dx until 50 + dx) {
-            pixels[y * width + x] = if ((x - dx + y) % 4 < 2) 230.toByte() else 90.toByte()
+            pixels[y * width + x] = (65 + ((x - dx) * 37 + y * 19 + (x - dx) * (y + 11) * 7) % 175).toByte()
         }
         return GrayFrame(width, height, pixels)
     }
