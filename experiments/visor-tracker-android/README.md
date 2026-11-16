@@ -1,47 +1,57 @@
-# Visor Live Tracker (Android)
+# Visor Tracker — live overlay for Android
 
-A free, on-device companion app for Ray-Ban Meta glasses using Visor Live View. It receives Visor's token-protected JPEG frames, runs MediaPipe Tasks for hands/faces/objects, and uses OpenCV to resize frames and draw stable tracked boxes/IDs. It does not upload frames, use an inference API, or require a Windows server.
+This experimental, free companion app draws MediaPipe detection boxes **on top of the phone's expanded Visor Live View**. It is not a HUD inside standard Ray-Ban Meta glasses (which have no display). Source project and existing Jarvis services remain intact.
 
-## Verified Visor camera interface
+## How it works
 
-Visor's Developer Mode source defines the service action `com.macedonga.visor.action.LIVE_FRAMES`: bind it with package `com.macedonga.visor`, subscribe with message `what=1`, provide the Developer Mode `token` and optional `interval_ms` (minimum 200), set `replyTo` to the app's Messenger, and read message `what=3` with `jpeg` bytes and `time`. Message `what=4` reports refusal (`TOKEN` or `OFF`). Visor emits no frames when Live View is not running and stops frames when Developer Mode is off or the token is rotated.
+1. The user grants Android **Display over other apps** permission and starts the overlay.
+2. The user opens Visor's native Live View **in full screen**. Native Visor video continues independently.
+3. A user-started foreground service subscribes to Visor's token-protected `LIVE_FRAMES` Messenger service.
+4. MediaPipe detects objects every processed frame; optional hand scans occur every second processed frame, and faces every fourth.
+5. An Android `TYPE_APPLICATION_OVERLAY` window draws transparent labeled boxes. It does not intercept touches, replace Visor video, upload frames, or need Tailscale/Jarvis.
 
-Official source:
-- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/DeveloperIntents.kt
-- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/FrameService.kt
+Visor developer JPEG frames are available **at most once every 200 ms (5 detections/second ceiling)**, plus model processing overhead. The interpolated overlay drawing updates more frequently than detection but does **not** improve the actual detector throughput. Native Visor video may run much faster; the overlay is a separate layer.
 
-The feed is still JPEG frames, rate-limited to one every 200 ms. This app requests 250 ms (~4 fps) to leave some processing headroom on a Galaxy S22 Ultra. If model inference falls behind, it drops frames instead of accumulating delay.
+The current implementation **does not consume the VDK codec stream**. Achieving >5 fresh detections per second requires integrating a higher-rate video stream and measuring on actual phone hardware. Do not advertise 30 FPS tracking without testing.
 
-## Build
+## Android setup
 
-Requires JDK 17 and Android SDK platform 35. On Windows PowerShell, from this folder:
+1. Keep your original Visor installed; enable Visor **Settings → Advanced → Developer Mode** and copy the current token.
+2. Install the **Visor Live Overlay** APK, a separate package (`com.mattumali.visortracker.overlay`); it will not replace or uninstall earlier Tracker apps.
+3. Open Visor Live Overlay and select **Allow display over other apps** in Android settings.
+4. Paste the token; leave **Also detect hands and faces** unchecked for the fastest object-only mode.
+5. Tap **START LIVE VIEW OVERLAY**, then switch to Visor and start Live View. Leave it **expanded**, not in the stepped/windowed mode. Detection boxes should appear over the video.
+6. Stop using the Android foreground notification's **Stop overlay** action, or reopen the overlay app and tap STOP.
+
+The application remembers the token privately on-device; rotate the token in Visor if it may have been exposed. The system overlay may remain visible on top of other apps while enabled; explicitly stop it when leaving Visor. Android may require user authorization for foreground notifications.
+
+## Build and tests
+
+Requires JDK 17, Android SDK Platform 35 and Gradle 8.7:
 
 ```powershell
+cd experiments/visor-tracker-android
 gradle --no-daemon assembleDebug testDebugUnitTest
 ```
 
-The build downloads three public Google MediaPipe model files into Gradle's generated assets folder; they are not committed into the repository. The APK is:
+The workflow builds the APK and unit-tests tracking IDs and Visor's full-screen cover/crop transform. Three MediaPipe models are downloaded from Google's official hosting during build.
 
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
+APK output: `app/build/outputs/apk/debug/app-debug.apk`. Artifact on GitHub Actions is a **ZIP** containing that installable APK. Download and extract the APK before installing.
 
-This is a debug APK, suitable for local installation after allowing installs from the selected file-sharing app. No Visor or Meta token is embedded in the APK.
+### Signing and update limitation
 
-## Phone setup
+GitHub Actions currently generates an ephemeral Android **debug signing key** on each fresh runner. APKs from separate runs cannot generally update each other in-place because Android requires matching signing certificates. Changing `versionCode` does not fix this. This new overlay uses its own app ID to **coexist with** existing installed Tracker apps, so **no uninstall of those apps is required**.
 
-1. In Visor, open **Settings → Advanced → Developer mode** and enable it.
-2. Copy the token shown beneath Developer Mode.
-3. Open Visor Tracker, paste the token, and tap **Start tracking**.
-4. Start Visor **Live View**. Return to Tracker; frames should appear with labels and IDs.
-5. If Visor says `TOKEN`, regenerate/copy the current token and retry. If it says `OFF`, enable Developer Mode. Keep Visor foregrounded as needed by your phone's battery/background settings.
-6. Keep the phone on the temporary Wi-Fi Direct network during Live View. The frame feed is between Visor and this app on the phone; it does not need Jarvis, Tailscale, or the house Wi-Fi.
+For future seamless in-place overlay updates, set up one stable private signing keystore with a release signing configuration; never commit the private key into this public repository. Until that is done, do not promise update-in-place support for this GitHub workflow.
 
-## What the detectors mean
+## Verified vs still unverified
 
-- **Hands:** MediaPipe Hand Landmarker provides 21 landmark points per detected hand. Boxes are derived from the landmark extents.
-- **Faces:** MediaPipe BlazeFace full-range detector provides face boxes. This detects faces but does **not** identify who the person is.
-- **Objects:** MediaPipe EfficientDet-Lite0 detects the 80 COCO classes.
-- **Tracking:** OpenCV renders the visualization; a small IoU tracker assigns temporary per-label IDs and retains them for up to eight missed frames. IDs are not biometric identities and may change after a long occlusion.
+- Source: Visor developer service action, frame messages and frame interval checked against `macedonga/visor`'s `DeveloperIntents.kt` and `FrameService.kt`.
+- Automated: GitHub Actions build and unit tests only, after a green run.
+- Physical test **required**: Android 16 system overlay permission, frame subscription on Samsung S22 Ultra, alignment with Visor's full-screen view, true detection FPS,  thermal/battery behaviour and touch-through behavior.
+- There is no supported way to render these boxes inside non-display Ray-Ban Meta glasses.
 
-The UI stays in the foreground while running, keeps the screen awake, and stops/unbinds the camera feed when it leaves the screen. Actual frame rate, thermals, battery use, detection quality, model load time and the installed Visor version's service binding must be measured on the phone and glasses.
+Visor source:
+- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/DeveloperIntents.kt
+- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/outside/FrameService.kt
+- https://github.com/macedonga/visor/blob/main/app/src/main/kotlin/com/macedonga/visor/media/LiveScreen.kt
