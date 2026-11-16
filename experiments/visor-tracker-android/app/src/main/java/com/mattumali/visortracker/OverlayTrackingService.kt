@@ -5,79 +5,60 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.ServiceConnection
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.Message
-import android.os.Messenger
-import android.os.RemoteException
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
+import com.macedonga.visor.kit.LiveVideoDecoder
+import com.macedonga.visor.kit.Visor
+import com.macedonga.visor.kit.protocol.LiveConfig
+import com.macedonga.visor.kit.protocol.LiveQuality
+import com.macedonga.visor.kit.protocol.Scope
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
- * User-started foreground service keeps the Visor frame subscription alive while
- * Visor itself is foregrounded. The overlay never requests screenshots of other apps
- * or intercepts touch. Camera frames never leave the phone.
+ * User-started foreground service: joins Visor's existing full-rate camera.live feed.
+ *
+ * No camera server, no second phone camera session, no JPEG polling and no user
+ * token sent over the network. The VDK requires a one-time CAMERA scope grant.
+ * Decoding happens on an IO coroutine; inference runs on a separate worker so
+ * slow AI never blocks the video decoder. A frame already processing is dropped.
  */
 class OverlayTrackingService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val processing = AtomicBoolean(false)
-    private val frameMessenger = Messenger(Handler(Looper.getMainLooper()) { msg ->
-        onFrameMessage(msg)
-        true
-    })
-
+    private val decodedFrames = AtomicInteger(0)
+    private val inferenceFrames = AtomicInteger(0)
     private val windows by lazy { getSystemService(Context.WINDOW_SERVICE) as WindowManager }
+
     private var overlay: TrackingOverlayView? = null
     private var pipeline: VisionPipeline? = null
-    private var remoteMessenger: Messenger? = null
-    private var serviceBound = false
+    private var visor: Visor? = null
+    private var streamJob: Job? = null
     private var running = false
-    private var token = ""
-    private var includeHandsFaces = true
-    private var deliveredFrames = 0
-    private var lastNotificationAt = 0L
-
-    private val visorConnection = object : ServiceConnection {
-        override fun onServiceConnected(component: ComponentName?, binder: IBinder?) {
-            if (!running || binder == null) {
-                report("Visor camera service returned no connection")
-                return
-            }
-            remoteMessenger = Messenger(binder)
-            try {
-                remoteMessenger?.send(Message.obtain(null, MSG_SUBSCRIBE).apply {
-                    data = Bundle().apply {
-                        putString("token", token)
-                        putLong("interval_ms", 200L) // The documented 5 FPS maximum.
-                    }
-                    replyTo = frameMessenger
-                })
-                report("Connected to Visor; waiting for Live View frames")
-            } catch (error: RemoteException) {
-                report("Visor subscription failed: " + (error.message ?: "disconnected"))
-            }
-        }
-
-        override fun onServiceDisconnected(component: ComponentName?) {
-            remoteMessenger = null
-            overlay?.clear()
-            report("Visor disconnected; waiting for it to reconnect")
-        }
-    }
+    private var includeHandsFaces = false
+    private var lastOfferedAtMs = 0L
+    private var lastReportAtMs = 0L
+    private var lastBoxCount = 0
+    private var streamBeginMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -87,17 +68,15 @@ class OverlayTrackingService : Service() {
             return START_NOT_STICKY
         }
         if (running) return START_NOT_STICKY
-
-        token = intent?.getStringExtra(EXTRA_TOKEN)?.trim().orEmpty()
-        includeHandsFaces = intent?.getBooleanExtra(EXTRA_ALL_DETECTORS, true) ?: true
-        if (token.isEmpty() || !Settings.canDrawOverlays(this)) {
-            report("Grant overlay permission and provide a Visor token first")
+        if (!Settings.canDrawOverlays(this)) {
+            lastStatus = "Grant Android Display over other apps permission first"
             stopSelf()
             return START_NOT_STICKY
         }
+        includeHandsFaces = intent?.getBooleanExtra(EXTRA_ALL_DETECTORS, false) ?: false
 
         createChannel()
-        startForeground(NOTIFICATION_ID, notification("Preparing tracker overlay"))
+        startForeground(NOTIFICATION_ID, notification("Preparing VDK camera overlay"))
         try {
             val view = TrackingOverlayView(this)
             val params = WindowManager.LayoutParams(
@@ -110,93 +89,129 @@ class OverlayTrackingService : Service() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                // Android 12+ permits touch-through on this explicitly translucent
-                // non-touchable overlay below the system obscuring-opacity limit.
                 alpha = 0.75f
             }
             windows.addView(view, params)
             overlay = view
         } catch (error: Exception) {
-            report("Overlay permission/window failed: " + (error.message ?: "unknown"))
+            lastStatus = "Overlay failed: " + (error.message ?: "unknown")
             stopSelf()
             return START_NOT_STICKY
         }
+
         running = true
         active = true
-        report("Loading local detection models")
+        report("Loading detector (VDK video up to 30 FPS)")
         worker.execute {
             try {
-                val created = VisionPipeline(this, includeHandsFaces)
+                val ready = VisionPipeline(applicationContext, includeHandsFaces)
                 mainHandler.post {
                     if (!running) {
-                        worker.execute { created.close() }
-                        return@post
-                    }
-                    pipeline = created
-                    try {
-                        serviceBound = bindService(
-                            Intent(VISOR_FRAMES_ACTION).setPackage(VISOR_PACKAGE),
-                            visorConnection, Context.BIND_AUTO_CREATE
-                        )
-                        if (!serviceBound) report("Visor rejected frame service; enable Developer Mode")
-                    } catch (error: Exception) {
-                        report("Visor frame bind failed: " + (error.message ?: "unknown"))
+                        worker.execute { ready.close() }
+                    } else {
+                        pipeline = ready
+                        startVdk()
                     }
                 }
             } catch (error: Exception) {
-                mainHandler.post { report("MediaPipe initialization failed: " + (error.message ?: "unknown")) }
+                mainHandler.post { report("MediaPipe failed: " + (error.message ?: "unknown")) }
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun onFrameMessage(message: Message) {
-        if (!running) return
-        when (message.what) {
-            MSG_FRAME -> {
-                val jpeg = try { message.data.getByteArray("jpeg") } catch (_: Exception) { null } ?: return
-                if (!processing.compareAndSet(false, true)) return // Never queue stale video.
-                worker.execute {
-                    var bitmap: Bitmap? = null
+    private fun startVdk() {
+        streamJob = scope.launch {
+            try {
+                report("Connecting to Visor camera.live")
+                val linked = Visor.connect(applicationContext)
+                visor = linked
+                if (Scope.CAMERA !in linked.scopes()) {
+                    report("Visor camera access NOT GRANTED. Open Tracker and tap Grant camera access.")
+                    return@launch
+                }
+                if (!running) return@launch
+
+                lastOfferedAtMs = 0L
+                lastReportAtMs = SystemClock.elapsedRealtime()
+                streamBeginMs = lastReportAtMs
+                decodedFrames.set(0)
+                inferenceFrames.set(0)
+                report("VDK connected; waiting for Visor Live View")
+
+                val requested = LiveConfig {
+                    quality = LiveQuality.LOW
+                    frameRate = 30
+                    audio = false
+                }
+                LiveVideoDecoder { image, _ ->
+                    if (!running) return@LiveVideoDecoder
+                    decodedFrames.incrementAndGet()
+                    val now = SystemClock.elapsedRealtime()
+                    // Don't starve the decoder. No stale frames build up behind inference.
+                    if (now - lastOfferedAtMs < MIN_INFERENCE_INTERVAL_MS ||
+                        !processing.compareAndSet(false, true)
+                    ) return@LiveVideoDecoder
+                    lastOfferedAtMs = now
                     try {
-                        bitmap = BitmapFactory.decodeByteArray(
-                            jpeg, 0, jpeg.size, BitmapFactory.Options().apply {
-                                inPreferredConfig = Bitmap.Config.ARGB_8888
-                            }
-                        )
-                        if (bitmap == null) throw IllegalStateException("Visor JPEG could not decode")
-                        val detected = pipeline?.detect(bitmap) ?: return@execute
-                        mainHandler.post {
-                            if (!running) return@post
-                            overlay?.updateFrame(detected)
-                            deliveredFrames++
-                            val now = SystemClock.elapsedRealtime()
-                            if (now - lastNotificationAt > 5000L) {
-                                lastNotificationAt = now
-                                report("Tracking over Visor: " + deliveredFrames + " frames, " +
-                                    detected.boxes.size + " boxes")
+                        // MediaCodec returns/invalidates Image as soon as callback finishes.
+                        val snapshot = YuvSnapshot.capture(image)
+                        worker.execute {
+                            var bitmap: Bitmap? = null
+                            try {
+                                if (!running) return@execute
+                                bitmap = snapshot.toBitmap()
+                                val detections = pipeline?.detect(bitmap) ?: return@execute
+                                inferenceFrames.incrementAndGet()
+                                lastBoxCount = detections.boxes.size
+                                mainHandler.post {
+                                    if (running) overlay?.updateFrame(detections)
+                                }
+                            } catch (error: Exception) {
+                                report("Decode/detection failed: " + (error.message ?: "unknown"))
+                            } finally {
+                                bitmap?.recycle()
+                                processing.set(false)
                             }
                         }
                     } catch (error: Exception) {
-                        mainHandler.post { report("Detection error: " + (error.message ?: "unknown")) }
-                    } finally {
-                        bitmap?.recycle()
                         processing.set(false)
+                        report("Hardware frame conversion failed: " + (error.message ?: "unknown"))
+                    }
+                    if (now - lastReportAtMs >= REPORT_MS) {
+                        val seconds = (now - lastReportAtMs).coerceAtLeast(1) / 1000f
+                        val videoFps = decodedFrames.getAndSet(0) / seconds
+                        val detectFps = inferenceFrames.getAndSet(0) / seconds
+                        lastReportAtMs = now
+                        report("Video %.1f FPS | detection %.1f FPS | %d boxes".format(
+                            videoFps, detectFps, lastBoxCount))
+                    }
+                }.use { decoder ->
+                    // Visor serves the very same video being shown in its own Live View.
+                    // Collect on IO. Each sample feeds Android's hardware MediaCodec.
+                    linked.camera.live(requested).collect { sample ->
+                        if (!running) return@collect
+                        decoder.decode(sample)
                     }
                 }
-            }
-            MSG_REFUSED -> {
-                val reason = try { message.data.getString("reason") } catch (_: Exception) { null }
-                overlay?.clear()
-                report("Visor refused frames (" + (reason ?: "unknown") + "); check Developer token")
+                if (running) report("Live View ended; open it in Visor to restart")
+            } catch (_: CancellationException) {
+                // User stopped the overlay.
+            } catch (error: Exception) {
+                if (running) report("VDK stream failed: " + (error.message ?: error.javaClass.simpleName))
+            } finally {
+                visor?.close()
+                visor = null
+                mainHandler.post { overlay?.clear() }
             }
         }
     }
 
     private fun report(message: String) {
         lastStatus = message
-        if (running) {
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+        if (!running) return
+        mainHandler.post {
+            if (running) (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .notify(NOTIFICATION_ID, notification(message))
         }
     }
@@ -204,8 +219,7 @@ class OverlayTrackingService : Service() {
     private fun createChannel() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(
-            CHANNEL_ID, "Visor tracking overlay", NotificationManager.IMPORTANCE_LOW
-        ))
+            CHANNEL_ID, "Live tracking FPS", NotificationManager.IMPORTANCE_LOW))
     }
 
     private fun notification(line: String): Notification {
@@ -219,34 +233,30 @@ class OverlayTrackingService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("Visor Tracker — overlay active")
+            .setContentTitle("Visor VDK tracking")
             .setContentText(line)
             .setContentIntent(open)
             .setOngoing(true)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop overlay", stop)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
             .build()
     }
 
     override fun onDestroy() {
         running = false
         active = false
-        try {
-            remoteMessenger?.send(Message.obtain(null, MSG_UNSUBSCRIBE).apply { replyTo = frameMessenger })
-        } catch (_: Exception) { }
-        if (serviceBound) {
-            try { unbindService(visorConnection) } catch (_: Exception) { }
-            serviceBound = false
-        }
-        overlay?.let { view ->
-            view.clear()
-            try { windows.removeViewImmediate(view) } catch (_: Exception) { }
+        streamJob?.cancel()
+        scope.cancel()
+        visor?.close()
+        visor = null
+        overlay?.let {
+            it.clear()
+            try { windows.removeViewImmediate(it) } catch (_: Exception) { }
         }
         overlay = null
         val old = pipeline
         pipeline = null
         if (old != null) worker.execute { old.close() }
         worker.shutdown()
-        token = ""
         lastStatus = "Overlay stopped"
         super.onDestroy()
     }
@@ -254,19 +264,14 @@ class OverlayTrackingService : Service() {
     companion object {
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
-        const val EXTRA_TOKEN = "token"
         const val EXTRA_ALL_DETECTORS = "all_detectors"
-        private const val CHANNEL_ID = "visor_tracker_overlay"
+        private const val CHANNEL_ID = "visor_tracker_high_fps"
         private const val NOTIFICATION_ID = 4421
-        private const val VISOR_PACKAGE = "com.macedonga.visor"
-        private const val VISOR_FRAMES_ACTION = "com.macedonga.visor.action.LIVE_FRAMES"
-        private const val MSG_SUBSCRIBE = 1
-        private const val MSG_UNSUBSCRIBE = 2
-        private const val MSG_FRAME = 3
-        private const val MSG_REFUSED = 4
-        @Volatile var active = false
+        private const val MIN_INFERENCE_INTERVAL_MS = 66L // Up to ~15 detections/sec if hardware permits.
+        private const val REPORT_MS = 4000L
+        @Volatile var active: Boolean = false
             private set
-        @Volatile var lastStatus = "Overlay not started"
+        @Volatile var lastStatus: String = "Overlay not started"
             private set
     }
 }
