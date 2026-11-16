@@ -23,6 +23,13 @@ log = logging.getLogger("cloudos.worker.handlers")
 NOTIFY_FLUSH_BATCH = 50
 
 
+def handle_glasses_archive_drain(payload: dict) -> dict:
+    """Drain the local glasses archive spool. No model call and no token in the payload."""
+    from cloudos.glasses.archive.upload import drain_configured
+
+    return drain_configured(payload)
+
+
 def handle_noop(payload: dict) -> dict:
     """Echo the payload back — pipeline smoke test."""
     return dict(payload or {})
@@ -187,6 +194,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "notify.flush": handle_notify_flush,
     "job.agent.run": handle_job_agent_run,
     "lead.engine.cycle": handle_lead_engine_cycle,
+    "glasses.archive.drain": handle_glasses_archive_drain,
 }
 
 

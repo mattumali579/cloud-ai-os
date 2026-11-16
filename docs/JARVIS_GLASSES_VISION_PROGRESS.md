@@ -16,6 +16,19 @@ Four labels are separate on purpose.
 
 `hardware_verified` in code stays false. This process never sets it.
 
+## Cloud archive (2026-11-16)
+
+The private Drive folder named Jarvis Vision Archive exists and its permission list has a single owner grant. The folder id is not recorded here.
+
+| Hop | Result |
+|---|---|
+| Windows Drive for desktop or an existing rclone remote | Not inspected. This process is not that PC, and rclone is not on this machine. |
+| Encrypted session bundle, local spool, copy, retry, checksum, index | CODED and SIMULATED TESTED. Local suite: 97 passed, 1 warning in 0.72s, including the archive tests. Scripted transport only. No OpenAI call. |
+| Authenticated upload to Drive | NOT RUN. Needs the owner's browser OAuth and a crypt remote. |
+| Physical glasses to archive to speech | NOT VERIFIED. |
+
+Events are on by default. Frames are off unless a session opts in. The drain job is `glasses.archive.drain` on the existing host worker. Setup, restore, the 64 MiB spool, and the lost-passphrase warning are in `docs/JARVIS_GLASSES_STORAGE.md`. No new storage vendor and no OpenAI call.
+
 ## Completion report — target selection (2026-11-16)
 
 Intended build, written before the code: voice disambiguation as the default, a phone/PC numbered preview with no lens HUD, a debounced 2D pointing pinch that does not claim gaze, and a lock that follows one session track id until it is lost or cancelled. Live View, the Tailscale split tunnel, and Live AI stay untouched. "Control" means the log, not a vehicle.
