@@ -3,7 +3,7 @@ package com.mattumali.visortracker
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Point
-import android.graphics.Rect
+import android.graphics.RectF
 import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
@@ -149,7 +149,7 @@ class VisionPipeline(context: Context) : AutoCloseable {
         }
     }
 
-    private fun Rect.toObservation(kind: String, label: String, score: Float) =
+    private fun RectF.toObservation(kind: String, label: String, score: Float) =
         BoxObservation(kind, label, score, left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat())
 
     private fun colorFor(kind: String): Scalar = when (kind) {
