@@ -201,7 +201,7 @@ class MainActivity : Activity() {
 
     private fun stopTracking(message: String) {
         try {
-            serviceMessenger?.send(Message.obtain(null, MSG_UNSUBSCRIBE))
+            serviceMessenger?.send(Message.obtain(null, MSG_UNSUBSCRIBE).apply { replyTo = frameMessenger })
         } catch (_: RemoteException) {
         }
         if (bound) {
@@ -229,12 +229,14 @@ class MainActivity : Activity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    // Switching to Visor to start Live View must not cancel the frame subscription.
+    // Android calls onStop() when the Tracker is no longer visible.
     override fun onStop() {
-        if (bound || pipeline != null) stopTracking("Paused when app left the screen.")
         super.onStop()
     }
 
     override fun onDestroy() {
+        if (bound || pipeline != null) stopTracking("Tracker closed.")
         executor.shutdownNow()
         super.onDestroy()
     }
