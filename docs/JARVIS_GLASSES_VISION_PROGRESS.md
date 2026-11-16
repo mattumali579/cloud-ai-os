@@ -23,7 +23,7 @@ The private Drive folder named Jarvis Vision Archive exists and its permission l
 | Hop | Result |
 |---|---|
 | Windows Drive for desktop or an existing rclone remote | Not inspected. This process is not that PC, and rclone is not on this machine. |
-| Encrypted session bundle, local spool, copy, retry, checksum, index | CODED and SIMULATED TESTED. Local suite: 97 passed, 1 warning in 0.72s, including the archive tests. Scripted transport only. No OpenAI call. |
+| Encrypted session bundle, local spool, copy, retry, checksum, index | CODED and SIMULATED TESTED. https://github.com/mattumali579/cloud-ai-os/actions/runs/43846740687 on `6dabac8`: `97 passed, 1 warning in 1.38s`. Model API keys empty. Scripted transport only. |
 | Authenticated upload to Drive | NOT RUN. Needs the owner's browser OAuth and a crypt remote. |
 | Physical glasses to archive to speech | NOT VERIFIED. |
 
