@@ -21,6 +21,7 @@ from cloudos.glasses.vision.gesture import GestureObjectPipeline
 from cloudos.glasses.vision.hands import UnavailableHandLandmarker
 from cloudos.glasses.vision.images import RgbImage, to_ppm
 from cloudos.glasses.vision.safety import SafetyLimits, heat_or_battery
+from cloudos.glasses.vision.selection import SelectionSession, is_selection_utterance
 from cloudos.glasses.vision.tracker import TrackingSession
 
 _SPACE = re.compile(r"[^a-z0-9' ]+")
@@ -78,6 +79,8 @@ def classify(text: str) -> str | None:
         return "forget"
     if cleaned in WHO_EXACT:
         return "who"
+    if is_selection_utterance(cleaned):
+        return "select"
     if any(phrase in cleaned for phrase in TRACK_PHRASES):
         return "track"
     if any(phrase in cleaned for phrase in GESTURE_PHRASES):
@@ -110,6 +113,14 @@ class VisionService:
         self.gallery = FaceGallery(self.store / "faces")
         self.tracker = TrackingSession(self.limits)
         self._clock = clock or time.monotonic
+        self.selection = SelectionSession(
+            self.store,
+            detector=self.detector,
+            landmarker=self.hands,
+            limits=self.limits,
+            clock=self._clock,
+            wall_clock=wall_clock,
+        )
         self.gesture_pipeline = GestureObjectPipeline(
             self.store,
             landmarker=self.hands,
@@ -149,7 +160,7 @@ class VisionService:
             thermal_state=thermal_state,
             battery_percent=battery_percent,
         )
-        if blocked and intent in {"describe", "track", "who", "enroll", "gesture", "remember_object"}:
+        if blocked and intent in {"describe", "track", "who", "enroll", "gesture", "remember_object", "select"}:
             if intent == "track" and self.tracker.state == "running":
                 speech = (
                     "Stopped. The glasses are too warm."
@@ -182,6 +193,8 @@ class VisionService:
 
         if intent == "stop_tracking":
             update = self.tracker.cancel()
+            if self.selection.state == "following":
+                self.selection.stop("user", update.speech)
             return self._result(intent, update.speech, stop_reason=update.stop_reason, request_id=request_id)
         if intent == "stop_gesture":
             update = self.gesture_pipeline.cancel()
@@ -196,6 +209,10 @@ class VisionService:
             return self._describe(image, retain_frames, request_id)
         if intent == "track":
             return self._track(image, retain_frames, thermal_c, thermal_state, battery_percent, request_id)
+        if intent == "select":
+            return self._select(
+                utterance, image, thermal_c, thermal_state, battery_percent, request_id
+            )
         if intent == "gesture":
             return self._gesture(
                 image, retain_frames, thermal_c, thermal_state, battery_percent, request_id
@@ -328,6 +345,33 @@ class VisionService:
             request_id=request_id,
         )
 
+    def _select(
+        self,
+        utterance: str,
+        image: RgbImage | None,
+        thermal_c: float | None,
+        thermal_state: str | None,
+        battery_percent: int | None,
+        request_id: str | None,
+    ) -> dict:
+        update = self.selection.handle(
+            utterance,
+            image,
+            thermal_c=thermal_c,
+            thermal_state=thermal_state,
+            battery_percent=battery_percent,
+            request_id=request_id,
+        )
+        return self._result(
+            "select",
+            update["speech"],
+            stop_reason=update["stop_reason"] if update["state"] == "stopped" else None,
+            blocked=update["blocked"],
+            selection=update,
+            preview=update["preview"],
+            request_id=request_id,
+        )
+
     def _who(self, image: RgbImage | None, face_crop: bool, request_id: str | None) -> dict:
         if image is None:
             return self._result(
@@ -426,6 +470,8 @@ class VisionService:
         retained_frame: str | None = None,
         face_boxes: list | None = None,
         gesture: dict | None = None,
+        selection: dict | None = None,
+        preview: dict | None = None,
         request_id: str | None = None,
     ) -> dict:
         reply = None
@@ -452,9 +498,13 @@ class VisionService:
             "retained_frame": retained_frame,
             "face_boxes": face_boxes or [],
             "gesture": gesture,
+            "selection": selection,
+            "preview": preview,
             "voice_reply": reply,
             "paid_inference": False,
             "assistant_dispatched": False,
+            "live_ai_used": False,
+            "live_view_modified": False,
         }
 
 

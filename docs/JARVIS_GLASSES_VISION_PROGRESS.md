@@ -16,6 +16,77 @@ Four labels are separate on purpose.
 
 `hardware_verified` in code stays false. This process never sets it.
 
+## Completion report — target selection (2026-11-16)
+
+Intended build, written before the code: voice disambiguation as the default, a phone/PC numbered preview with no lens HUD, a debounced 2D pointing pinch that does not claim gaze, and a lock that follows one session track id until it is lost or cancelled. Live View, the Tailscale split tunnel, and Live AI stay untouched. "Control" means the log, not a vehicle.
+
+### A. Built
+
+- `SelectionSession` scans detector boxes, assigns session track ids, thirds (left/center/right), and a hue hint.
+- Ambiguous matches ask for a number and do not auto-select.
+- After a lock, a missing track stops the session and does not hop to another box of the same class.
+- `selection-log.jsonl` stores kind, track id, label, time, bbox trajectory, selection method, confidence. No landmark coordinates and no image bytes.
+- Preview PPM draws a yellow box and a number. `lens_hud` is false. Surface is `phone_or_pc`.
+- Pointing uses the wrist-to-index-tip ray in image pixels. Pinch must repeat on the next accepted frame. One pinch does not lock. An open palm clears the streak.
+- `control the truck` answers that only software tracking and logging exist.
+
+### B. Commands and gestures
+
+| Utterance or gesture | What it does |
+|---|---|
+| `scan objects` | Lists numbered candidates. Does not lock. |
+| `track the truck on the left` | Locks the one match. Two on that side: asks, does not lock. |
+| `select object 3` | Locks the number from the last scan. |
+| `switch to the other truck` | Switches only when exactly one other match exists. |
+| `what am I tracking?` | Reports the locked id, or says nothing is tracked. |
+| `stop tracking` | Stops the color tracker and the lock. Speech stays "Stopped tracking." |
+| `log this object` | Appends the trajectory for the locked id. |
+| `point at an object` | 2D ray. Pinch on two accepted frames confirms. |
+| open palm between pinches | Clears the pinch streak. |
+| `control the truck` / `control object` | Software-only refusal. No hardware interface. |
+| pinch, open palm, fist on `watch my hand` | Earlier gesture path. Unchanged. |
+
+### C. Tests
+
+Local, Python 3.12.3:
+
+```text
+python -m pytest tests/test_glasses_vision.py tests/test_glasses_gesture.py tests/test_glasses_selection.py tests/test_api.py -q
+87 passed, 1 warning in 0.75s
+```
+
+The 66-pass run (https://github.com/mattumali579/cloud-ai-os/actions/runs/43842665105) is the pre-selection baseline. The 78-pass run (https://github.com/mattumali579/cloud-ai-os/actions/runs/43844641209) covers gestures and a generated HEIC, not this crowd-selection suite. There is no screenshot of glasses. The preview check is a PPM pixel assertion in `tests/test_glasses_selection.py`.
+
+### D. Status
+
+| Check | Result |
+|---|---|
+| CODED | Selection, preview, voice, debounced pinch, log. |
+| SIMULATED TESTED | 9 new tests on scripted trucks and sample hands. |
+| PC TESTED | No. This cloud VM is not the Windows host. |
+| PHYSICAL GLASSES VERIFIED | No. |
+| Live View | Owner says it already works. This change does not touch the tunnel and did not retest it. |
+| Live AI | Not used. Not a dependency. |
+| Concurrent camera and microphone | Not verified. |
+
+### E. Not built
+
+- A real MediaPipe hand landmarker run (package and task file still absent).
+- A real YOLO weight inference (no `.onnx` / `.pt` on disk; AGPL weights not downloaded).
+- Gaze, depth, or a calibrated camera matrix. The ray is image-plane only (`intrinsics_calibrated` false).
+- Any drawing inside the Ray-Ban lenses.
+- Any interface that moves a physical object.
+- A phone-screen app. The preview is a PPM plus JSON on `POST /v1/glasses/vision`.
+- Proof that Visor voice and Live View can run at the same time.
+
+### F. Next physical test
+
+On the Windows host, do not git-reset the dirty tree and do not change the Tailscale split tunnel. Wear the glasses with Live View already up. Send one authorized `camera.live.photo` (Base64) or a JPEG copied on purpose. Say `scan objects`, then `select object` and a number, and confirm the phone or PC preview shows numbers while the lenses do not. Then say `log this object` and `stop tracking`. Do not ask the normal Meta or ChatGPT assistant. If the still is a HEVC-tile HEIC and pillow-heif fails, decode it on the phone with ImageDecoder and pass a JPEG. Blocker: no glasses frame has reached this process.
+
+### G. Paid models and risks
+
+OpenAI, ChatGPT, Anthropic, and Gemini calls during these tests: **zero**. The phone route holds `scan objects` before Claude or Codex. Risks: a scripted truck is not a detector; two similar objects only disambiguate when the detector's label and the third of the frame differ; a single missed frame can end the lock when `lost_after_misses` is 1; the preview is not a UI the phone is serving yet.
+
 ## CI
 
 The workflow the owner committed (`.github/workflows/glasses-vision-regression.yml`, commit `467b92a2856f1bf60a8825590b7f18295e7f54fc`) did execute.

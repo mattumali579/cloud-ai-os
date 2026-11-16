@@ -11,6 +11,7 @@ on:
       - "src/cloudos/api/**"
       - "tests/test_glasses_vision.py"
       - "tests/test_glasses_gesture.py"
+      - "tests/test_glasses_selection.py"
       - "tests/test_api.py"
       - "pyproject.toml"
   push:
@@ -23,6 +24,7 @@ on:
       - "src/cloudos/api/**"
       - "tests/test_glasses_vision.py"
       - "tests/test_glasses_gesture.py"
+      - "tests/test_glasses_selection.py"
       - "tests/test_api.py"
       - "pyproject.toml"
   schedule:
@@ -64,7 +66,7 @@ jobs:
       - name: Test offline vision and existing API routing
         run: |
           mkdir -p test-results
-          python -m pytest tests/test_glasses_vision.py tests/test_glasses_gesture.py tests/test_api.py -q --tb=short --junitxml=test-results/vision-junit.xml
+          python -m pytest tests/test_glasses_vision.py tests/test_glasses_gesture.py tests/test_glasses_selection.py tests/test_api.py -q --tb=short --junitxml=test-results/vision-junit.xml
       - name: Preserve evidence on pass or failure
         if: always()
         uses: actions/upload-artifact@v4
