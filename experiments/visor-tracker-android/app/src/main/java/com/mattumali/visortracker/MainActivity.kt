@@ -1,262 +1,131 @@
 package com.mattumali.visortracker
 
 import android.app.Activity
-import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
-import android.content.ServiceConnection
-import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
-import android.os.IBinder
-import android.os.Looper
-import android.os.Message
-import android.os.Messenger
-import android.os.RemoteException
+import android.provider.Settings
 import android.text.InputType
-import android.view.View
-import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Launcher is only a permission/token/stop control. Live tracking happens in the
+ * foreground OverlayTrackingService while the user watches Visor's own Live View.
+ */
 class MainActivity : Activity() {
-    private val executor = Executors.newSingleThreadExecutor()
-    private val processing = AtomicBoolean(false)
-    private lateinit var tokenInput: EditText
+    private lateinit var tokenField: EditText
+    private lateinit var includeAll: CheckBox
     private lateinit var status: TextView
-    private lateinit var preview: ImageView
-    private lateinit var startButton: Button
-    private var pipeline: VisionPipeline? = null
-    private var serviceMessenger: Messenger? = null
-    private var bound = false
-    private var token = ""
-
-    private val frameMessenger = Messenger(Handler(Looper.getMainLooper()) { message ->
-        handleFrameMessage(message)
-        true
-    })
-
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            if (binder == null) {
-                showStatus("Visor camera service returned no binder.")
-                return
-            }
-            serviceMessenger = Messenger(binder)
-            val subscribe = Message.obtain(null, MSG_SUBSCRIBE).apply {
-                data = Bundle().apply {
-                    putString("token", token)
-                    putLong("interval_ms", FRAME_INTERVAL_MS)
-                }
-                replyTo = frameMessenger
-            }
-            try {
-                serviceMessenger?.send(subscribe)
-                showStatus("Connected to Visor. Start Live View to receive frames.")
-            } catch (error: RemoteException) {
-                showStatus("Could not subscribe to Visor frames: ${error.message}")
-            }
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            serviceMessenger = null
-            showStatus("Visor disconnected.")
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        buildUi()
-    }
-
-    private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(18), dp(16), dp(12))
+            val pad = dp(20)
+            setPadding(pad, pad, pad, pad)
         }
         val scroller = ScrollView(this)
-        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(TextView(this).apply {
-            text = "Visor Live Tracker"
+        scroller.addView(root)
+
+        root.addView(TextView(this).apply {
+            text = "Visor Tracker Overlay"
             textSize = 24f
         })
-        content.addView(TextView(this).apply {
-            text = "On-device MediaPipe hand, face, and COCO object detection. Open Visor Live View, then start tracking here."
-            textSize = 14f
-            setPadding(0, dp(8), 0, dp(10))
+        root.addView(TextView(this).apply {
+            text = "Draw live detection boxes ON TOP of Visor Live View (phone screen). " +
+                "No separate camera preview. Leave Visor in the expanded, full-screen view."
+            textSize = 15f
+            setPadding(0, dp(12), 0, dp(14))
         })
-        tokenInput = EditText(this).apply {
-            hint = "Paste Visor Developer Mode token"
+        root.addView(Button(this).apply {
+            text = "1. Allow display over other apps"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + packageName)))
+            }
+        })
+        tokenField = EditText(this).apply {
+            hint = "Paste your Visor Developer Mode token"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            maxLines = 1
+            setSingleLine(true)
+            setText(getSharedPreferences("tracker", MODE_PRIVATE).getString("token", ""))
         }
-        content.addView(tokenInput)
-        startButton = Button(this).apply {
-            text = "Start tracking"
-            setOnClickListener { startTracking() }
+        root.addView(tokenField)
+        includeAll = CheckBox(this).apply {
+            text = "Also detect hands and faces (slower)"
+            isChecked = true
         }
-        content.addView(startButton)
-        content.addView(Button(this).apply {
-            text = "Stop tracking"
-            setOnClickListener { stopTracking("Stopped.") }
+        root.addView(includeAll)
+        root.addView(Button(this).apply {
+            text = "2. START LIVE VIEW OVERLAY"
+            setOnClickListener { startOverlay() }
+        })
+        root.addView(Button(this).apply {
+            text = "STOP OVERLAY"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, OverlayTrackingService::class.java)
+                    .setAction(OverlayTrackingService.ACTION_STOP))
+                status.text = "Stop requested"
+            }
         })
         status = TextView(this).apply {
-            text = "Enable Developer mode in Visor → Settings → Advanced. Keep the token private."
-            textSize = 14f
-            setPadding(0, dp(8), 0, dp(8))
+            textSize = 15f
+            setPadding(0, dp(14), 0, dp(12))
         }
-        content.addView(status)
-        preview = ImageView(this).apply {
-            adjustViewBounds = true
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = "Live View with hand, face, and object tracking overlays"
-        }
-        content.addView(preview, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp(420)
-        ))
-        root.addView(content)
-        scroller.addView(root)
+        root.addView(status)
+        root.addView(TextView(this).apply {
+            text = "After START: open Visor Live View and keep it expanded. " +
+                "Labels appear over Visor's live camera, not in the glasses. " +
+                "Use the notification's Stop overlay action to end tracking. " +
+                "Native video keeps its own FPS; detection updates are limited by " +
+                "Visor's current JPEG service to at most 5 FPS."
+            textSize = 13f
+        })
         setContentView(scroller)
     }
 
-    private fun startTracking() {
-        if (bound || pipeline != null) return
-        token = tokenInput.text.toString().trim()
+    override fun onResume() {
+        super.onResume()
+        if (::status.isInitialized) {
+            status.text = if (OverlayTrackingService.active) {
+                OverlayTrackingService.lastStatus
+            } else if (!Settings.canDrawOverlays(this)) {
+                "Overlay permission not granted"
+            } else {
+                "Overlay permission granted. Ready to start."
+            }
+        }
+    }
+
+    private fun startOverlay() {
+        if (!Settings.canDrawOverlays(this)) {
+            status.text = "Enable Display over other apps first."
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:" + packageName)))
+            return
+        }
+        val token = tokenField.text.toString().trim()
         if (token.isBlank()) {
-            showStatus("Paste the token shown under Visor Developer Mode first.")
+            status.text = "Copy the token from Visor Settings > Advanced > Developer Mode."
             return
         }
-        if (!packageManager.getApplicationInfoOrNull(VISOR_PACKAGE)) {
-            showStatus("Visor is not installed or Android cannot see it. Install Visor and retry.")
-            return
-        }
-        tokenInput.visibility = View.GONE
-        startButton.isEnabled = false
-        showStatus("Loading on-device vision models…")
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-        executor.execute {
-            try {
-                pipeline = VisionPipeline(this)
-                runOnUiThread {
-                    val intent = Intent(ACTION_LIVE_FRAMES).setPackage(VISOR_PACKAGE)
-                    bound = bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
-                    if (bound) {
-                        showStatus("Models ready. Bound to Visor; now start Live View.")
-                    } else {
-                        pipeline?.close()
-                        pipeline = null
-                        showStatus("Visor refused the LIVE_FRAMES service bind. Check Developer Mode and app access.")
-                        resetStartUi()
-                    }
-                }
-            } catch (error: Exception) {
-                runOnUiThread {
-                    showStatus("Could not start vision pipeline: ${error.message}")
-                    pipeline?.close()
-                    pipeline = null
-                    resetStartUi()
-                }
-            }
-        }
-    }
-
-    private fun handleFrameMessage(message: Message) {
-        when (message.what) {
-            MSG_FRAME -> {
-                val bytes = message.data?.getByteArray("jpeg") ?: return
-                if (!processing.compareAndSet(false, true)) return
-                executor.execute {
-                    try {
-                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        if (bitmap == null) {
-                            runOnUiThread { showStatus("Visor sent an unreadable JPEG frame.") }
-                        } else {
-                            val result = pipeline?.analyze(bitmap)
-                            bitmap.recycle()
-                            if (result != null) runOnUiThread {
-                                preview.setImageBitmap(result)
-                                showStatus("Tracking live — Visor frame time ${message.data.getLong("time")} · ${result.width}×${result.height}")
-                            }
-                        }
-                    } catch (error: Exception) {
-                        runOnUiThread { showStatus("Frame processing error: ${error.message}") }
-                    } finally {
-                        processing.set(false)
-                    }
-                }
-            }
-            MSG_REFUSED -> {
-                val reason = message.data?.getString("reason") ?: "unknown"
-                showStatus("Visor refused camera frames ($reason). Check token and Developer Mode.")
-            }
-        }
-    }
-
-    private fun stopTracking(message: String) {
+        getSharedPreferences("tracker", MODE_PRIVATE)
+            .edit().putString("token", token).apply()
         try {
-            serviceMessenger?.send(Message.obtain(null, MSG_UNSUBSCRIBE).apply { replyTo = frameMessenger })
-        } catch (_: RemoteException) {
+            startForegroundService(Intent(this, OverlayTrackingService::class.java)
+                .setAction(OverlayTrackingService.ACTION_START)
+                .putExtra(OverlayTrackingService.EXTRA_TOKEN, token)
+                .putExtra(OverlayTrackingService.EXTRA_ALL_DETECTORS, includeAll.isChecked))
+            status.text = "Starting overlay. Open Visor Live View; keep full-screen."
+        } catch (error: Exception) {
+            status.text = "Could not start overlay: " + (error.message ?: "unknown")
         }
-        if (bound) {
-            unbindService(serviceConnection)
-            bound = false
-        }
-        serviceMessenger = null
-        pipeline?.close()
-        pipeline = null
-        token = ""
-        tokenInput.visibility = View.VISIBLE
-        resetStartUi()
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        showStatus(message)
     }
 
-    private fun resetStartUi() {
-        startButton.isEnabled = true
-        tokenInput.visibility = View.VISIBLE
-    }
-
-    private fun showStatus(message: String) {
-        if (::status.isInitialized) status.text = message
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    // Switching to Visor to start Live View must not cancel the frame subscription.
-    // Android calls onStop() when the Tracker is no longer visible.
-    override fun onStop() {
-        super.onStop()
-    }
-
-    override fun onDestroy() {
-        if (bound || pipeline != null) stopTracking("Tracker closed.")
-        executor.shutdownNow()
-        super.onDestroy()
-    }
-
-    companion object {
-        private const val VISOR_PACKAGE = "com.macedonga.visor"
-        private const val ACTION_LIVE_FRAMES = "com.macedonga.visor.action.LIVE_FRAMES"
-        private const val MSG_SUBSCRIBE = 1
-        private const val MSG_UNSUBSCRIBE = 2
-        private const val MSG_FRAME = 3
-        private const val MSG_REFUSED = 4
-        private const val FRAME_INTERVAL_MS = 250L
-    }
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 }
-
-@Suppress("DEPRECATION")
-private fun android.content.pm.PackageManager.getApplicationInfoOrNull(packageName: String): Boolean =
-    try {
-        getApplicationInfo(packageName, 0)
-        true
-    } catch (_: android.content.pm.PackageManager.NameNotFoundException) {
-        false
-    }
