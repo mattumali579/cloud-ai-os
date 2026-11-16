@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta name="hud-build" content="noline-3" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Gesture hologram HUD</title>
+    <script type="module" crossorigin src="/cloud-ai-os/assets/index-QyER8P9Z.js"></script>
+    <link rel="stylesheet" crossorigin href="/cloud-ai-os/assets/index-Caild5Cj.css">
+  </head>
+  <body>
+    <script>
+      if (sessionStorage.getItem("hud-noline-3") !== "1") {
+        sessionStorage.setItem("hud-noline-3", "1");
+        location.replace(location.pathname + "?v=noline3");
+      }
+    </script>
+    <div id="app">
+      <button id="chromeToggle" type="button">Hide HUD</button>
+      <header>
+        <h1>Gesture hologram</h1>
+        <p class="hint" id="hint">
+          Hold both hands in the camera to stretch a colored portal between them.
+          Drop a hand to hide it. Press Next look to flip through 15 color looks.
+        </p>
+        <p class="phone-note" id="phoneNote">On a phone: same Wi-Fi as this computer. Open the Network address this page prints, allow the camera, then Start camera. This computer has to stay on.</p>
+        <div class="controls">
+          <select id="camera" aria-label="Camera"></select>
+          <button class="primary" id="start" type="button">Start camera</button>
+          <button id="stop" type="button">Stop</button>
+          <button id="reset" type="button">Reset</button>
+          <button id="prevLook" type="button">Last look</button>
+          <button id="nextLook" type="button">Next look</button>
+          <label><input id="mirror" type="checkbox" checked /> Mirror</label>
+        </div>
+        <div class="controls modes" role="tablist" aria-label="Mode">
+          <button id="modeOriginal" class="mode active" type="button">Original Filter</button>
+          <button id="modeDistance" class="mode" type="button">Distance</button>
+          <button id="modeRoom" class="mode" type="button">Powers</button>
+          <button id="resetRoom" type="button" hidden>Close power</button>
+          <button id="pauseRoom" type="button" hidden>Pause</button>
+        </div>
+        <div id="powerTools" class="tools" hidden>
+          <button id="forceRoom" type="button">Force ROOM</button>
+          <button id="forceRasengan" type="button">Force Rasengan</button>
+          <button id="calPalmDown" type="button">Calibrate palm down</button>
+          <button id="calPalmUp" type="button">Calibrate palm up</button>
+          <label>Grow speed
+            <input id="growMs" type="range" min="800" max="4000" step="100" value="1800" />
+          </label>
+          <p class="note">
+            Palm down + claw starts ROOM. Palm up + claw starts Rasengan. In ROOM, hold thumb + index + middle toward the camera until it says ARMED, then flip so the back of your hand faces the camera to swap. A tight closed fist with the thumb across the fingers shuts ROOM or Rasengan off. Then open the hand before starting another.
+          </p>
+        </div>
+        <div id="distanceTools" class="tools" hidden>
+          <label>Printed marker size (cm)
+            <input id="markerCm" type="number" min="1" max="80" step="0.1" value="10" />
+          </label>
+          <label>Tape distance (m)
+            <input id="tapeM" type="number" min="0.2" max="5" step="0.01" value="1" />
+          </label>
+          <button id="calibrate" type="button">Calibrate at tape distance</button>
+          <button id="printMarker" type="button">Print marker</button>
+          <p class="note">
+            Range is camera-to-printed-ArUco only. Tape the marker to an object to range that object.
+            Unmarked objects are not measured. If the marker is missing, the reading is distance unavailable.
+          </p>
+        </div>
+      </header>
+      <div id="stage" class="mirror">
+        <video id="cam" autoplay playsinline webkit-playsinline muted></video>
+        <div id="panel" hidden>
+          <video id="panelCam" autoplay playsinline muted></video>
+        </div>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div id="hud">
+        <div id="hudMode">MODE: 3D MESH</div>
+        <div id="hudFilter">LOOK: THERMAL + DUAL TONE · Next look or pinch thumb and pinky</div>
+        <div id="hudExtra"></div>
+      </div>
+      <div id="banner">
+        <div>
+          <h2>Hold the screen</h2>
+          <p id="bannerText">Press Start camera. This page asks for the webcam only after you press Start. Nothing is recorded or uploaded.</p>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
