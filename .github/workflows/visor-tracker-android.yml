@@ -1,0 +1,35 @@
+name: Visor Tracker Android
+
+on:
+  pull_request:
+    paths:
+      - "experiments/visor-tracker-android/**"
+      - ".github/workflows/visor-tracker-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Build APK and run unit tests
+        working-directory: experiments/visor-tracker-android
+        run: gradle --no-daemon assembleDebug testDebugUnitTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: visor-tracker-debug-apk
+          path: experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
