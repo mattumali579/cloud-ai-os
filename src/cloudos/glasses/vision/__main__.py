@@ -10,7 +10,7 @@ from pathlib import Path
 from cloudos.glasses.vision.capability import visor_304_camera_capability
 from cloudos.glasses.vision.capture import PhotoFileAdapter
 from cloudos.glasses.vision.service import VisionService, default_store
-from cloudos.glasses.vision.visor_probe import load_visor_url, probe_visor
+from cloudos.glasses.vision.visor_probe import load_visor_url, probe_visor, tailscale_lan_hosts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "probe":
         url = args.url or load_visor_url()
-        report = probe_visor(url, capture=args.capture)
+        report = probe_visor(url, capture=args.capture, candidates=tailscale_lan_hosts())
         json.dump(report, sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0 if report["tcp_open"] else 2

@@ -1,29 +1,27 @@
 # Jarvis Glasses Vision — Progress Ledger
 
-**Updated:** 2026-11-16 04:30 America/Chicago
+**Updated:** 2026-11-16 04:40 America/Chicago
 **Issue:** https://github.com/mattumali579/cloud-ai-os/issues/25
 **Parent:** https://github.com/mattumali579/cloud-ai-os/issues/22
 **Branch:** `cursor/glasses-vision-7cc5` (PR #26, draft). Worktree `C:\Users\Admin\cloud-ai-os-pr26-wt`. The dirty Windows checkout at `C:\Users\Admin\cloud-ai-os` was not reset, pulled, or overwritten.
 
 ## Windows host hop (2026-11-16, this PC)
 
-This process is the owner's Windows host. It did not restart `CloudAIOS-JarvisGlasses`, Docker, or Tailscale. It did not send a glasses assistant prompt.
+This process is the owner's Windows host. It did not send a glasses assistant prompt. Local `visor_url` was updated from the stale `.96` address to the live LAN door. Docker and Tailscale split-tunnel settings were not changed.
 
 | Check | Result | Evidence |
 |---|---|---|
-| `visor_url` | `ws://192.168.1.96:7333/rpc` | `%LOCALAPPDATA%\CloudAIOS\jarvis-glasses.json` (no token in Git) |
-| TCP 192.168.1.96:7333 | closed (`TimeoutError` in 2s) | `python -m cloudos.glasses.vision probe` |
-| ICMP 192.168.1.96 | 100% loss | `ping -n 1 -w 1000 192.168.1.96` |
-| ARP | `.96` absent; PC is `192.168.1.194` | `arp -a` |
-| Tailscale phone `matts-s22-ultra` | offline, last seen 2d ago | `tailscale status` |
+| Tailscale phone `matts-s22-ultra` | online, active, direct | `tailscale status` |
+| Visor on Tailscale IP `:7333` | closed (expected with Live View split tunnel) | TCP 2s timeout |
+| Visor LAN `192.168.1.105:7333` | open | Tailscale `CurAddr` plus TCP |
+| `visor_kit` handshake | connected | `glasses.status` paired=true, link=`connecting` |
+| Camera scopes | `camera.photo`, `camera.live`, `camera.live.photo` all true | `visor.supports` |
+| `camera.live.photo` | `busy: The Live is not running` | VisorError |
+| `camera.photo` import=false | `not_connected: The glasses are not connected` | VisorError |
 | rclone | not on PATH | `shutil.which("rclone")` |
-| Google Drive File Stream | not installed | `C:\Program Files\Google\Drive File Stream` missing |
-| `visor_kit` / Pillow / pillow-heif | present in existing `.venv` | import specs True |
-| MediaPipe / onnxruntime | absent | import specs False |
-| `OPENAI_API_KEY` | empty | process env |
-| `CloudAIOS-JarvisGlasses` | Running, handshake timeouts | `logs\jarvis-glasses.log` (read-only) |
+| OpenAI / ChatGPT | zero | no assistant method called |
 
-PC TESTED: the Visor door on the configured LAN IP is down. PHYSICAL GLASSES VERIFIED: no. Next action: turn the S22 on, open Visor on Wi-Fi (keep the Live View split tunnel), then re-run `python -m cloudos.glasses.vision probe` from the PR worktree. Do not git-reset the dirty tree.
+PC TESTED: phone Visor RPC works; glasses radio is not connected. PHYSICAL GLASSES VERIFIED: no. Next action: wear the glasses until Visor shows connected, start Live View, then retry `camera.live.photo`.
 
 Four labels are separate on purpose.
 

@@ -493,6 +493,41 @@ def test_capability_command_prints_the_audit():
     assert main(["capability"]) == 0
 
 
+def test_tailscale_curaddr_is_used_when_configured_ip_is_stale():
+    from cloudos.glasses.vision.visor_probe import lan_hosts_from_tailscale_status, probe_visor
+
+    payload = {
+        "Peer": {
+            "phone": {"HostName": "Matt's S22 Ultra", "CurAddr": "192.168.1.105:55841"},
+        }
+    }
+    assert lan_hosts_from_tailscale_status(payload) == ["192.168.1.105"]
+
+    seen: list[str] = []
+
+    class Dummy:
+        def close(self) -> None:
+            return None
+
+    def opener(address, timeout=None):
+        host, _port = address
+        seen.append(host)
+        if host == "192.168.1.105":
+            return Dummy()
+        raise TimeoutError("timed out")
+
+    report = probe_visor(
+        "ws://192.168.1.96:7333/rpc",
+        opener=opener,
+        candidates=["192.168.1.105"],
+    )
+    assert report["tcp_open"] is True
+    assert report["discovered_host"] == "192.168.1.105"
+    assert report["url_host"] == "192.168.1.96"
+    assert "192.168.1.96" in seen
+    assert "192.168.1.105" in seen
+
+
 def test_visor_probe_refuses_capture_when_tcp_is_closed():
     from cloudos.glasses.vision.visor_probe import parse_visor_url, probe_visor
 

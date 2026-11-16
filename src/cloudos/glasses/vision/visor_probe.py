@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Callable
@@ -69,6 +70,47 @@ def tcp_probe(
     return {"open": True, "error": ""}
 
 
+def lan_hosts_from_tailscale_status(payload: dict) -> list[str]:
+    """IPv4 LAN endpoints Tailscale already observed. No scan of the subnet."""
+    peers = payload.get("Peer") or {}
+    hosts: list[str] = []
+    for peer in peers.values() if isinstance(peers, dict) else []:
+        cur = str(peer.get("CurAddr") or "")
+        if not cur or cur.startswith("["):
+            continue
+        host = cur.rsplit(":", 1)[0]
+        if host.count(".") == 3 and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def tailscale_lan_hosts(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> list[str]:
+    exe = shutil.which("tailscale")
+    if not exe:
+        return []
+    run = runner or subprocess.run
+    try:
+        completed = run(
+            [exe, "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0 or not completed.stdout:
+        return []
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return []
+    return lan_hosts_from_tailscale_status(payload)
+
+
 def host_inventory() -> dict:
     """What this process can see. Not a glasses session."""
     return {
@@ -92,6 +134,7 @@ def probe_visor(
     timeout: float = DEFAULT_TIMEOUT,
     capture: bool = False,
     opener: Callable[..., socket.socket] | None = None,
+    candidates: list[str] | None = None,
 ) -> dict:
     """TCP probe of Visor. Capture is refused until TCP is open."""
     host, port, path = parse_visor_url(url)
@@ -102,6 +145,7 @@ def probe_visor(
         "url_path": path,
         "tcp_open": tcp["open"],
         "tcp_error": tcp["error"],
+        "discovered_host": "",
         "handshake": "not_attempted",
         "capture": "refused" if capture else "not_requested",
         "capture_reason": "",
@@ -111,22 +155,34 @@ def probe_visor(
         "paid_inference": False,
         "inventory": host_inventory(),
     }
-    if capture and not tcp["open"]:
+    if not tcp["open"]:
+        for candidate in candidates or []:
+            if candidate == host:
+                continue
+            alt = tcp_probe(candidate, port, timeout=timeout, opener=opener)
+            if alt["open"]:
+                result["tcp_open"] = True
+                result["tcp_error"] = ""
+                result["discovered_host"] = candidate
+                result["configured_host_open"] = False
+                break
+    if capture and not result["tcp_open"]:
         result["capture"] = "refused"
         result["capture_reason"] = (
             "Visor TCP is closed. camera.live.photo was not called. "
             "Open Visor on the phone, wear the glasses, and confirm visor_url."
         )
-    if not tcp["open"]:
+    if not result["tcp_open"]:
         result["next_action"] = (
-            "Bring the Samsung online on the same LAN (or Tailscale), open Visor, "
-            "and keep Live View's split tunnel. Do not send a ChatGPT assistant prompt."
+            "Phone Tailscale can be up while Visor still listens on LAN Wi-Fi. "
+            "Open Visor, wear the glasses until link is connected, keep the Live "
+            "View split tunnel. Do not send a ChatGPT assistant prompt."
         )
         return result
     result["handshake"] = "tcp_open_only"
     result["next_action"] = (
         "TCP is open. A visor_kit handshake can call glasses.status, then "
-        "camera.live.photo, with no assistant prompt."
+        "camera.live.photo while Live is running, with no assistant prompt."
     )
     if capture:
         result["capture"] = "not_implemented_without_handshake"
