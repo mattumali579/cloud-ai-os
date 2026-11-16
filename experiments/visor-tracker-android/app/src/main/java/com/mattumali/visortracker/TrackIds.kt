@@ -34,29 +34,32 @@ class TrackIds(
 
     fun update(observations: List<BoxObservation>): List<BoxObservation> {
         tracks.forEach { it.missed++ }
-        val candidates = mutableListOf<Triple<Float, Track, BoxObservation>>()
+        val candidates = mutableListOf<Triple<Float, Track, Int>>()
         for (track in tracks) {
-            for (observation in observations) {
+            observations.forEachIndexed { index, observation ->
                 if (track.kind == observation.kind && track.label == observation.label) {
                     val overlap = iou(track.box, observation)
-                    if (overlap >= matchThreshold) candidates += Triple(overlap, track, observation)
+                    if (overlap >= matchThreshold) candidates += Triple(overlap, track, index)
                 }
             }
         }
 
         val matchedTracks = mutableSetOf<Int>()
-        val matchedObservations = mutableSetOf<BoxObservation>()
-        candidates.sortedByDescending { it.first }.forEach { (_, track, observation) ->
-            if (matchedTracks.add(track.id) && matchedObservations.add(observation)) {
+        val matchedObservationIndexes = mutableSetOf<Int>()
+        candidates.sortedByDescending { it.first }.forEach { (_, track, index) ->
+            if (matchedTracks.add(track.id) && matchedObservationIndexes.add(index)) {
+                val observation = observations[index]
                 track.box = observation
                 track.missed = 0
                 observation.trackId = track.id
             }
         }
 
-        observations.filterNot { it in matchedObservations }.forEach { observation ->
-            observation.trackId = nextId++
-            tracks += Track(observation.trackId, observation.kind, observation.label, observation)
+        observations.forEachIndexed { index, observation ->
+            if (index !in matchedObservationIndexes) {
+                observation.trackId = nextId++
+                tracks += Track(observation.trackId, observation.kind, observation.label, observation)
+            }
         }
         tracks.removeAll { it.missed > maxMissedFrames }
         return observations
