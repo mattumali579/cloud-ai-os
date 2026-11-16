@@ -1,6 +1,6 @@
 # Jarvis Glasses Vision — Progress Ledger
 
-**Updated:** 2026-11-16 04:40 America/Chicago
+**Updated:** 2026-11-16 13:22 America/Chicago
 **Issue:** https://github.com/mattumali579/cloud-ai-os/issues/25
 **Parent:** https://github.com/mattumali579/cloud-ai-os/issues/22
 **Branch:** `cursor/glasses-vision-7cc5` (PR #26, draft). Worktree `C:\Users\Admin\cloud-ai-os-pr26-wt`. The dirty Windows checkout at `C:\Users\Admin\cloud-ai-os` was not reset, pulled, or overwritten.
@@ -22,6 +22,22 @@ This process is the owner's Windows host. It did not send a glasses assistant pr
 | OpenAI / ChatGPT | zero | no assistant method called |
 
 PC TESTED: phone Visor RPC works; glasses radio is not connected. PHYSICAL GLASSES VERIFIED: no. Next action: wear the glasses until Visor shows connected, start Live View, then retry `camera.live.photo`.
+
+## Live still on this PC (2026-11-16 13:20 America/Chicago)
+
+Glasses were on. `glasses.status`: paired, `link=connected`, battery 95, thermal normal. No ChatGPT / Live AI / assistant prompt.
+
+| Hop | Result |
+|---|---|
+| `camera.live.photo` while Live off | `busy: The Live is not running` |
+| Brief `camera.live` 2 fps | HEVC samples arrived (`video/hevc`) |
+| Then `camera.live.photo` | HEIC 163748 bytes, magic `ftypheic` |
+| pillow-heif decode | **1440×1080** RGB |
+| `scan objects` | Coarse color regions, not YOLO: two numbered candidates (orange / blue, both center). Speech said numbers are on phone/PC, not lenses. |
+| `voice.reply` | Needs a waiting Visor question id; random id rejected |
+| `voice.speak` | `{}` (accepted). Not a reply to a Jarvis wake. |
+
+`hardware_verified` in the pipeline stayed **false**. This is a real glasses still decoded on this PC. It is not YOLO object identity, and it is not a full wake→speech-in-glasses acceptance pass. Raw HEIC stays in `%LOCALAPPDATA%\CloudAIOS\`, not Git.
 
 Four labels are separate on purpose.
 
@@ -167,7 +183,7 @@ Local result on this cloud agent, Python 3.12.3, same count as the GitHub run ab
 
 | Feature | CODED | SIMULATED TESTED | PC TESTED | PHYSICAL GLASSES VERIFIED | Notes |
 |---|---|---|---|---|---|
-| Authorized capture adapters | yes | yes: scripted VDK client, PPM, refusal of `content://` and of invalid HEIC | TCP probe only | no | `visor_url` 192.168.1.96:7333 timed out on this PC |
+| Authorized capture adapters | yes | yes: scripted VDK client, PPM, refusal of `content://` and of invalid HEIC | yes: 1440×1080 HEIC from `camera.live.photo` | still only; no Jarvis wake | `hardware_verified` remains false |
 | Visor TCP probe CLI | yes (`python -m cloudos.glasses.vision probe`) | yes: closed-port fixture refuses `--capture` | yes: real LAN timeout | no | Does not call an assistant |
 | Synthetic HEIC still | yes, optional `pillow-heif`  (BSD-3-Clause; bundles libheif) | yes: an 8×6 generated HEIC round-tripped to RGB `(220, 30, 30)` and through `camera.live.photo` Base64 | no | no | This was not a glasses file. |
 | Coarse color regions | yes | yes, red/blue blocks | no | no | Not objects. |
