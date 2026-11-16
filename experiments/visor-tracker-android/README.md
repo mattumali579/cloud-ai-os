@@ -33,8 +33,8 @@ If permissions were denied, go to Visor **Settings → Apps** to review the comp
 
 Isolated app build; the rest of the Jarvis repo is untouched:
 
-- Android SDK API 36, JDK 17
-- Gradle 8.14.4, Android Gradle Plugin 8.13.2, Kotlin 2.4.20
+- Android SDK API 37.0 (canary SDK channel), JDK 17
+- Gradle 9.6.0, Android Gradle Plugin 9.4.1, Kotlin Gradle Plugin 2.4.20 (aligned with the VDK)
 - Local command: `gradle --no-daemon assembleDebug testDebugUnitTest`
 - APK: `app/build/outputs/apk/debug/app-debug.apk`
 - CI: `.github/workflows/visor-tracker-android.yml`
