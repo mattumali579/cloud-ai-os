@@ -36,9 +36,11 @@ def visor_304_camera_capability() -> dict:
         "frames_exposed": True,
         "summary": (
             "Visor 3.0.4 does expose authorized camera frames outside the Visor UI. "
-            "Stills and an encoded live feed are in VDK 0.1.1. Decoded pixels are "
-            "not delivered to this PC pipeline yet: gallery URIs stay on the phone, "
-            "live photos are typically HEIC, and camera.live is HEVC or AVC."
+            "Stills and an encoded live feed are in VDK 0.1.1. camera.live.photo "
+            "over adb or the network door returns Base64, and pillow-heif can decode "
+            "a normal HEIC when that package is installed. A phone content:// URI "
+            "still cannot be read here. camera.live stays HEVC or AVC on this PC; "
+            "Visor's LiveVideoDecoder runs on the phone, not in this process."
         ),
         "paths": [
             {
@@ -55,8 +57,10 @@ def visor_304_camera_capability() -> dict:
                 "gives": "LivePhoto mime, and Base64 data over adb or the network door",
                 "pixels_on_pc": "only when data is present and the mime is one this process can decode",
                 "blocker": (
-                    "Fails with busy when Live is not running. The glasses photo is "
-                    "often HEIC, and no HEIC decoder is bundled."
+                    "Fails with busy when Live is not running. Over adb or the network "
+                    "door the photo is Base64 HEIC, which pillow-heif decodes when it "
+                    "is installed. A Ray-Ban grid of HEVC tiles still fails if libheif "
+                    "cannot read that grid. A content:// URI stays on the phone."
                 ),
                 "capture_light": "Live keeps the capture light on",
             },
@@ -66,10 +70,12 @@ def visor_304_camera_capability() -> dict:
                 "gives": "Encoded video/hevc or video/avc Annex-B, plus optional AAC",
                 "pixels_on_pc": False,
                 "blocker": (
-                    "No HEVC decoder is bundled, so this feed cannot drive tracking yet. "
-                    "Allowed rates are 2, 7, 15, 24, or 30. A reader that stalls for "
-                    "5 seconds is dropped. reason vpn means a phone VPN captured the "
-                    "Wi-Fi Direct link to the glasses."
+                    "This PC has no HEVC decoder, so the feed cannot drive tracking here. "
+                    "On the phone, Visor 3.0.4's LiveVideoDecoder turns the same feed "
+                    "into a YUV Image. That Android decoder is not callable from this "
+                    "process. Allowed rates are 2, 7, 15, 24, or 30. A reader that "
+                    "stalls for 5 seconds is dropped. reason vpn means a phone VPN "
+                    "captured the Wi-Fi Direct link to the glasses."
                 ),
                 "preferred_rate": 2,
             },

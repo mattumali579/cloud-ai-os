@@ -26,6 +26,9 @@ job-agent = "cloudos.job_agent.cli:main"
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 discord = ["discord.py>=2.4,<3"]
+# Local still decode only. MediaPipe (Apache-2.0) and a YOLO runtime are not
+# installed here: weights are not vendored and nothing in this extra downloads them.
+glasses = ["pillow>=10", "pillow-heif>=0.18"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

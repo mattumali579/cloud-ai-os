@@ -171,6 +171,36 @@ def test_visor_still_decodes_base64_and_blocks_phone_uri():
     assert "HEIC" in undecoded.value.message
 
 
+def test_heic_still_decodes_when_pillow_heif_is_installed():
+    pytest.importorskip("pillow_heif")
+    import io
+
+    from PIL import Image
+    from pillow_heif import from_pillow
+
+    image = Image.new("RGB", (8, 6), (220, 30, 30))
+    heif = from_pillow(image)
+    buffer = io.BytesIO()
+    heif.save(buffer, quality=70)
+    raw = buffer.getvalue()
+    assert raw[4:12] == b"ftypheic"
+    from cloudos.glasses.vision.images import decode_image
+
+    decoded = decode_image(raw)
+    assert decoded.width == 8
+    assert decoded.height == 6
+    assert decoded.pixel(0, 0) == (220, 30, 30)
+
+    client = ScriptedVisor(
+        {"camera.live.photo": {"mime": "image/heic", "data": base64.b64encode(raw).decode("ascii")}},
+        supported=("camera.live.photo",),
+    )
+    frame = VisorStillAdapter(client, device_token="device-secret").capture(presented_token="device-secret")
+    assert frame.hardware_verified is False
+    assert frame.image.pixel(1, 1) == (220, 30, 30)
+    assert frame.simulated is True
+
+
 def test_live_feed_is_blocked_without_a_decoder():
     with pytest.raises(CaptureError) as blocked:
         LiveFeedAdapter().open_session(frame_rate=2)

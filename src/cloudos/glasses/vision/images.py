@@ -87,20 +87,55 @@ def parse_ppm(data: bytes) -> RgbImage:
     return RgbImage(width, height, pixels[:expected])
 
 
+_HEIF_BRANDS = {b"heic", b"heix", b"heif", b"mif1", b"msf1"}
+
+
+def _is_heif(data: bytes, kind: str) -> bool:
+    if "heic" in kind or "heif" in kind:
+        return True
+    # ISO-BMFF: bytes 4:8 are "ftyp", bytes 8:12 are the major brand.
+    return len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _HEIF_BRANDS
+
+
 def decode_image(data: bytes, mime: str | None = None) -> RgbImage:
-    """Decode an authorized still. HEIC is refused until a local decoder exists."""
+    """Decode an authorized still.
+
+    PPM always works. JPEG and PNG need Pillow. HEIC needs the optional
+    pillow-heif package. A Ray-Ban live photo can be a grid of HEVC tiles;
+    a decoder that cannot read that grid still fails closed.
+    """
     kind = (mime or "").lower()
     if data.startswith(b"P6") or "portable-pixmap" in kind or kind.endswith("/ppm"):
         return parse_ppm(data)
-    if "heic" in kind or "heif" in kind or data[4:12] == b"ftypheic" or data[4:12] == b"ftypmif1":
-        raise ImageError(
-            "HEIC stills from camera.live.photo need a local HEIC decoder; none is bundled"
-        )
+    if _is_heif(data, kind):
+        return _decode_heic(data)
     if data.startswith(b"\xff\xd8") or "jpeg" in kind or "jpg" in kind:
         return _pillow(data)
     if data.startswith(b"\x89PNG") or "png" in kind:
         return _pillow(data)
     raise ImageError("unsupported image; PPM works offline, JPEG and PNG need Pillow")
+
+
+def _decode_heic(data: bytes) -> RgbImage:
+    """Decode one HEIC still with pillow-heif. No network and no model call."""
+    try:
+        from pillow_heif import open_heif
+    except ImportError as exc:
+        raise ImageError(
+            "HEIC stills from camera.live.photo need pillow-heif "
+            "(BSD-3-Clause; it bundles libheif). None is installed, so these "
+            "bytes were not decoded."
+        ) from exc
+    try:
+        heif = open_heif(__import__("io").BytesIO(data))
+        image = heif.to_pillow().convert("RGB")
+    except Exception as exc:
+        raise ImageError(
+            "HEIC still could not be decoded. Visor 3.0.4 live photos are often "
+            "a HEIC grid of HEVC tiles, and this decoder said: "
+            f"{exc}"
+        ) from exc
+    return RgbImage(image.width, image.height, image.tobytes())
 
 
 def _pillow(data: bytes) -> RgbImage:

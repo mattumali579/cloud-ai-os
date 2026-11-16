@@ -20,7 +20,9 @@ class Detection:
     def __post_init__(self) -> None:
         if self.product_model:
             raise ValueError("this detector must not claim a product model")
-        if not 0.0 <= self.confidence <= 0.93:
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        if self.model_id == MODEL_ID and self.confidence > 0.93:
             raise ValueError("coarse confidence stays at or below 0.93")
 
 

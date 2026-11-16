@@ -183,8 +183,9 @@ class LiveFeedAdapter:
             raise CaptureError("invalid_params", "camera.live frameRate must be 2, 7, 15, 24, or 30")
         raise CaptureError(
             "blocked",
-            "camera.live on Visor 3.0.4 is an encoded HEVC or AVC feed, and this "
-            "pipeline has no decoder. Short tracking can use camera.live.photo "
-            "stills at 2 fps, Android LIVE_FRAMES JPEGs, or prerecorded frames. "
-            "A phone VPN fails this feed with reason vpn.",
+            "camera.live on Visor 3.0.4 is an encoded HEVC or AVC feed. Visor's "
+            "LiveVideoDecoder can turn that into a YUV image on the phone, and "
+            "this PC process cannot call that Android decoder. Short tracking "
+            "can use camera.live.photo stills at 2 fps, Android LIVE_FRAMES "
+            "JPEGs, or prerecorded frames. A phone VPN fails this feed with reason vpn.",
         )

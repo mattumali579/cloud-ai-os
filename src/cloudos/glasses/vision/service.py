@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from cloudos.glasses.vision.capture import CapturedFrame
-from cloudos.glasses.vision.detector import CoarseRegionDetector, Detection
+from cloudos.glasses.vision.detector import MODEL_ID, CoarseRegionDetector, Detection
 from cloudos.glasses.vision.faces import (
     ConsentRequired,
     FaceBox,
@@ -17,6 +17,8 @@ from cloudos.glasses.vision.faces import (
     GalleryError,
     UnavailableFaceFinder,
 )
+from cloudos.glasses.vision.gesture import GestureObjectPipeline
+from cloudos.glasses.vision.hands import UnavailableHandLandmarker
 from cloudos.glasses.vision.images import RgbImage, to_ppm
 from cloudos.glasses.vision.safety import SafetyLimits, heat_or_battery
 from cloudos.glasses.vision.tracker import TrackingSession
@@ -30,6 +32,10 @@ _FORGET = re.compile(
     r"\b(?:forget|delete|remove) (?:the )?enrolled person ([A-Za-z][A-Za-z .'-]{0,40})",
     re.IGNORECASE,
 )
+_REMEMBER = re.compile(
+    r"\bremember (?:the )?selection as ([A-Za-z][A-Za-z0-9 .'-]{0,40})",
+    re.IGNORECASE,
+)
 
 DESCRIBE_PHRASES = (
     "describe what i'm looking at",
@@ -38,6 +44,12 @@ DESCRIBE_PHRASES = (
     "what i'm looking at",
 )
 TRACK_PHRASES = ("track that object", "track this object", "start tracking")
+GESTURE_PHRASES = (
+    "watch my hand",
+    "select what i'm pinching",
+    "select what i am pinching",
+    "hand select",
+)
 WHO_EXACT = {"who is this", "who is this enrolled person"}
 
 
@@ -56,6 +68,10 @@ def classify(text: str) -> str | None:
         return None
     if cleaned in {"stop tracking", "stop the tracking", "cancel tracking"}:
         return "stop_tracking"
+    if cleaned in {"stop watching", "stop watching my hand", "stop hand select"}:
+        return "stop_gesture"
+    if _REMEMBER.search(cleaned):
+        return "remember_object"
     if _ENROLL.search(cleaned):
         return "enroll"
     if _FORGET.search(cleaned):
@@ -64,6 +80,8 @@ def classify(text: str) -> str | None:
         return "who"
     if any(phrase in cleaned for phrase in TRACK_PHRASES):
         return "track"
+    if any(phrase in cleaned for phrase in GESTURE_PHRASES):
+        return "gesture"
     if any(phrase in cleaned for phrase in DESCRIBE_PHRASES):
         return "describe"
     return None
@@ -78,17 +96,28 @@ class VisionService:
         *,
         detector: CoarseRegionDetector | None = None,
         face_finder: UnavailableFaceFinder | None = None,
+        hand_landmarker=None,
         limits: SafetyLimits | None = None,
         clock=None,
+        wall_clock=None,
     ) -> None:
         self.store = Path(store)
         self.store.mkdir(parents=True, exist_ok=True)
         self.detector = detector or CoarseRegionDetector()
         self.face_finder = face_finder or UnavailableFaceFinder()
+        self.hands = hand_landmarker or UnavailableHandLandmarker()
         self.limits = limits or SafetyLimits()
         self.gallery = FaceGallery(self.store / "faces")
         self.tracker = TrackingSession(self.limits)
         self._clock = clock or time.monotonic
+        self.gesture_pipeline = GestureObjectPipeline(
+            self.store,
+            landmarker=self.hands,
+            detector=self.detector,
+            limits=self.limits,
+            clock=self._clock,
+            wall_clock=wall_clock,
+        )
 
     def handle(
         self,
@@ -120,7 +149,7 @@ class VisionService:
             thermal_state=thermal_state,
             battery_percent=battery_percent,
         )
-        if blocked and intent in {"describe", "track", "who", "enroll"}:
+        if blocked and intent in {"describe", "track", "who", "enroll", "gesture", "remember_object"}:
             if intent == "track" and self.tracker.state == "running":
                 speech = (
                     "Stopped. The glasses are too warm."
@@ -129,6 +158,20 @@ class VisionService:
                 )
                 self.tracker.cancel()
                 self.tracker.stop_reason = blocked
+            elif intent == "gesture" and self.gesture_pipeline.state == "running":
+                speech = (
+                    "Stopped. The glasses are too warm."
+                    if blocked == "thermal"
+                    else "Stopped. The phone battery is low."
+                )
+                update = self.gesture_pipeline.stop(blocked, speech)
+                return self._result(
+                    intent,
+                    speech,
+                    stop_reason=blocked,
+                    gesture=update,
+                    request_id=request_id,
+                )
             else:
                 speech = (
                     "Stopped. The glasses are too warm."
@@ -140,10 +183,25 @@ class VisionService:
         if intent == "stop_tracking":
             update = self.tracker.cancel()
             return self._result(intent, update.speech, stop_reason=update.stop_reason, request_id=request_id)
+        if intent == "stop_gesture":
+            update = self.gesture_pipeline.cancel()
+            return self._result(
+                intent,
+                update["speech"],
+                stop_reason=update["stop_reason"],
+                gesture=update,
+                request_id=request_id,
+            )
         if intent == "describe":
             return self._describe(image, retain_frames, request_id)
         if intent == "track":
             return self._track(image, retain_frames, thermal_c, thermal_state, battery_percent, request_id)
+        if intent == "gesture":
+            return self._gesture(
+                image, retain_frames, thermal_c, thermal_state, battery_percent, request_id
+            )
+        if intent == "remember_object":
+            return self._remember(utterance, consent, request_id)
         if intent == "who":
             return self._who(image, face_crop, request_id)
         if intent == "enroll":
@@ -213,6 +271,60 @@ class VisionService:
                 "dropped": update.dropped,
                 "accepted_frames": update.accepted_frames,
             },
+            request_id=request_id,
+        )
+
+    def _gesture(
+        self,
+        image: RgbImage | None,
+        retain_frames: bool,
+        thermal_c: float | None,
+        thermal_state: str | None,
+        battery_percent: int | None,
+        request_id: str | None,
+    ) -> dict:
+        if image is None:
+            return self._result(
+                "gesture",
+                "Say that again with one decoded camera frame. I did not start a live "
+                "stream, and I did not send this phrase to an assistant.",
+                blocked="no_frame",
+                request_id=request_id,
+            )
+        self._retain(image, retain_frames)
+        update = self.gesture_pipeline.step(
+            image,
+            thermal_c=thermal_c,
+            thermal_state=thermal_state,
+            battery_percent=battery_percent,
+            retain_events=bool(retain_frames and self.limits.retain_frames),
+            request_id=request_id,
+        )
+        return self._result(
+            "gesture",
+            update["speech"],
+            detections=update["detections"],
+            stop_reason=update["stop_reason"] if update["state"] == "stopped" else None,
+            blocked=update["blocked"],
+            gesture=update,
+            request_id=request_id,
+        )
+
+    def _remember(self, utterance: str, consent: bool, request_id: str | None) -> dict:
+        match = _REMEMBER.search(" ".join(utterance.split()))
+        if match is None:
+            return self._result(
+                "remember_object",
+                "Say remember the selection as a name.",
+                blocked="needs_name",
+                request_id=request_id,
+            )
+        update = self.gesture_pipeline.remember(match.group(1), consent=consent)
+        return self._result(
+            "remember_object",
+            update["speech"],
+            blocked=update["blocked"],
+            gesture=update,
             request_id=request_id,
         )
 
@@ -313,6 +425,7 @@ class VisionService:
         blocked: str | None = None,
         retained_frame: str | None = None,
         face_boxes: list | None = None,
+        gesture: dict | None = None,
         request_id: str | None = None,
     ) -> dict:
         reply = None
@@ -338,8 +451,10 @@ class VisionService:
             "blocked": blocked,
             "retained_frame": retained_frame,
             "face_boxes": face_boxes or [],
+            "gesture": gesture,
             "voice_reply": reply,
             "paid_inference": False,
+            "assistant_dispatched": False,
         }
 
 
@@ -383,6 +498,12 @@ def _describe_speech(detections: list[Detection]) -> str:
             "This look cannot name a product model, and it is not a safety check."
         )
     lead = detections[0]
+    if lead.model_id != MODEL_ID:
+        percent = int(round(lead.confidence * 100))
+        return (
+            f"I see a {lead.label}, about {percent} percent from the local {lead.model_id} detector. "
+            "That is a category, not a durable identity or a product model, and it is not a safety check."
+        )
     extra = ""
     if len(detections) > 1:
         extra = f" I also see {len(detections) - 1} other colored region{'s' if len(detections) > 2 else ''}."
