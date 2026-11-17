@@ -12,7 +12,7 @@ package com.mattumali.visortracker
 data class CategoryScore(val name: String, val score: Float)
 
 object LabelPolicy {
-    const val MIN_SCORE = 0.45f
+    const val MIN_SCORE = 0.30f
     const val UNCERTAIN = "object"
     private const val AMBIGUITY_MARGIN = 0.15f
 
@@ -38,7 +38,7 @@ object LabelPolicy {
             .sortedByDescending { it.score }
             .toList()
         val top = ranked.firstOrNull() ?: return null
-        if (top.score < (strictFloor[top.name] ?: MIN_SCORE)) return UNCERTAIN
+        if (top.score < (strictFloor[top.name] ?: 0.45f)) return UNCERTAIN
         val rival = ranked.getOrNull(1)
         if (rival != null && top.score - rival.score < AMBIGUITY_MARGIN) {
             val partners = confusableWith[top.name]

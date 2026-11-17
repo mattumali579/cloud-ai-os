@@ -10,12 +10,16 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 - User grants `Scope.CAMERA` from Visor's consent screen; no Developer Mode token or separate local server needed.
 - `Visor.camera.live(LiveConfig { quality = LOW; frameRate = 30; audio = false })` joins the existing stream when one runs. On a new stream, 30 FPS is **requested**, not guaranteed. Visor picks the actual rate and size when Live View was already running.
 - `LiveVideoDecoder` decodes HEVC/H.264 on Android MediaCodec, returning hardware-decoded YUV frames. `YuvSnapshot` copies selected frames to bounded 384px (Fast) or 512px (Higher accuracy) RGB for MediaPipe without blocking the video decoder.
-- Object detection: **Fast mode** (EfficientDet-Lite0, 320×320 model, score floor 0.50, up to 8 candidates) or **Higher accuracy** (EfficientDet-Lite2, 448×448 model, score floor 0.45, up to 8 candidates). The overlay draws at most **five** of those candidates. Optional hands and faces are staggered and cannot take an object slot while five objects are shown. After one object is locked, the detector runs at 4 Hz. Before a lock it runs at 5 Hz. It does not run on every camera frame.
+- Object detection: **Fast mode** (EfficientDet-Lite0, score floor 0.35, up to 8 candidates) or **Higher accuracy** (EfficientDet-Lite2, score floor 0.45, up to 8 candidates). The overlay draws **one** object. A weak name is shown as `object`. After one object is locked, the detector runs at 4 Hz. Before a lock it runs at 5 Hz.
 - `MotionTracker` follows the locked box on the newest grayscale frame. The work slot holds one frame; an older frame still waiting is dropped, not replayed. A detector result is painted only after it has been walked forward onto that newest frame. If the patch match fails, the box is hidden and the same track is searched again for 250 ms. A remembered detector box is not drawn. This is lightweight image tracking, **not** 30 AI detections per second.
 - `TrackingOverlayView` draws transparent boxes with cover/crop transform matching Visor's expanded Live View. A corner proof mark is drawn even when there are no boxes. The Android user-started foreground service keeps tracking alive during app switching; the Stop notification terminates it.
 - The notification displays measured **decoded video FPS, detector FPS, motion-tracker FPS, changed-box FPS, draw FPS, p50/p95/p99 tracker interval, p50/p95/p99 decoded-frame age, drops, stationary jitter, id switches, and lock losses**. Changed-box FPS does not count a redraw or a hide. Tracker FPS counts frames the motion tracker stepped, including frames where the box did not move. Results depend on heat, camera quality, movement and phone hardware.
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
+
+## Version 0.21: draw a real detection and keep it through a short miss
+
+Version code 21. Fast mode accepts EfficientDet-Lite0 scores from 0.35, and a weak name is drawn as `object` instead of being deleted. An empty motion result cannot erase a box for 2 seconds. The corner reads `det`, `pub`, and `drw`: detector objects, published boxes, and boxes in onDraw. `adb logcat -s VisorTracker:I` prints `detect` and `publish`.
 
 ## Version 0.19: one Update this app button
 

@@ -87,6 +87,8 @@ class TrackingOverlayView(context: Context) : View(context) {
 
     fun notificationDistance(): String = distanceEstimator.shortStatus(latest?.boxes.orEmpty())
 
+    fun drawnBoxCount(): Int = latest?.boxes?.size ?: 0
+
     /**
      * Sees every detector object, including ones that are not the drawn box,
      * so a held point at a new center can switch the lock.
@@ -101,12 +103,16 @@ class TrackingOverlayView(context: Context) : View(context) {
         if (frame.sequence < shownSequence) return null
         val previous = latest
         shownSequence = frame.sequence
-        val picked = nearby.select(
-            frame.width, frame.height, frame.boxes, distanceEstimator.selectedTrackId(),
-        )
-        val display = if (picked.isEmpty()) frame else frame.copy(boxes = picked)
+        val incoming = if (frame.boxes.isEmpty()) {
+            emptyList()
+        } else {
+            nearby.select(frame.width, frame.height, frame.boxes, distanceEstimator.selectedTrackId())
+        }
+        val ageMs = if (receivedAt == 0L) Long.MAX_VALUE else SystemClock.elapsedRealtime() - receivedAt
+        val kept = BoxHold.keep(previous?.boxes.orEmpty(), incoming, ageMs)
+        val display = frame.copy(boxes = kept)
         latest = display
-        receivedAt = SystemClock.elapsedRealtime()
+        if (incoming.isNotEmpty()) receivedAt = SystemClock.elapsedRealtime()
         frameAgeMs = if (display.capturedAtMs <= 0L) 0 else {
             (receivedAt - display.capturedAtMs).toInt().coerceAtLeast(0)
         }
@@ -115,8 +121,8 @@ class TrackingOverlayView(context: Context) : View(context) {
         val cleared = display.boxes.isEmpty() && previousBoxes.isNotEmpty()
         if (moved) boxUpdates.incrementAndGet()
         removeCallbacks(expire)
-        if (display.boxes.isNotEmpty()) postDelayed(expire, 700L)
-        if (moved || cleared || previous == null) invalidate()
+        if (display.boxes.isNotEmpty()) postDelayed(expire, BoxHold.HOLD_MS)
+        if (moved || cleared || previous == null || kept.isNotEmpty()) invalidate()
         return null
     }
 

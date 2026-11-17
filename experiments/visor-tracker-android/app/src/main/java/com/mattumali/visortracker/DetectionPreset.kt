@@ -19,7 +19,9 @@ enum class DetectionPreset(
     val scoreThreshold: Float,
     val maxResults: Int,
 ) {
-    FAST("efficientdet_lite0.tflite", 384, 0.50f, 8),
+    // 0.50 on Lite0 returned no boxes for ordinary glasses video. 0.35 still
+    // rejects the old 0.25 flood and leaves the name policy to say "object".
+    FAST("efficientdet_lite0.tflite", 384, 0.35f, 8),
     ACCURATE("efficientdet_lite2.tflite", 512, 0.45f, 8);
 
     companion object {

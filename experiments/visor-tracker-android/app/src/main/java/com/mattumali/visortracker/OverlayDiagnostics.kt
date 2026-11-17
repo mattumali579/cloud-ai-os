@@ -35,6 +35,7 @@ data class OverlaySnapshot(
     val inferencesCompleted: Int = 0,
     val rawDetections: Int = 0,
     val freshBoxes: Int = 0,
+    val drawnBoxes: Int = 0,
     val boxAgeMs: Int = -1,
     val decoderFps: Float = 0f,
     val aiFps: Float = 0f,
@@ -76,7 +77,7 @@ object OverlayDiagnostics {
                 "Visor CAMERA scope is not granted",
             )
         }
-        if (snapshot.freshBoxes > 0) {
+        if (snapshot.freshBoxes > 0 || snapshot.drawnBoxes > 0) {
             val age = if (snapshot.boxAgeMs < 0) "age n/a" else "age ${snapshot.boxAgeMs} ms"
             return OverlayDiagnosis(
                 OverlayHop.TRACKING,
@@ -131,8 +132,8 @@ object OverlayDiagnostics {
     /** Short lines for the corner mark. Empty when the mark is turned off. */
     fun probeLines(snapshot: OverlaySnapshot, diagnosis: OverlayDiagnosis): List<String> {
         if (!snapshot.probeEnabled) return emptyList()
-        val metric = "V%.0f AI%.0f box%d".format(
-            Locale.US, snapshot.decoderFps, snapshot.aiFps, snapshot.freshBoxes,
+        val metric = "det%d pub%d drw%d".format(
+            Locale.US, snapshot.rawDetections, snapshot.freshBoxes, snapshot.drawnBoxes,
         )
         return listOf("v${snapshot.versionName} #${snapshot.versionCode}", diagnosis.code, metric)
     }

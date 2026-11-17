@@ -17,6 +17,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.provider.Settings
 import android.service.quicksettings.TileService
 import android.view.Gravity
@@ -250,7 +251,9 @@ class OverlayTrackingService : Service() {
                                     stages.record("ai", SystemClock.elapsedRealtime() - aiStarted)
                                     inferenceFrames.incrementAndGet()
                                     totalInferences.incrementAndGet()
-                                    rawDetections.set(detections.boxes.count { it.kind == "object" })
+                                    val objectCount = detections.boxes.count { it.kind == "object" }
+                                    rawDetections.set(objectCount)
+                                    Log.i(TAG, "detect objects=$objectCount seq=$sequence")
                                     val candidates = detections
                                     mainHandler.post {
                                         if (!running) return@post
@@ -371,6 +374,7 @@ class OverlayTrackingService : Service() {
 
     private fun publish(frame: FrameDetections) {
         lastBoxCount = frame.boxes.count { it.kind == "object" }
+        Log.i(TAG, "publish boxes=$lastBoxCount seq=${frame.sequence}")
         mainHandler.post {
             if (!running) return@post
             val note = overlay?.updateFrame(frame)
@@ -474,6 +478,7 @@ class OverlayTrackingService : Service() {
             inferencesCompleted = totalInferences.get(),
             rawDetections = rawDetections.get(),
             freshBoxes = lastBoxCount,
+            drawnBoxes = overlay?.drawnBoxCount() ?: 0,
             boxAgeMs = overlay?.frameAgeMs ?: -1,
             decoderFps = decoderFps,
             aiFps = aiFps,
@@ -575,6 +580,7 @@ class OverlayTrackingService : Service() {
         const val EXTRA_ALL_DETECTORS = "all_detectors"
         private const val CHANNEL_ID = "visor_tracker_high_fps"
         private const val NOTIFICATION_ID = 4421
+        private const val TAG = "VisorTracker"
         private const val REPORT_MS = 4000L
         private const val DIAGNOSTIC_MS = 1000L
         @Volatile var active: Boolean = false

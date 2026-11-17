@@ -115,7 +115,7 @@ class OverlayDiagnosticsTest {
         val snapshot = live { copy(framesReceived = 0, inferencesCompleted = 0, decoderFps = 0f) }
         val diagnosis = OverlayDiagnostics.diagnose(snapshot)
         val lines = OverlayDiagnostics.probeLines(snapshot, diagnosis)
-        assertEquals(listOf("v0.14.0 #14", OverlayDiagnostics.CODE_NO_FRAMES, "V0 AI0 box0"), lines)
+        assertEquals(listOf("v0.14.0 #14", OverlayDiagnostics.CODE_NO_FRAMES, "det0 pub0 drw0"), lines)
     }
 
     @Test fun proofMarkCanBeTurnedOff() {
