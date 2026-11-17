@@ -20,9 +20,10 @@ import org.junit.runner.RunWith
 class DetectorOverlaySimulationTest {
     @Test(timeout = 120_000)
     fun realDetectorReturnsABoxAndTheOverlayPaintsIt() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
         val started = android.os.SystemClock.elapsedRealtime()
-        val input = context.assets.open("people.jpg").use { BitmapFactory.decodeStream(it) }
+        val input = instrumentation.context.assets.open("people.jpg").use { BitmapFactory.decodeStream(it) }
         assertTrue("people.jpg did not decode", input != null && input.width > 0)
         val pipeline = VisionPipeline(context, false, DetectionPreset.FAST)
         val result = try {
