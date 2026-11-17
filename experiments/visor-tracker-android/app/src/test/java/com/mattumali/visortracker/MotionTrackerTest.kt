@@ -2,6 +2,7 @@ package com.mattumali.visortracker
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MotionTrackerTest {
@@ -25,6 +26,26 @@ class MotionTrackerTest {
         assertNotNull(moved)
         assertEquals(3, moved!!.boxes.first().trackId)
         assertEquals(32f, moved.boxes.first().left, 1.1f)
+    }
+
+    @Test fun followsAHeadTurnBeyondTheOldSixPixelWindow() {
+        val tracker = MotionTracker()
+        tracker.reset(FrameDetections(100, 80, listOf(
+            BoxObservation("object", "box", 0.9f, 30f, 30f, 50f, 50f, trackId = 7)
+        )), patterned(0))
+        val moved = tracker.advance(patterned(12))
+        assertNotNull(moved)
+        assertEquals(42f, moved!!.boxes.first().left, 1.1f)
+    }
+
+    @Test fun dropsTheBoxWhenThePatchDisappears() {
+        val tracker = MotionTracker()
+        tracker.reset(FrameDetections(100, 80, listOf(
+            BoxObservation("object", "box", 0.9f, 30f, 30f, 50f, 50f, trackId = 4)
+        )), patterned(0))
+        val lost = tracker.advance(GrayFrame(100, 80, ByteArray(100 * 80) { 40 }))
+        assertNotNull(lost)
+        assertTrue(lost!!.boxes.isEmpty())
     }
 
     @Test fun expiresStaleDetections() {

@@ -17,6 +17,8 @@ data class FrameDetections(
     val width: Int,
     val height: Int,
     val boxes: List<BoxObservation>,
+    val sequence: Long = 0,
+    val capturedAtMs: Long = 0,
 )
 
 /**

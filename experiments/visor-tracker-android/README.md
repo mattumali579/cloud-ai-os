@@ -17,6 +17,12 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.8: boxes on full-screen Live View, fresh positions
+
+Same package `com.mattumali.visortracker.stable` and the same signing configuration as v0.7. The overlay window is full-screen, fully opaque, and touch-through, using the same cover crop as Visor's expanded Live View. Grayscale motion follows head turns out to 16 pixels per frame on the 192-pixel motion image and drops a box when the match is lost instead of leaving it frozen. The notification reports video FPS, AI FPS, fresh box-coordinate FPS, draw FPS, and box age. A 60 Hz redraw of an unchanged box is not counted.
+
+Hardware proof still requires the Samsung phone: wireless debugging was not connected from this PC, so v0.8 is not claimed as glasses-verified.
+
 ## Version 0.7: offline distance estimate for a calibrated object
 
 The existing tracking overlay now supports a **single-object approximate distance**.

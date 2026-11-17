@@ -9,30 +9,44 @@ import kotlin.math.min
  * Lightweight luminance frame; copied while the MediaCodec Image is valid.
  * Downsampling caps motion analysis to 192 pixels wide even for 1080p video.
  */
-data class GrayFrame(val width: Int, val height: Int, val bytes: ByteArray) {
+data class GrayFrame(
+    val width: Int,
+    val height: Int,
+    val bytes: ByteArray,
+    val sequence: Long = 0,
+    val capturedAtMs: Long = 0,
+) {
     init { require(width > 0 && height > 0 && bytes.size == width * height) }
 
     fun at(x: Int, y: Int): Int = bytes[y * width + x].toInt() and 255
 
     companion object {
-        fun capture(image: Image, maxWidth: Int = 192): GrayFrame {
+        fun capture(
+            image: Image,
+            maxWidth: Int = 192,
+            sequence: Long = 0,
+            capturedAtMs: Long = 0,
+        ): GrayFrame {
             val crop = image.cropRect
             val width = min(maxWidth, crop.width())
             val height = max(1, (crop.height().toDouble() * width / crop.width()).toInt())
             val plane = image.planes[0]
             val buffer = plane.buffer.duplicate()
-            val base = buffer.position()
+            val origin = buffer.position()
+            val raw = ByteArray(buffer.remaining())
+            buffer.get(raw)
             val result = ByteArray(width * height)
+            val rowStride = plane.rowStride
+            val pixelStride = plane.pixelStride
             for (y in 0 until height) {
                 val iy = crop.top + y * crop.height() / height
+                val row = iy * rowStride - origin
                 for (x in 0 until width) {
-                    val ix = crop.left + x * crop.width() / width
-                    result[y * width + x] = buffer.get(
-                        base + iy * plane.rowStride + ix * plane.pixelStride
-                    )
+                    val index = row + (crop.left + x * crop.width() / width) * pixelStride
+                    result[y * width + x] = if (index in raw.indices) raw[index] else 0
                 }
             }
-            return GrayFrame(width, height, result)
+            return GrayFrame(width, height, result, sequence, capturedAtMs)
         }
     }
 }
@@ -43,7 +57,7 @@ data class GrayFrame(val width: Int, val height: Int, val bytes: ByteArray) {
  * not depth, identity or camera pose. Resets whenever a new detector result arrives.
  */
 class MotionTracker(
-    private val searchRadius: Int = 6,
+    private val searchRadius: Int = 16,
     private val patchRadius: Int = 4,
     private val maxPredictionFrames: Int = 36
 ) {
@@ -71,15 +85,23 @@ class MotionTracker(
         }
         val ratioX = visible.width.toFloat() / frame.width
         val ratioY = visible.height.toFloat() / frame.height
-        val boxes = visible.boxes.map { box ->
-            val (dx, dy) = estimate(old, frame, box, ratioX, ratioY)
+        val boxes = visible.boxes.mapNotNull { box ->
+            val shift = estimate(old, frame, box, ratioX, ratioY) ?: return@mapNotNull null
+            val (dx, dy) = shift
             box.copy(
                 left = box.left + dx, right = box.right + dx,
                 top = box.top + dy, bottom = box.bottom + dy,
                 points = box.points.map { (x, y) -> x + dx to y + dy }
             )
         }
-        return visible.copy(boxes = boxes).also { current = it }
+        val published = visible.copy(
+            boxes = boxes,
+            sequence = frame.sequence,
+            capturedAtMs = frame.capturedAtMs,
+        )
+        // A failed match drops the box. Holding the last coordinate is a frozen box.
+        current = if (boxes.isEmpty()) null else published
+        return published
     }
 
     private fun estimate(
@@ -88,7 +110,7 @@ class MotionTracker(
         box: BoxObservation,
         ratioX: Float,
         ratioY: Float
-    ): Pair<Float, Float> {
+    ): Pair<Float, Float>? {
         val midX = (box.left + box.right) / 2f / ratioX
         val midY = (box.top + box.bottom) / 2f / ratioY
         val qX = (box.right - box.left) / 4f / ratioX
@@ -99,16 +121,15 @@ class MotionTracker(
             (midX + qX).toInt() to (midY + qY).toInt()
         )
         val offsets = centers.mapNotNull { (cx, cy) -> matchPatch(before, after, cx, cy) }
-        if (offsets.isEmpty()) return 0f to 0f
+        if (offsets.isEmpty()) return null
         val dx = offsets.map { it.first }.sorted()[offsets.size / 2]
         val dy = offsets.map { it.second }.sorted()[offsets.size / 2]
         return dx * ratioX to dy * ratioY
     }
 
     private fun matchPatch(before: GrayFrame, after: GrayFrame, cx: Int, cy: Int): Pair<Int, Int>? {
-        val safety = searchRadius + patchRadius + 1
-        if (cx < safety || cy < safety ||
-            cx >= before.width - safety || cy >= before.height - safety) return null
+        if (cx - patchRadius < 0 || cy - patchRadius < 0 ||
+            cx + patchRadius >= before.width || cy + patchRadius >= before.height) return null
 
         // Skip smooth, texture-free areas where many movements look equally likely.
         var minimum = 255
@@ -122,29 +143,72 @@ class MotionTracker(
         }
         if (maximum - minimum < 16) return null
 
-        var bestScore = Int.MAX_VALUE
+        // Coarse step finds head-turn motion; the fine steps restore the old 1 px result.
         var bestDx = 0
         var bestDy = 0
-        for (dy in -searchRadius..searchRadius) {
-            for (dx in -searchRadius..searchRadius) {
-                var score = 0
-                for (py in -patchRadius..patchRadius step 2) {
-                    for (px in -patchRadius..patchRadius step 2) {
-                        score += abs(before.at(cx + px, cy + py) -
-                            after.at(cx + dx + px, cy + dy + py))
-                    }
-                }
-                // Prefer zero movement if multiple candidates tie.
-                if (score < bestScore || (score == bestScore &&
-                        dx * dx + dy * dy < bestDx * bestDx + bestDy * bestDy)) {
-                    bestScore = score
-                    bestDx = dx
-                    bestDy = dy
-                }
-            }
+        val stages = arrayOf(4 to searchRadius, 2 to 4, 1 to 1)
+        for ((step, radius) in stages) {
+            val found = searchAround(before, after, cx, cy, bestDx, bestDy, radius, step) ?: return null
+            bestDx = found.first
+            bestDy = found.second
         }
         val samples = (patchRadius + 1) * (patchRadius + 1)
+        val bestScore = scoreAt(before, after, cx, cy, bestDx, bestDy) ?: return null
         if (bestScore > samples * 38) return null
         return bestDx to bestDy
+    }
+
+    private fun searchAround(
+        before: GrayFrame,
+        after: GrayFrame,
+        cx: Int,
+        cy: Int,
+        originX: Int,
+        originY: Int,
+        radius: Int,
+        step: Int,
+    ): Pair<Int, Int>? {
+        var bestScore = Int.MAX_VALUE
+        var bestDx = originX
+        var bestDy = originY
+        var found = false
+        var dy = -radius
+        while (dy <= radius) {
+            var dx = -radius
+            while (dx <= radius) {
+                val tx = originX + dx
+                val ty = originY + dy
+                val score = scoreAt(before, after, cx, cy, tx, ty)
+                if (score != null && (score < bestScore || (score == bestScore &&
+                        tx * tx + ty * ty < bestDx * bestDx + bestDy * bestDy))) {
+                    bestScore = score
+                    bestDx = tx
+                    bestDy = ty
+                    found = true
+                }
+                dx += step
+            }
+            dy += step
+        }
+        return if (found) bestDx to bestDy else null
+    }
+
+    private fun scoreAt(
+        before: GrayFrame,
+        after: GrayFrame,
+        cx: Int,
+        cy: Int,
+        dx: Int,
+        dy: Int,
+    ): Int? {
+        if (cx + dx - patchRadius < 0 || cy + dy - patchRadius < 0 ||
+            cx + dx + patchRadius >= after.width || cy + dy + patchRadius >= after.height) return null
+        var score = 0
+        for (py in -patchRadius..patchRadius step 2) {
+            for (px in -patchRadius..patchRadius step 2) {
+                score += abs(before.at(cx + px, cy + py) - after.at(cx + dx + px, cy + dy + py))
+            }
+        }
+        return score
     }
 }

@@ -5,17 +5,20 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
+import android.content.ComponentCallbacks
 import android.content.ComponentName
-import android.service.quicksettings.TileService
+import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.service.quicksettings.TileService
 import android.view.Gravity
 import android.view.WindowManager
 import com.macedonga.visor.kit.LiveVideoDecoder
@@ -23,9 +26,11 @@ import com.macedonga.visor.kit.Visor
 import com.macedonga.visor.kit.protocol.LiveConfig
 import com.macedonga.visor.kit.protocol.LiveQuality
 import com.macedonga.visor.kit.protocol.Scope
+import java.util.ArrayDeque
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -50,6 +55,10 @@ class OverlayTrackingService : Service() {
     private val motionBusy = AtomicBoolean(false)
     private val motionTracker = MotionTracker()
     private val pendingDetection = AtomicReference<DetectionBaseline?>(null)
+    private val frameSequence = AtomicLong(0)
+    private val grayQueue = ArrayDeque<GrayFrame>()
+    private val grayLock = Any()
+    private val motionHistory = ArrayDeque<GrayFrame>()
     private data class DetectionBaseline(val detections: FrameDetections, val gray: GrayFrame)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val processing = AtomicBoolean(false)
@@ -115,20 +124,9 @@ class OverlayTrackingService : Service() {
         startForeground(NOTIFICATION_ID, notification("Preparing VDK camera overlay"))
         try {
             val view = TrackingOverlayView(this)
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                alpha = 0.75f
-            }
-            windows.addView(view, params)
+            windows.addView(view, overlayLayout())
             overlay = view
+            applicationContext.registerComponentCallbacks(displayCallbacks)
         } catch (error: Exception) {
             lastStatus = "Overlay failed: " + (error.message ?: "unknown")
             stopSelf()
@@ -186,44 +184,27 @@ class OverlayTrackingService : Service() {
                     if (!running) return@LiveVideoDecoder
                     decodedFrames.incrementAndGet()
                     val now = SystemClock.elapsedRealtime()
-
-                    // Fast gray-only tracking follows objects between AI inference results.
-                    // It also runs when the detector is busy, but its single-slot worker
-                    // never accumulates stale frames behind the video.
-                    var gray: GrayFrame? = null
-                    if (motionBusy.compareAndSet(false, true)) {
-                        try {
-                            gray = GrayFrame.capture(image)
-                            val motionInput = gray
-                            motionWorker.execute {
-                                try {
-                                    pendingDetection.getAndSet(null)?.let {
-                                        motionTracker.reset(it.detections, it.gray)
-                                    }
-                                    motionTracker.advance(motionInput)?.let { predicted ->
-                                        motionFrames.incrementAndGet()
-                                        mainHandler.post {
-                                            if (running) overlay?.updateFrame(predicted)
-                                        }
-                                    }
-                                } catch (error: Exception) {
-                                    report("Motion tracking failed: " + (error.message ?: "unknown"))
-                                } finally {
-                                    motionBusy.set(false)
-                                }
-                            }
-                        } catch (error: Exception) {
-                            motionBusy.set(false)
-                            report("Grayscale extraction failed: " + (error.message ?: "unknown"))
+                    val sequence = frameSequence.incrementAndGet()
+                    // Copy pixels and return. The VDK suspends after 64 unread samples,
+                    // so any matching or RGB work here makes boxes lag the Live View.
+                    val gray = try {
+                        GrayFrame.capture(image, sequence = sequence, capturedAtMs = now)
+                    } catch (error: Exception) {
+                        report("Grayscale extraction failed: " + (error.message ?: "unknown"))
+                        null
+                    }
+                    if (gray != null) {
+                        synchronized(grayLock) {
+                            while (grayQueue.size >= MAX_GRAY_QUEUE) grayQueue.removeFirst()
+                            grayQueue.addLast(gray)
                         }
+                        scheduleMotion()
                     }
 
-                    // The full AI detector is slower; never delay the hardware decoder.
-                    if (now - lastOfferedAtMs >= MIN_INFERENCE_INTERVAL_MS &&
+                    if (gray != null && now - lastOfferedAtMs >= MIN_INFERENCE_INTERVAL_MS &&
                         processing.compareAndSet(false, true)) {
                         lastOfferedAtMs = now
                         try {
-                            val baselineGray = gray ?: GrayFrame.capture(image)
                             val snapshot = YuvSnapshot.capture(image)
                             worker.execute {
                                 var bitmap: Bitmap? = null
@@ -232,8 +213,11 @@ class OverlayTrackingService : Service() {
                                     bitmap = snapshot.toBitmap(preset.maxFrameWidth)
                                     val detections = pipeline?.detect(bitmap) ?: return@execute
                                     inferenceFrames.incrementAndGet()
-                                    lastBoxCount = detections.boxes.size
-                                    pendingDetection.set(DetectionBaseline(detections, baselineGray))
+                                    pendingDetection.set(DetectionBaseline(
+                                        detections.copy(sequence = sequence, capturedAtMs = now),
+                                        gray,
+                                    ))
+                                    scheduleMotion()
                                 } catch (error: Exception) {
                                     report("Decode/detection failed: " + (error.message ?: "unknown"))
                                 } finally {
@@ -250,10 +234,13 @@ class OverlayTrackingService : Service() {
                         val seconds = (now - lastReportAtMs).coerceAtLeast(1) / 1000f
                         val videoFps = decodedFrames.getAndSet(0) / seconds
                         val detectFps = inferenceFrames.getAndSet(0) / seconds
-                        val trackingFps = motionFrames.getAndSet(0) / seconds
+                        val view = overlay
+                        val boxFps = (view?.consumeBoxUpdates() ?: motionFrames.getAndSet(0)) / seconds
+                        val drawFps = (view?.consumeDraws() ?: 0) / seconds
+                        val age = view?.frameAgeMs ?: 0
                         lastReportAtMs = now
-                        report("Video %.1f FPS | AI %.1f FPS | boxes %.1f FPS | %d objects".format(
-                            videoFps, detectFps, trackingFps, lastBoxCount))
+                        report("V%.0f AI%.0f box%.0f draw%.0f %dms %dobj".format(
+                            videoFps, detectFps, boxFps, drawFps, age, lastBoxCount))
                     }
                 }.use { decoder ->
                     // Visor serves the very same video being shown in its own Live View.
@@ -274,6 +261,118 @@ class OverlayTrackingService : Service() {
                 mainHandler.post { overlay?.clear() }
             }
         }
+    }
+
+    private fun scheduleMotion() {
+        if (!motionBusy.compareAndSet(false, true)) return
+        motionWorker.execute {
+            try {
+                while (running) {
+                    val batch = synchronized(grayLock) {
+                        if (grayQueue.isEmpty()) emptyList() else grayQueue.toList().also { grayQueue.clear() }
+                    }
+                    for (frame in batch) rememberFrame(frame)
+                    val pending = pendingDetection.getAndSet(null)
+                    if (pending != null && canRebase(pending)) rebase(pending)
+                    else for (frame in batch) publishAdvance(frame)
+                    val more = synchronized(grayLock) { grayQueue.isNotEmpty() } || pendingDetection.get() != null
+                    if (!more) break
+                }
+            } catch (error: Exception) {
+                report("Motion tracking failed: " + (error.message ?: "unknown"))
+            } finally {
+                motionBusy.set(false)
+            }
+            val more = running && (synchronized(grayLock) { grayQueue.isNotEmpty() } || pendingDetection.get() != null)
+            if (more) scheduleMotion()
+        }
+    }
+
+    private fun rememberFrame(frame: GrayFrame) {
+        motionHistory.addLast(frame)
+        while (motionHistory.size > MAX_GRAY_QUEUE) motionHistory.removeFirst()
+    }
+
+    /** A detector result is usable when its grayscale frame is still in the short history. */
+    private fun canRebase(pending: DetectionBaseline): Boolean {
+        if (motionHistory.isEmpty()) return true
+        return pending.gray.sequence >= motionHistory.first().sequence
+    }
+
+    private fun rebase(pending: DetectionBaseline) {
+        motionTracker.reset(pending.detections, pending.gray)
+        var latest: FrameDetections? = null
+        for (frame in motionHistory) {
+            if (frame.sequence <= pending.gray.sequence) continue
+            val stepped = motionTracker.advance(frame) ?: break
+            latest = stepped
+        }
+        publish(latest ?: pending.detections)
+    }
+
+    private fun publishAdvance(frame: GrayFrame) {
+        val stepped = motionTracker.advance(frame)
+        if (stepped == null) {
+            if (lastBoxCount > 0) {
+                lastBoxCount = 0
+                val sequence = frame.sequence
+                mainHandler.post { if (running) overlay?.clearUpTo(sequence) }
+            }
+        } else {
+            publish(stepped)
+        }
+    }
+
+    private fun publish(frame: FrameDetections) {
+        lastBoxCount = frame.boxes.size
+        mainHandler.post { if (running) overlay?.updateFrame(frame) }
+    }
+
+    private val displayCallbacks = object : ComponentCallbacks {
+        override fun onConfigurationChanged(newConfig: Configuration) {
+            val view = overlay ?: return
+            try {
+                windows.updateViewLayout(view, overlayLayout())
+            } catch (_: Exception) { }
+        }
+        override fun onLowMemory() = Unit
+    }
+
+    private fun overlayLayout(): WindowManager.LayoutParams {
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+            // Keep the window fully opaque. Samsung composites a translucent overlay
+            // under Visor's video, which leaves the boxes on the Tracker screen only.
+            alpha = 1f
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                fitInsetsTypes = 0
+                setFitInsetsIgnoringVisibility(true)
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windows.currentWindowMetrics.bounds
+            params.width = bounds.width()
+            params.height = bounds.height()
+        }
+        return params
     }
 
     private fun report(message: String) {
@@ -327,6 +426,8 @@ class OverlayTrackingService : Service() {
         scope.cancel()
         visor?.close()
         visor = null
+        try { applicationContext.unregisterComponentCallbacks(displayCallbacks) } catch (_: Exception) { }
+        synchronized(grayLock) { grayQueue.clear() }
         overlay?.let {
             it.clear()
             try { windows.removeViewImmediate(it) } catch (_: Exception) { }
@@ -365,6 +466,7 @@ class OverlayTrackingService : Service() {
         private const val NOTIFICATION_ID = 4421
         private const val MIN_INFERENCE_INTERVAL_MS = 66L // Up to ~15 detections/sec if hardware permits.
         private const val REPORT_MS = 4000L
+        private const val MAX_GRAY_QUEUE = 30
         @Volatile var active: Boolean = false
             private set
         @Volatile var lastStatus: String = "Overlay not started"

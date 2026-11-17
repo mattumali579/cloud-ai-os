@@ -7,12 +7,12 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.os.SystemClock
 import android.view.View
-import kotlin.math.abs
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Transparent, touch-through window over Visor's expanded Live View.
- * Native Live View remains at its own frame rate. Detector results are
- * updated by the existing VDK pipeline; this view only draws boxes/labels.
+ * Native Live View remains at its own frame rate. Each accepted frame draws the
+ * measured box coordinates once. This view does not repaint unchanged boxes.
  */
 class TrackingOverlayView(context: Context) : View(context) {
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -32,8 +32,21 @@ class TrackingOverlayView(context: Context) : View(context) {
     private val point = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private var latest: FrameDetections? = null
     private var receivedAt = 0L
-    private val smoothBoxes = mutableMapOf<Int, RectF>()
+    private var shownSequence = Long.MIN_VALUE
+    private val boxUpdates = AtomicInteger(0)
+    private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
+    @Volatile var frameAgeMs: Int = 0
+        private set
+
+    private val expire = Runnable {
+        latest = null
+        frameAgeMs = 0
+        invalidate()
+    }
+
+    fun consumeBoxUpdates(): Int = boxUpdates.getAndSet(0)
+    fun consumeDraws(): Int = draws.getAndSet(0)
 
     /** Calibrate only the physical object currently nearest the camera center. */
     fun calibrateDistance(feet: Float): String {
@@ -52,16 +65,34 @@ class TrackingOverlayView(context: Context) : View(context) {
     }
 
     fun updateFrame(frame: FrameDetections) {
+        if (frame.sequence < shownSequence) return
+        shownSequence = frame.sequence
         latest = frame
         receivedAt = SystemClock.elapsedRealtime()
-        val ids = frame.boxes.map { it.trackId }.toSet()
-        smoothBoxes.keys.retainAll(ids)
+        frameAgeMs = if (frame.capturedAtMs <= 0L) 0 else {
+            (receivedAt - frame.capturedAtMs).toInt().coerceAtLeast(0)
+        }
+        if (frame.boxes.isNotEmpty()) boxUpdates.incrementAndGet()
+        removeCallbacks(expire)
+        if (frame.boxes.isNotEmpty()) postDelayed(expire, 700L)
+        invalidate()
+    }
+
+    /** Drops boxes when motion expires, without letting an older clear beat a newer frame. */
+    fun clearUpTo(sequence: Long) {
+        if (sequence < shownSequence) return
+        shownSequence = sequence
+        latest = null
+        frameAgeMs = 0
+        removeCallbacks(expire)
         invalidate()
     }
 
     fun clear() {
         latest = null
-        smoothBoxes.clear()
+        shownSequence = Long.MIN_VALUE
+        frameAgeMs = 0
+        removeCallbacks(expire)
         // A restarted camera session must be calibrated again.
         distanceEstimator.clear()
         invalidate()
@@ -69,23 +100,12 @@ class TrackingOverlayView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        draws.incrementAndGet()
         val frame = latest ?: return
         if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
-        // Fail closed: don't leave stale boxes floating over other apps.
-        if (SystemClock.elapsedRealtime() - receivedAt > 1300L) {
-            clear()
-            return
-        }
         for (observation in frame.boxes) {
-            val desired = CoverGeometry.project(frame.width, frame.height, width, height, observation)
-            val current = smoothBoxes.getOrPut(observation.trackId) {
-                RectF(desired.left, desired.top, desired.right, desired.bottom)
-            }
-            // Visual interpolation reduces jumps; it does NOT create new detections.
-            current.left += (desired.left - current.left) * 0.40f
-            current.top += (desired.top - current.top) * 0.40f
-            current.right += (desired.right - current.right) * 0.40f
-            current.bottom += (desired.bottom - current.bottom) * 0.40f
+            val current = CoverGeometry.project(frame.width, frame.height, width, height, observation)
+                .let { RectF(it.left, it.top, it.right, it.bottom) }
 
             val color = when (observation.kind) {
                 "hand" -> 0xFFFFB300.toInt()
@@ -116,8 +136,6 @@ class TrackingOverlayView(context: Context) : View(context) {
                 }
             }
         }
-        // Smooth drawing on the display even while the detector processes its next frame.
-        postInvalidateDelayed(16L)
     }
 
     private fun dp(value: Float) = value * resources.displayMetrics.density
