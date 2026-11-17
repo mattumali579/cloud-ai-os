@@ -73,3 +73,16 @@ in-place update over a differently signed v0.3 installation. The original privat
 signing key cannot be recovered from an APK. A stable signer is required before
 we can promise seamless updates; if the old private key is lost, a one-time
 signing migration is unavoidable. Never publish a signing keystore.
+
+
+## Future automatic updates (v0.5+)
+
+- Keep the exact Android package ID `com.mattumali.visortracker.stream`.
+- Sign each shipped version using the SAME private Android signing key (protected GitHub Actions secrets).
+- A GitHub Actions tag `visor-tracker-vN` (N = Android `versionCode`) publishes an APK asset named `Visor-Fast-Tracking.apk` to the public GitHub Release **only after Android tests pass** and stable signing is configured.
+- The app has a built-in updater: on app launch and periodically on **unmetered Wi-Fi**, it queries only published `visor-tracker-vN` releases, verifies the APK size, optional GitHub SHA-256 digest, package identity, versionCode, and lets Android PackageInstaller verify the signature. It never accepts an APK with a different package ID.
+- One-time: enable **Allow from this source** in Android settings when prompted. The app requests Android's supported self-update without user interaction, but will display a system approval notification if Samsung requires confirmation. No root, USB, separate updater APK, or arbitrary Android permission bypass.
+- Automatic updates are toggleable in the Tracker app. The updater delays installation while tracking is active to avoid interrupting Live View. Android may defer periodic checks for network and battery.
+- **One-time migration only**: installed v0.3 was signed with a lost ephemeral debug key. A v0.5+ package built with a different permanent key cannot install over v0.3; the old APK must be replaced once. After that use only the permanent signing key, never reinstall for routine updates.
+
+Security: GitHub Releases must be created from tested source and the protected signing key must NEVER be committed to the repository or bundled inside the APK. GitHub Releases from other components of cloud-ai-os are ignored by the Tracker updater.
