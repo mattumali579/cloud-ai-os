@@ -71,6 +71,16 @@ jobs:
           VISOR_SIGNING_KEY_ALIAS: ${{ secrets.VISOR_TRACKER_KEY_ALIAS }}
           VISOR_SIGNING_KEY_PASSWORD: ${{ secrets.VISOR_TRACKER_KEY_PASSWORD }}
         run: gradle --no-daemon assembleRelease testDebugUnitTest
+      - name: Verify the stable signing certificate on tagged releases
+        if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
+        working-directory: experiments/visor-tracker-android
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          digest=$("${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --print-certs "$apk" \
+            | sed -n 's/.*SHA-256 digest: *//p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          test "$digest" = "afb36d6baa0eb0b14e038ea7b141bc92662350bdfdf9be30151bb7d759a02308"
+          echo "Stable signer SHA-256 matches the installed Tracker certificate"
       - uses: actions/upload-artifact@v4
         with:
           name: visor-tracker-apk
@@ -135,7 +145,7 @@ jobs:
             adb wait-for-device
             adb install /tmp/Visor-Fast-Tracking.apk
             adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
-            if unzip -l /tmp/new-tracker/app-release.apk | grep -q 'lib/x86_64/'; then adb install /tmp/new-tracker/app-release.apk; adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'; adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=11'; else echo "Release APK is arm64-only for the S22 Ultra. The x86 emulator cannot install it."; unzip -l /tmp/new-tracker/app-release.apk | grep 'lib/arm64-v8a/'; fi
+            if unzip -l /tmp/new-tracker/app-release.apk | grep -q 'lib/x86_64/'; then adb install /tmp/new-tracker/app-release.apk; adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'; adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=[1-9]'; else echo "Release APK is arm64-only for the S22 Ultra. The x86 emulator cannot install it."; unzip -l /tmp/new-tracker/app-release.apk | grep 'lib/arm64-v8a/'; fi
             echo "PASS: legacy package still installs, and the release APK is the arm64 phone build"
 
   publish-release:
@@ -144,6 +154,7 @@ jobs:
     needs: [build-and-test, install-android16-with-legacy-present]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Download the tested release APK
         uses: actions/download-artifact@v4
         with:
@@ -152,10 +163,39 @@ jobs:
       - name: Publish stable signed update to GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY}"
+          TAG="${GITHUB_REF_NAME}"
+          APK="${RUNNER_TEMP}/Visor-Fast-Tracking.apk"
           test -f /tmp/new-tracker/app-release.apk
-          cp /tmp/new-tracker/app-release.apk "$RUNNER_TEMP/Visor-Fast-Tracking.apk"
-          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/Visor-Fast-Tracking.apk" \
-            --title "Visor Fast Tracking ${GITHUB_REF_NAME#visor-tracker-v}" \
-            --notes "Signed arm64 release for the S22 Ultra. Same Tracker app and signing certificate. It does not install other packages, so Play Protect can finish scanning it. Delete the older download first."
+          cp /tmp/new-tracker/app-release.apk "$APK"
+          # Run 44105775371 built and tested v11, then `gh release create` failed
+          # because that job had no git checkout. Attach that artifact to the
+          # existing tag. Do not move or delete visor-tracker-v11.
+          if ! gh release view visor-tracker-v11 --repo "$REPO" >/dev/null 2>&1; then
+            if gh run download 44105775371 --repo "$REPO" -n visor-tracker-apk -D "${RUNNER_TEMP}/v11"; then
+              v11apk=$(find "${RUNNER_TEMP}/v11" -name '*.apk' | head -1)
+              if [ -n "${v11apk:-}" ]; then
+                mkdir -p "${RUNNER_TEMP}/v11-publish"
+                cp "$v11apk" "${RUNNER_TEMP}/v11-publish/Visor-Fast-Tracking.apk"
+                gh release create visor-tracker-v11 "${RUNNER_TEMP}/v11-publish/Visor-Fast-Tracking.apk" \
+                  --repo "$REPO" \
+                  --title "Visor Fast Tracking 11" \
+                  --notes "Signed arm64 build tested in Actions run 44105775371. Publishing failed because gh had no git checkout. This attaches that artifact to the existing tag and does not move the tag." \
+                  || echo "Could not attach the existing v11 artifact; continuing with ${TAG}"
+              fi
+            else
+              echo "v11 artifact is no longer downloadable; tag visor-tracker-v11 stays without a Release asset"
+            fi
+          fi
+          NOTES="Signed arm64 release for the S22 Ultra. Same package com.mattumali.visortracker.stable and the same signing certificate. One calibrated object shows an approximate distance. Up to five boxes. No depth sensor. It does not install other packages."
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" "$APK" --repo "$REPO" \
+              --title "Visor Fast Tracking ${TAG#visor-tracker-v}" \
+              --notes "$NOTES"
+          fi
           echo "Published signed Tracker APK as a public GitHub Release" >> "$GITHUB_STEP_SUMMARY"
