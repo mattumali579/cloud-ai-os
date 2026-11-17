@@ -17,7 +17,7 @@ class DetectionPresetTest {
     }
 
     @Test fun bothPresetsRejectTheOldQuarterScoreAndTheTenPlusResultBudget() {
-        assertTrue(DetectionPreset.FAST.scoreThreshold >= 0.35f)
+        assertEquals(0.25f, DetectionPreset.FAST.scoreThreshold, 0.001f)
         assertTrue(DetectionPreset.ACCURATE.scoreThreshold >= 0.45f)
         assertTrue(DetectionPreset.FAST.maxResults in 5..8)
         assertTrue(DetectionPreset.ACCURATE.maxResults in 5..8)

@@ -17,6 +17,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.22: let the first detection finish and show any returned box
+
+Version code 22. The phone showed video at about 29 fps and zero detector passes. Object detection now runs on the CPU delegate so that first pass is not left on a device delegate that never returns. Every box EfficientDet-Lite0 returns is drawn. A weak name is `object`. The model still cannot box something it does not recognize.
+
 ## Version 0.21: draw a real detection and keep it through a short miss
 
 Version code 21. Fast mode accepts EfficientDet-Lite0 scores from 0.35, and a weak name is drawn as `object` instead of being deleted. An empty motion result cannot erase a box for 2 seconds. The corner reads `det`, `pub`, and `drw`: detector objects, published boxes, and boxes in onDraw. `adb logcat -s VisorTracker:I` prints `detect` and `publish`.

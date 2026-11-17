@@ -12,7 +12,7 @@ package com.mattumali.visortracker
 data class CategoryScore(val name: String, val score: Float)
 
 object LabelPolicy {
-    const val MIN_SCORE = 0.30f
+    const val MIN_SCORE = 0.25f
     const val UNCERTAIN = "object"
     private const val AMBIGUITY_MARGIN = 0.15f
 

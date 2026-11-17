@@ -15,6 +15,7 @@ class OverlayDiagnosticsTest {
         cameraGranted = true,
         liveConnected = true,
         framesReceived = 30,
+        grayFrames = 30,
         inferencesCompleted = 4,
         rawDetections = 0,
         freshBoxes = 0,
@@ -83,6 +84,13 @@ class OverlayDiagnosticsTest {
         })
         assertEquals(OverlayHop.NO_CAMERA_FRAMES, diagnosis.hop)
         assertEquals(OverlayDiagnostics.CODE_NO_FRAMES, diagnosis.code)
+    }
+
+    @Test fun aRunningFirstPassIsNotZeroObjects() {
+        val diagnosis = OverlayDiagnostics.diagnose(live {
+            copy(inferencesCompleted = 0, rawDetections = 0, detectorBusy = true)
+        })
+        assertEquals(OverlayHop.DETECTOR_RUNNING, diagnosis.hop)
     }
 
     @Test fun framesBeforeTheFirstInferenceAreNotZeroObjects() {

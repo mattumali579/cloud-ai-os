@@ -6,8 +6,8 @@ import org.junit.Test
 
 class LabelPolicyTest {
     @Test fun scoresUnderTheFloorAreOmitted() {
-        assertEquals("object", LabelPolicy.resolve(listOf(CategoryScore("cup", 0.30f))))
-        assertNull(LabelPolicy.resolve(listOf(CategoryScore("laptop", 0.25f))))
+        assertEquals("object", LabelPolicy.resolve(listOf(CategoryScore("cup", 0.25f))))
+        assertNull(LabelPolicy.resolve(listOf(CategoryScore("laptop", 0.20f))))
     }
 
     @Test fun confidentPhoneStaysPhone() {

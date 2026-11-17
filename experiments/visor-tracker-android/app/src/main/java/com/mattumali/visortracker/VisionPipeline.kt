@@ -6,6 +6,7 @@ import android.graphics.RectF
 import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facedetector.FaceDetector
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
@@ -45,7 +46,12 @@ class VisionPipeline(
         objects = ObjectDetector.createFromOptions(
             app,
             ObjectDetector.ObjectDetectorOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath(preset.modelAsset).build())
+                .setBaseOptions(
+                    BaseOptions.builder()
+                        .setModelAssetPath(preset.modelAsset)
+                        .setDelegate(Delegate.CPU)
+                        .build()
+                )
                 .setRunningMode(RunningMode.IMAGE)
                 .setMaxResults(preset.maxResults)
                 .setScoreThreshold(preset.scoreThreshold)

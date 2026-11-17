@@ -64,7 +64,7 @@ class LabelEvaluationTest {
             CategoryScore("cell phone", 0.58f),
         )))
         assertEquals("object", LabelPolicy.resolve(listOf(CategoryScore("scissors", 0.55f))))
-        assertNull(LabelPolicy.resolve(listOf(CategoryScore("laptop", 0.25f))))
+        assertEquals("object", LabelPolicy.resolve(listOf(CategoryScore("laptop", 0.25f))))
     }
 
     @Test fun uncertainLaptopFramesDoNotRenameAPhone() {

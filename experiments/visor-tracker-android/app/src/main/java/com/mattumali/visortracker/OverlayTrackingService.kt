@@ -62,6 +62,8 @@ class OverlayTrackingService : Service() {
     private val decodedFrames = AtomicInteger(0)
     private val inferenceFrames = AtomicInteger(0)
     private val totalFrames = AtomicInteger(0)
+    private val grayFrames = AtomicInteger(0)
+    private val detectorBusy = AtomicBoolean(false)
     private val totalInferences = AtomicInteger(0)
     private val rawDetections = AtomicInteger(0)
     private val stages = StageTimings()
@@ -228,6 +230,7 @@ class OverlayTrackingService : Service() {
                     }
                     if (gray != null) stages.record("g", SystemClock.elapsedRealtime() - grayStarted)
                     if (gray != null) {
+                        grayFrames.incrementAndGet()
                         handoff.offer(gray)
                         scheduleMotion()
                     }
@@ -239,6 +242,7 @@ class OverlayTrackingService : Service() {
                         lastOfferedAtMs = now
                         try {
                             val snapshot = YuvSnapshot.capture(image)
+                            detectorBusy.set(true)
                             worker.execute {
                                 var bitmap: Bitmap? = null
                                 try {
@@ -273,10 +277,12 @@ class OverlayTrackingService : Service() {
                                 } finally {
                                     snapshot.releasePlanes()
                                     YuvSnapshot.recycleDetached(bitmap)
+                                    detectorBusy.set(false)
                                     processing.set(false)
                                 }
                             }
                         } catch (error: Exception) {
+                            detectorBusy.set(false)
                             processing.set(false)
                             report("Hardware frame conversion failed: " + (error.message ?: "unknown"))
                         }
@@ -475,6 +481,8 @@ class OverlayTrackingService : Service() {
             cameraGranted = cameraGranted,
             liveConnected = liveConnected,
             framesReceived = totalFrames.get(),
+            grayFrames = grayFrames.get(),
+            detectorBusy = detectorBusy.get(),
             inferencesCompleted = totalInferences.get(),
             rawDetections = rawDetections.get(),
             freshBoxes = lastBoxCount,

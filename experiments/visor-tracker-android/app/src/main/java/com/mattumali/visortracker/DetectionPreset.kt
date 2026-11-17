@@ -19,9 +19,10 @@ enum class DetectionPreset(
     val scoreThreshold: Float,
     val maxResults: Int,
 ) {
-    // 0.50 on Lite0 returned no boxes for ordinary glasses video. 0.35 still
-    // rejects the old 0.25 flood and leaves the name policy to say "object".
-    FAST("efficientdet_lite0.tflite", 384, 0.35f, 8),
+    // Any box Lite0 returns is shown. A weak name is drawn as "object".
+    // This model still only knows its trained classes. It cannot invent a box
+    // for something it does not see.
+    FAST("efficientdet_lite0.tflite", 384, 0.25f, 8),
     ACCURATE("efficientdet_lite2.tflite", 512, 0.45f, 8);
 
     companion object {

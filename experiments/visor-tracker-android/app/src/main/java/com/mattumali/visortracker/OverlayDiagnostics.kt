@@ -15,6 +15,8 @@ enum class OverlayHop {
     CONNECTING,
     NO_CAMERA_FRAMES,
     WAITING_FOR_DETECTOR,
+    DETECTOR_RUNNING,
+    NO_GRAY,
     BOXES_HIDDEN,
     ZERO_OBJECTS,
     TRACKING,
@@ -32,6 +34,8 @@ data class OverlaySnapshot(
     val cameraGranted: Boolean? = null,
     val liveConnected: Boolean = false,
     val framesReceived: Int = 0,
+    val grayFrames: Int = 0,
+    val detectorBusy: Boolean = false,
     val inferencesCompleted: Int = 0,
     val rawDetections: Int = 0,
     val freshBoxes: Int = 0,
@@ -106,6 +110,20 @@ object OverlayDiagnostics {
                 OverlayHop.NO_CAMERA_FRAMES,
                 CODE_NO_FRAMES,
                 "camera.live is connected and the decoder has 0 frames",
+            )
+        }
+        if (snapshot.grayFrames <= 0) {
+            return OverlayDiagnosis(
+                OverlayHop.NO_GRAY,
+                "NO GRAY FRAME",
+                "Video frames arrived but grayscale capture produced 0",
+            )
+        }
+        if (snapshot.inferencesCompleted <= 0 && snapshot.detectorBusy) {
+            return OverlayDiagnosis(
+                OverlayHop.DETECTOR_RUNNING,
+                "DETECTOR RUNNING",
+                "The first object pass has started and has not returned yet",
             )
         }
         if (snapshot.rawDetections > 0) {
