@@ -145,12 +145,5 @@ jobs:
             adb wait-for-device
             adb install /tmp/Visor-Fast-Tracking.apk
             adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
-            if unzip -l /tmp/new-tracker/app-release.apk | grep -q 'lib/x86_64/'; then
-              adb install /tmp/new-tracker/app-release.apk
-              adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'
-              adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=10'
-            else
-              echo "Release APK is arm64-only for the S22 Ultra. The x86 emulator cannot install it."
-              unzip -l /tmp/new-tracker/app-release.apk | grep 'lib/arm64-v8a/'
-            fi
+            if unzip -l /tmp/new-tracker/app-release.apk | grep -q 'lib/x86_64/'; then adb install /tmp/new-tracker/app-release.apk; adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'; adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=10'; else echo "Release APK is arm64-only for the S22 Ultra. The x86 emulator cannot install it."; unzip -l /tmp/new-tracker/app-release.apk | grep 'lib/arm64-v8a/'; fi
             echo "PASS: legacy package still installs, and the release APK is the arm64 phone build"
