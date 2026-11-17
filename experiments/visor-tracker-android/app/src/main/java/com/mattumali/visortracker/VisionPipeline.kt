@@ -30,9 +30,11 @@ data class FrameDetections(
 class VisionPipeline(
     context: Context,
     private val includeHandsFaces: Boolean = true,
-    private val preset: DetectionPreset = DetectionPreset.FAST
+    private val preset: DetectionPreset = DetectionPreset.FAST,
+    private val lockedTrackId: () -> Int? = { null },
 ) : AutoCloseable {
     private val tracks = TrackIds()
+    private val nearby = NearbyCandidates()
     private val objects: ObjectDetector
     private val hands: HandLandmarker?
     private val faces: FaceDetector?
@@ -84,12 +86,12 @@ class VisionPipeline(
             val image = BitmapImageBuilder(resized).build()
             val observed = mutableListOf<BoxObservation>()
             objects.detect(image).detections().forEach { detection ->
-                val category = detection.categories().maxByOrNull { it.score() }
-                if (category != null) {
-                    observed += detection.boundingBox().box(
-                        "object", category.categoryName().ifBlank { "object" }, category.score()
-                    )
+                val categories = detection.categories().map { category ->
+                    CategoryScore(category.categoryName().orEmpty(), category.score())
                 }
+                val label = LabelPolicy.resolve(categories) ?: return@forEach
+                val score = categories.maxOfOrNull { it.score } ?: return@forEach
+                observed += detection.boundingBox().box("object", label, score)
             }
 
             // Expensive models are staggered: object detection stays the priority.
@@ -115,8 +117,10 @@ class VisionPipeline(
             frameNumber++
             observed += recentHands
             observed += recentFaces
+            val tracked = tracks.update(observed)
+            val visible = nearby.select(width, height, tracked, lockedTrackId())
             // copy avoids mutations of cached detection objects after delivery to the UI.
-            return FrameDetections(width, height, tracks.update(observed).map { it.copy(points = it.points.toList()) })
+            return FrameDetections(width, height, visible.map { it.copy(points = it.points.toList()) })
         } catch (error: Exception) {
             Log.e(TAG, "MediaPipe detection failed", error)
             throw error

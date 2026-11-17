@@ -10,12 +10,20 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 - User grants `Scope.CAMERA` from Visor's consent screen; no Developer Mode token or separate local server needed.
 - `Visor.camera.live(LiveConfig { quality = LOW; frameRate = 30; audio = false })` joins the existing stream when one runs. On a new stream, 30 FPS is **requested**, not guaranteed. Visor picks the actual rate and size when Live View was already running.
 - `LiveVideoDecoder` decodes HEVC/H.264 on Android MediaCodec, returning hardware-decoded YUV frames. `YuvSnapshot` copies selected frames to bounded 384px (Fast) or 512px (Higher accuracy) RGB for MediaPipe without blocking the video decoder.
-- Object detection: **Fast mode** (EfficientDet-Lite0, 320×320 model) or **Higher accuracy** (EfficientDet-Lite2, 448×448 model). Both run within the same app package. Optional hands and faces are staggered. Slow AI frames are dropped rather than queued. The detector's maximum requested cadence is approximately 15 Hz, but inference may be slower on hardware.
+- Object detection: **Fast mode** (EfficientDet-Lite0, 320×320 model, score floor 0.50, up to 8 candidates) or **Higher accuracy** (EfficientDet-Lite2, 448×448 model, score floor 0.45, up to 8 candidates). The overlay draws at most **five** of those candidates. Optional hands and faces are staggered and cannot take an object slot while five objects are shown. Slow AI frames are dropped rather than queued. The detector's maximum requested cadence is approximately 15 Hz, but inference may be slower on hardware.
 - `MotionTracker` uses inexpensive grayscale block matching to follow box motion on intervening decoded frames, bounded to avoid stale boxes. This is lightweight image tracking, **not** 30 AI detections per second.
 - `TrackingOverlayView` draws transparent boxes with cover/crop transform matching Visor's expanded Live View. The Android user-started foreground service keeps tracking alive during app switching; the Stop notification terminates it.
-- The notification displays measured **video FPS, AI FPS, box/tracking FPS**, and detection count. Results depend on heat, camera quality, movement and phone hardware.
+- The notification displays measured **video FPS, AI FPS, fresh box FPS, draw FPS, box age, 95th-percentile age, and dropped frames**. Results depend on heat, camera quality, movement and phone hardware.
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
+
+## Version 0.11: five nearby candidates, stabler names, same calibration
+
+The overlay draws at most five object boxes. The on-screen caption is **5 nearby candidates (visual estimate)**. That rank is not measured distance: one forward camera and one manual calibration cannot assign feet to five objects of different real sizes. Lower in the frame is treated as more likely to be near the wearer, and apparent size is compared only within the same label. Membership stays put unless a newcomer leads for several frames. The calibrated track keeps its slot while it is still tracked.
+
+Unsure names are drawn as `object`. A phone/laptop near-tie, a weak laptop score, or a middling scissors score (the COCO stand-in when the model has no glasses class) is not promoted. A specific label already on a track is not erased by those uncertain frames. Feet still use `D = D0 × (h0 / h)` for that one track id only. If the id leaves the frame, the overlay says distance is unavailable and does not give the old calibration to a neighbor.
+
+Same package `com.mattumali.visortracker.stable`, same signing configuration, versionCode 11. Fast mode stays EfficientDet-Lite0. Physical Live View FPS on the Galaxy S22 Ultra is not measured in CI.
 
 ## Version 0.10: Play Protect can finish the scan
 

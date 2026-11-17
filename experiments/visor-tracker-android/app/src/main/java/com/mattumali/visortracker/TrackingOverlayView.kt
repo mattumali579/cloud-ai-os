@@ -64,6 +64,8 @@ class TrackingOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
+    fun selectedTrackId(): Int? = distanceEstimator.selectedTrackId()
+
     fun updateFrame(frame: FrameDetections) {
         if (frame.sequence < shownSequence) return
         shownSequence = frame.sequence
@@ -102,6 +104,10 @@ class TrackingOverlayView(context: Context) : View(context) {
         super.onDraw(canvas)
         draws.incrementAndGet()
         val frame = latest ?: return
+        canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(22f), text)
+        if (distanceEstimator.readiness(frame.boxes) == DistanceReadiness.STALE) {
+            canvas.drawText("distance unavailable", dp(12f), dp(42f), text)
+        }
         if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
         for (observation in frame.boxes) {
             val current = CoverGeometry.project(frame.width, frame.height, width, height, observation)

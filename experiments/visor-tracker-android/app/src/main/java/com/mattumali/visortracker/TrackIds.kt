@@ -69,7 +69,10 @@ class TrackIds(
             matchedTracks += track.id
             matchedObservationIndexes += index
             val observation = observations[index]
-            if (track.label == observation.label) {
+            // "object" is missing category evidence from LabelPolicy, not a new
+            // name. It must not accumulate toward a rename, and it must not
+            // replace a specific label such as "cell phone".
+            if (track.label == observation.label || observation.label == LabelPolicy.UNCERTAIN) {
                 track.pendingLabel = null
                 track.pendingCount = 0
             } else {

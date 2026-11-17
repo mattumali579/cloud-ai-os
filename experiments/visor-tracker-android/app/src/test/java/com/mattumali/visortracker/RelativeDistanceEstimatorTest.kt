@@ -46,6 +46,30 @@ class RelativeDistanceEstimatorTest {
         assertNull(estimator.estimate(300, box()))
     }
 
+    @Test fun labelChangeAndReorderDoNotMoveCalibrationOntoAnotherTrack() {
+        val estimator = RelativeDistanceEstimator()
+        val target = box()
+        val other = box(id = 8, x = 20f)
+        assertTrue(estimator.calibrate(frame(other, target), 6f).contains("Distance locked"))
+        assertEquals(4, estimator.selectedTrackId())
+        val relabeled = target.copy(label = "couch")
+        assertEquals(6f, estimator.estimate(300, relabeled)!!, 0.01f)
+        assertEquals(4, estimator.selectedTrackId())
+        assertNull(estimator.estimate(300, other))
+        assertEquals(DistanceReadiness.LIVE, estimator.readiness(listOf(other, relabeled)))
+    }
+
+    @Test fun missingTargetStaysStaleInsteadOfAdoptingANeighbor() {
+        val estimator = RelativeDistanceEstimator()
+        estimator.calibrate(frame(box()), 8f)
+        assertEquals(DistanceReadiness.STALE, estimator.readiness(emptyList()))
+        assertNull(estimator.estimate(300, box(id = 15, height = 180f)))
+        assertEquals(4, estimator.selectedTrackId())
+        assertEquals(DistanceReadiness.LIVE, estimator.readiness(listOf(box(height = 50f))))
+        repeat(12) { estimator.estimate(300, box(height = 50f)) }
+        assertEquals(16f, estimator.estimate(300, box(height = 50f))!!, 0.15f)
+    }
+
     @Test fun ignoresUnreliableTinyBoundingBox() {
         val estimator = RelativeDistanceEstimator()
         assertTrue(estimator.calibrate(frame(box(height = 10f)), 6f)

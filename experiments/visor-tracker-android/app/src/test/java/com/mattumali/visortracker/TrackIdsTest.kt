@@ -53,6 +53,31 @@ class TrackIdsTest {
         assertEquals(0, tracker.update(emptyList()).size)
     }
 
+    @Test fun phoneDoesNotBecomeLaptopOnASingleFrame() {
+        val tracker = TrackIds()
+        val phone = BoxObservation("object", "cell phone", .9f, 10f, 10f, 70f, 90f)
+        tracker.update(listOf(phone))
+        val shown = tracker.update(listOf(
+            BoxObservation("object", "laptop", .7f, 12f, 12f, 72f, 92f)
+        ))
+        assertEquals(phone.trackId, shown.first().trackId)
+        assertEquals("cell phone", shown.first().label)
+    }
+
+    @Test fun uncertainFramesDoNotReplacePhoneEvenAfterRepeatedHits() {
+        val tracker = TrackIds()
+        val phone = BoxObservation("object", "cell phone", .85f, 10f, 10f, 80f, 80f)
+        tracker.update(listOf(phone))
+        var shown = listOf(phone)
+        repeat(4) {
+            shown = tracker.update(listOf(
+                BoxObservation("object", "object", .55f, 11f, 11f, 81f, 81f)
+            ))
+        }
+        assertEquals(phone.trackId, shown.first().trackId)
+        assertEquals("cell phone", shown.first().label)
+    }
+
     @Test fun expiresTracksAfterMissWindow() {
         val tracker = TrackIds(maxMissedFrames = 1)
         val first = BoxObservation("object", "cup", .9f, 0f, 0f, 20f, 20f)

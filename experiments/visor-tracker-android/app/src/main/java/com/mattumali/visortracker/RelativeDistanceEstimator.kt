@@ -12,9 +12,16 @@ import kotlin.math.max
  *
  * NOT a depth sensor: rotating, tilting, occluding, or relabeling an object
  * can change the bounding box and invalidate this rough estimate.
+ *
+ * The lock is the track id. Reordering boxes or a temporary category flicker
+ * does not move the calibration onto another item. If that id leaves the
+ * frame, readiness is [DistanceReadiness.STALE] and no other box inherits
+ * the feet value.
  */
+enum class DistanceReadiness { UNCALIBRATED, LIVE, STALE }
+
 class RelativeDistanceEstimator {
-    private var selectedId: Int? = null
+    @Volatile private var selectedId: Int? = null
     private var originalHeightFraction = 0f
     private var originalFeet = 0f
     private var smoothedFeet: Float? = null
@@ -70,6 +77,17 @@ class RelativeDistanceEstimator {
         val next = if (previous == null) raw else previous + (raw - previous) * 0.35f
         smoothedFeet = max(0.5f, next)
         return smoothedFeet
+    }
+
+    fun selectedTrackId(): Int? = selectedId
+
+    fun readiness(boxes: List<BoxObservation>): DistanceReadiness {
+        val id = selectedId ?: return DistanceReadiness.UNCALIBRATED
+        return if (boxes.any { it.kind == "object" && it.trackId == id }) {
+            DistanceReadiness.LIVE
+        } else {
+            DistanceReadiness.STALE
+        }
     }
 
     fun clear() {

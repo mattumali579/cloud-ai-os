@@ -15,4 +15,12 @@ class DetectionPresetTest {
         assertEquals("efficientdet_lite2.tflite", DetectionPreset.ACCURATE.modelAsset)
         assertTrue(DetectionPreset.ACCURATE.maxFrameWidth > DetectionPreset.FAST.maxFrameWidth)
     }
+
+    @Test fun bothPresetsRejectTheOldQuarterScoreAndTheTenPlusResultBudget() {
+        assertTrue(DetectionPreset.FAST.scoreThreshold >= 0.45f)
+        assertTrue(DetectionPreset.ACCURATE.scoreThreshold >= 0.45f)
+        assertTrue(DetectionPreset.FAST.maxResults in 5..8)
+        assertTrue(DetectionPreset.ACCURATE.maxResults in 5..8)
+        assertEquals("efficientdet_lite0.tflite", DetectionPreset.FAST.modelAsset)
+    }
 }
