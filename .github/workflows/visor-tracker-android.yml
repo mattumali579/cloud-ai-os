@@ -94,7 +94,8 @@ jobs:
       - name: Validate migration script using Windows PowerShell 5.1 parser
         shell: powershell
         run: |
-          $path = "experiments/visor-tracker-android/scripts/Migrate-VisorTracker.ps1"
+          $paths = @("experiments/visor-tracker-android/scripts/Migrate-VisorTracker.ps1", "experiments/visor-tracker-android/scripts/Diagnose-PhoneInstall-WiFi.ps1")
+          foreach ($path in $paths) {
           $tokens = $null
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors) | Out-Null
@@ -102,4 +103,5 @@ jobs:
             $errors | Format-List -Force
             throw "Migration script has PowerShell syntax errors."
           }
-          Write-Host "Migration script: PowerShell 5.1 syntax valid."
+          Write-Host "$path syntax valid on Windows PowerShell 5.1."
+          }
