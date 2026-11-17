@@ -89,6 +89,29 @@ class MainActivity : ComponentActivity() {
             }
         }
         root.addView(accurate)
+        root.addView(CheckBox(this).apply {
+            text = "Automatic signed updates (Wi-Fi, no USB or manual APK downloads)"
+            isChecked = TrackerUpdater.enabled(this@MainActivity)
+            setOnCheckedChangeListener { _, enabled ->
+                TrackerUpdater.configure(this@MainActivity, enabled)
+                if (enabled && android.os.Build.VERSION.SDK_INT >= 26 &&
+                    !packageManager.canRequestPackageInstalls()) {
+                    startActivity(Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + packageName)
+                    ))
+                }
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "CHECK FOR UPDATES NOW"
+            setOnClickListener {
+                status.text = "Checking signed GitHub releases..."
+                TrackerUpdater.checkInBackground(this@MainActivity) { message ->
+                    runOnUiThread { if (::status.isInitialized) status.text = message }
+                }
+            }
+        })
         root.addView(Button(this).apply {
             text = "3. START FAST OVERLAY"
             setOnClickListener { startOverlay() }
@@ -107,7 +130,8 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(status)
         root.addView(TextView(this).apply {
-            text = "For fewer app switches: add the Visor Tracker Quick Settings tile " +
+            text = "Automatic updates use the same signed app, with Android approval if required. " +
+                "For fewer app switches: add the Visor Tracker Quick Settings tile " +
                 "(swipe down twice > Edit > add Visor Tracker). Open Live View first, " +
                 "then toggle tracking from Quick Settings. " +
                 "The selected accuracy mode takes effect on the next start. " +
@@ -119,6 +143,14 @@ class MainActivity : ComponentActivity() {
             textSize = 13f
         })
         setContentView(scroll)
+        TrackerUpdater.schedule(this)
+        if (TrackerUpdater.enabled(this)) {
+            TrackerUpdater.checkInBackground(this) { message ->
+                runOnUiThread {
+                    if (::status.isInitialized) status.text = message
+                }
+            }
+        }
     }
 
     override fun onResume() {
