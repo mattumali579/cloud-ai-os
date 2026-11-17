@@ -46,6 +46,7 @@ class TrackingOverlayView(context: Context) : View(context) {
     private val boxUpdates = AtomicInteger(0)
     private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
+    private val nearby = NearbyCandidates()
     private var probeLines: List<String> = emptyList()
     @Volatile var frameAgeMs: Int = 0
         private set
@@ -86,25 +87,37 @@ class TrackingOverlayView(context: Context) : View(context) {
 
     fun notificationDistance(): String = distanceEstimator.shortStatus(latest?.boxes.orEmpty())
 
+    /**
+     * Sees every detector object, including ones that are not the drawn box,
+     * so a held point at a new center can switch the lock.
+     */
+    fun observeCandidates(frame: FrameDetections): String? {
+        val note = distanceEstimator.observe(frame)
+        if (note != null) invalidate()
+        return note
+    }
+
     fun updateFrame(frame: FrameDetections): String? {
         if (frame.sequence < shownSequence) return null
         val previous = latest
         shownSequence = frame.sequence
-        latest = frame
+        val picked = nearby.select(
+            frame.width, frame.height, frame.boxes, distanceEstimator.selectedTrackId(),
+        )
+        val display = if (picked.isEmpty()) frame else frame.copy(boxes = picked)
+        latest = display
         receivedAt = SystemClock.elapsedRealtime()
-        frameAgeMs = if (frame.capturedAtMs <= 0L) 0 else {
-            (receivedAt - frame.capturedAtMs).toInt().coerceAtLeast(0)
+        frameAgeMs = if (display.capturedAtMs <= 0L) 0 else {
+            (receivedAt - display.capturedAtMs).toInt().coerceAtLeast(0)
         }
         val previousBoxes = previous?.boxes.orEmpty()
-        val moved = BoxMotion.positionsChanged(previousBoxes, frame.boxes)
-        val cleared = frame.boxes.isEmpty() && previousBoxes.isNotEmpty()
+        val moved = BoxMotion.positionsChanged(previousBoxes, display.boxes)
+        val cleared = display.boxes.isEmpty() && previousBoxes.isNotEmpty()
         if (moved) boxUpdates.incrementAndGet()
         removeCallbacks(expire)
-        if (frame.boxes.isNotEmpty()) postDelayed(expire, 700L)
+        if (display.boxes.isNotEmpty()) postDelayed(expire, 700L)
         if (moved || cleared || previous == null) invalidate()
-        val note = distanceEstimator.observe(frame)
-        if (note != null) invalidate()
-        return note
+        return null
     }
 
     /** Drops boxes when motion expires, without letting an older clear beat a newer frame. */

@@ -31,10 +31,8 @@ class VisionPipeline(
     context: Context,
     private val includeHandsFaces: Boolean = false,
     private val preset: DetectionPreset = DetectionPreset.FAST,
-    private val lockedTrackId: () -> Int? = { null },
 ) : AutoCloseable {
     private val tracks = TrackIds()
-    private val nearby = NearbyCandidates()
     private val objects: ObjectDetector
     private val hands: HandLandmarker?
     private val faces: FaceDetector?
@@ -119,10 +117,10 @@ class VisionPipeline(
             observed += recentFaces
             // Drop grace-held rectangles before display. TrackIds still remembers
             // the id internally; painting the hold would freeze the box in place.
+            // Every live object stays in this result so the center one can be
+            // drawn and the lock can see a different object. The overlay paints one.
             val tracked = tracks.update(observed).filter { !it.held }
-            val visible = nearby.select(width, height, tracked, lockedTrackId())
-            // copy avoids mutations of cached detection objects after delivery to the UI.
-            return FrameDetections(width, height, visible.map { it.copy(points = it.points.toList()) })
+            return FrameDetections(width, height, tracked.map { it.copy(points = it.points.toList()) })
         } catch (error: Exception) {
             Log.e(TAG, "MediaPipe detection failed", error)
             throw error

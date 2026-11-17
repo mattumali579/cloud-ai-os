@@ -62,10 +62,11 @@ class NearbyCandidatesTest {
         assertNull(estimator.estimate(300, clutter.first()))
     }
 
-    @Test fun missingLockDrawsNothingInsteadOfADifferentObject() {
+    @Test fun missingLockStillDrawsTheCenterObject() {
         val selector = NearbyCandidates()
         val other = box(2, "cup", 40f, 80f, 60f, 120f)
         val shown = selector.select(100, 200, listOf(other), lockedId = 4)
-        assertTrue(shown.isEmpty())
+        assertEquals(1, shown.size)
+        assertEquals(2, shown.single().trackId)
     }
 }

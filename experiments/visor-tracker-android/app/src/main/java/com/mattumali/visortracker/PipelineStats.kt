@@ -105,7 +105,8 @@ class StageTimings {
  * Bounds for the decoder → motion handoff.
  * The live slot keeps one frame. [REBASE_HISTORY] is only for walking a slow
  * detector result forward. A result whose grayscale anchor has already fallen
- * out of that history is not painted.
+ * out of that history does not move a box that motion is already following.
+ * If nothing is showing, that detection is still painted.
  */
 object FrameBudget {
     const val MAX_GRAY_QUEUE = 6

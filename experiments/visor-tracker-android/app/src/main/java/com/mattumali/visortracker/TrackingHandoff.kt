@@ -30,13 +30,15 @@ object InferenceCadence {
  * The work slot holds one gray frame. A newer frame replaces it and counts a drop,
  * so a slow step cannot replay a backlog and present old coordinates as live.
  * [FrameBudget.REBASE_HISTORY] exists so a detector result can be walked forward
- * onto the newest gray frame. If that walk cannot follow every frame, the
- * detection itself is still drawn. A detection older than the retained
- * history is not drawn.
+ * onto the newest gray frame. If that walk cannot follow every frame, or the
+ * anchor has already left the history, the detection is still drawn when the
+ * overlay would otherwise stay empty. A live motion lock is not moved by a
+ * stale result.
  */
 class TrackingHandoff(
     val metrics: LockMetrics = LockMetrics(),
     private var tracker: MotionTracker = MotionTracker(),
+    private val display: NearbyCandidates = NearbyCandidates(),
 ) {
     private val gate = Any()
     private var pending: GrayFrame? = null
@@ -108,7 +110,10 @@ class TrackingHandoff(
         val oldest = historyCopy.firstOrNull()?.sequence
         if (!FrameBudget.anchorStillInHistory(detection.gray.sequence, oldest)) {
             metrics.onStaleDetection()
-            return null
+            // The anchor was discarded while inference ran. Dropping the result
+            // left the overlay blank, so the lock never had a box to confirm.
+            if (showing) return null
+            return publishDetached(focused, historyCopy, detection.gray, nowMs, lockedId)
         }
         val scratch = MotionTracker()
         scratch.reset(focused, detection.gray)
@@ -132,6 +137,7 @@ class TrackingHandoff(
         }
         // A failed block match used to return null, so the overlay stayed blank
         // on a real Visor stream. Draw the last boxes we could still see.
+        latest = stampLive(latest, historyCopy)
         tracker = if (followedEveryFrame) {
             scratch
         } else {
@@ -147,6 +153,34 @@ class TrackingHandoff(
         return publish(latest, nowMs, lockedId, lost = false)
     }
 
+    /** Draw a detector box that can no longer be walked onto the live frame. */
+    private fun publishDetached(
+        focused: FrameDetections,
+        historyCopy: List<GrayFrame>,
+        anchor: GrayFrame,
+        nowMs: Long,
+        lockedId: Int?,
+    ): HandoffEvent? {
+        val seed = historyCopy.lastOrNull() ?: anchor
+        val stamped = stampLive(focused, historyCopy)
+        tracker = MotionTracker().also { it.reset(stamped, seed) }
+        armed = true
+        inLoss = false
+        showing = stamped.boxes.isNotEmpty()
+        markProcessed(seed)
+        return publish(stamped, nowMs, lockedId, lost = false)
+    }
+
+    private fun stampLive(frame: FrameDetections, historyCopy: List<GrayFrame>): FrameDetections {
+        val newest = historyCopy.lastOrNull()
+        val sequence = maxOf(frame.sequence, newest?.sequence ?: frame.sequence, publishedSequence)
+        if (sequence == frame.sequence) return frame
+        return frame.copy(
+            sequence = sequence,
+            capturedAtMs = newest?.capturedAtMs ?: frame.capturedAtMs,
+        )
+    }
+
     private fun stepLive(frame: GrayFrame, nowMs: Long, lockedId: Int?): HandoffEvent? {
         markProcessed(frame)
         val step = tracker.step(frame, nowMs)
@@ -154,20 +188,12 @@ class TrackingHandoff(
         if (result == null || result.boxes.isEmpty()) {
             val firstLoss = !inLoss && (showing || step.lost)
             inLoss = true
-            if (!firstLoss) {
-                if (frame.sequence > publishedSequence) publishedSequence = frame.sequence
-                return null
-            }
-            if (step.lost) metrics.onLockLoss()
             showing = false
-            val empty = FrameDetections(
-                width = result?.width ?: frame.width,
-                height = result?.height ?: frame.height,
-                boxes = emptyList(),
-                sequence = frame.sequence,
-                capturedAtMs = frame.capturedAtMs,
-            )
-            return publish(empty, nowMs, lockedId, lost = true)
+            if (firstLoss && step.lost) metrics.onLockLoss()
+            if (frame.sequence > publishedSequence) publishedSequence = frame.sequence
+            // Publishing an empty frame replaced the detector box before onDraw.
+            // Keep the last box until the next detection or a successful track.
+            return null
         }
         if (step.reacquired) metrics.onReacquire(step.reacquireMs)
         inLoss = false
@@ -206,11 +232,22 @@ class TrackingHandoff(
     }
 
     private fun focus(detections: FrameDetections, lockedId: Int?): FrameDetections? {
-        val visible = detections.boxes.filter { !it.held }
-        if (visible.isEmpty()) return null
-        if (lockedId == null) return detections.copy(boxes = visible)
-        val locked = visible.filter { it.trackId == lockedId }
-        if (locked.isEmpty()) return null
-        return detections.copy(boxes = locked)
+        val objects = detections.boxes.filter {
+            !it.held && it.kind == "object" && it.trackId > 0 &&
+                it.right > it.left && it.bottom > it.top
+        }
+        if (objects.isEmpty()) return null
+        val lockedPresent = lockedId != null && objects.any { it.trackId == lockedId }
+        // A live lock keeps its own box. A lock that was never on screen, or
+        // that is already lost, must not throw the center detection away.
+        if (lockedId != null && !lockedPresent && showing) return null
+        val chosen = display.select(
+            detections.width,
+            detections.height,
+            objects,
+            if (lockedPresent) lockedId else null,
+        )
+        if (chosen.isEmpty()) return null
+        return detections.copy(boxes = chosen)
     }
 }

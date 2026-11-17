@@ -3,6 +3,7 @@ package com.mattumali.visortracker
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -163,14 +164,12 @@ class LockPerformanceTest {
         assertEquals(0, handoff.metrics.snapshotAndReset().idSwitches)
     }
 
-    @Test fun blurHidesTheBoxAndTheSameIdReturnsInside250ms() {
+    @Test fun blurDoesNotClearTheBoxAndTheSameIdReturnsInside250ms() {
         val handoff = armed()
         val lostAt = 50_033L
         handoff.offer(flat(sequence = 700, lostAt))
         val hidden = handoff.pump(lostAt + 5, detection = null, lockedId = 3)
-        assertNotNull(hidden)
-        assertTrue(hidden!!.lost)
-        assertTrue(hidden.frame.boxes.isEmpty())
+        assertNull(hidden)
         val backAt = lostAt + 40
         handoff.offer(gray(8, sequence = 701, backAt))
         val back = handoff.pump(backAt + 5, detection = null, lockedId = 3)
@@ -181,6 +180,48 @@ class LockPerformanceTest {
         val snap = handoff.metrics.snapshotAndReset()
         assertEquals(1, snap.lockLosses)
         assertTrue(snap.reacquireP95Ms in 0..250)
+    }
+
+    @Test fun centerDetectionIsPublishedWhenTheAnchorLeftHistory() {
+        val handoff = TrackingHandoff()
+        val anchor = gray(0, sequence = 1, capture = 1_000)
+        handoff.offer(anchor)
+        repeat(FrameBudget.REBASE_HISTORY) { index ->
+            handoff.offer(flat(sequence = 2L + index, capture = 1_033L + index * 33L))
+        }
+        val edge = BoxObservation("object", "chair", 0.9f, 0f, 0f, 12f, 12f, trackId = 2)
+        val center = BoxObservation("object", "cup", 0.93f, 40f, 30f, 60f, 50f, trackId = 7)
+        val event = handoff.pump(
+            nowMs = 2_000,
+            detection = DetectionBaseline(
+                FrameDetections(100, 80, listOf(edge, center), sequence = 1, capturedAtMs = 1_000),
+                anchor,
+            ),
+            lockedId = null,
+        )
+        assertNotNull(event)
+        assertFalse(event!!.lost)
+        assertEquals(listOf(7), event.frame.boxes.map { it.trackId })
+        handoff.offer(flat(sequence = 100, capture = 2_100))
+        val follow = handoff.pump(2_110, detection = null, lockedId = null)
+        assertTrue(follow == null || follow.frame.boxes.any { it.trackId == 7 })
+    }
+
+    @Test fun unmatchedLockDoesNotDropTheCenterDetection() {
+        val handoff = TrackingHandoff()
+        val anchor = gray(0, sequence = 1, capture = 3_000)
+        handoff.offer(anchor)
+        val center = BoxObservation("object", "cup", 0.93f, 40f, 30f, 60f, 50f, trackId = 7)
+        val event = handoff.pump(
+            nowMs = 3_010,
+            detection = DetectionBaseline(
+                FrameDetections(100, 80, listOf(center), sequence = 1, capturedAtMs = 3_000),
+                anchor,
+            ),
+            lockedId = 4,
+        )
+        assertNotNull(event)
+        assertEquals(7, event!!.frame.boxes.single().trackId)
     }
 
     @Test fun idChangeIsCountedSeparatelyFromAStableLock() {

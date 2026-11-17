@@ -39,7 +39,6 @@ class RelativeDistanceEstimatorTest {
         val estimator = RelativeDistanceEstimator()
         val target = at(4, 150f)
         assertNull(estimator.observe(frame(target)))
-        assertNull(estimator.observe(frame(target)))
         val locked = estimator.observe(frame(target))
         assertTrue(locked!!.contains("Locked #4"))
         assertEquals(4, estimator.selectedTrackId())
@@ -54,9 +53,8 @@ class RelativeDistanceEstimatorTest {
         assertTrue(estimator.calibrate(frame(first), 6f).contains("6.0"))
         val next = at(8, 150f)
         val aside = at(4, 40f)
-        var switched: String? = null
-        repeat(4) { assertNull(estimator.observe(frame(next, aside))) }
-        switched = estimator.observe(frame(next, aside))
+        assertNull(estimator.observe(frame(next, aside)))
+        val switched = estimator.observe(frame(next, aside))
         assertTrue(switched!!.contains("Distance cleared"))
         assertEquals(8, estimator.selectedTrackId())
         assertNull(estimator.estimate(300, first))

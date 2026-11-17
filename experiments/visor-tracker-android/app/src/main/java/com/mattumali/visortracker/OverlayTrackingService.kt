@@ -162,9 +162,7 @@ class OverlayTrackingService : Service() {
         report("Loading " + preset.name.lowercase() + " detector (VDK video up to 30 FPS)")
         worker.execute {
             try {
-                val ready = VisionPipeline(applicationContext, includeHandsFaces, preset) {
-                    overlay?.selectedTrackId()
-                }
+                val ready = VisionPipeline(applicationContext, includeHandsFaces, preset)
                 mainHandler.post {
                     if (!running) {
                         worker.execute { ready.close() }
@@ -252,7 +250,13 @@ class OverlayTrackingService : Service() {
                                     stages.record("ai", SystemClock.elapsedRealtime() - aiStarted)
                                     inferenceFrames.incrementAndGet()
                                     totalInferences.incrementAndGet()
-                                    rawDetections.set(detections.boxes.size)
+                                    rawDetections.set(detections.boxes.count { it.kind == "object" })
+                                    val candidates = detections
+                                    mainHandler.post {
+                                        if (!running) return@post
+                                        val note = overlay?.observeCandidates(candidates)
+                                        if (!note.isNullOrBlank()) report(note)
+                                    }
                                     val baseline = DetectionBaseline(
                                         detections.copy(sequence = sequence, capturedAtMs = now),
                                         anchor,

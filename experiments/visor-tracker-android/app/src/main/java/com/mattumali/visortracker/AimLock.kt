@@ -5,14 +5,13 @@ import kotlin.math.hypot
 data class AimDecision(val lockedId: Int?, val changed: Boolean)
 
 /**
- * Locks the object the glasses are pointing at: the box nearest the middle
- * of the picture. A new target must stay there for several frames before the
- * lock moves, so motion and box jitter do not swap targets every frame.
+ * Locks the object nearest the middle of the picture.
+ * The first box is drawn before this confirms. One more steady frame locks it.
+ * Switching takes the same short hold, so one jittery frame does not swap targets.
  */
 class AimLock(
-    private val acquireFrames: Int = 3,
-    private val switchFrames: Int = 5,
-    private val centerRadius: Float = 0.22f,
+    private val acquireFrames: Int = 2,
+    private val switchFrames: Int = 2,
 ) {
     var lockedId: Int? = null
         private set
@@ -55,7 +54,7 @@ class AimLock(
             val cx = (box.left + box.right) * 0.5f / frame.width
             val cy = (box.top + box.bottom) * 0.5f / frame.height
             val distance = hypot(cx - 0.5f, cy - 0.5f)
-            if (distance <= centerRadius && distance < best) {
+            if (distance < best) {
                 best = distance
                 bestId = box.trackId
             }

@@ -102,9 +102,10 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(accurate)
         root.addView(TextView(this).apply {
-            text = "One object. Point the glasses at it until it locks. Point at a " +
-                "different object and hold to switch. The old distance does not move " +
-                "with you. Motion does not swap the lock every frame. Fast mode stays " +
+            text = "One object. It is drawn as soon as the detector sees it, and the " +
+                "center one locks after one or two steady frames. Point at a different " +
+                "object and hold to switch. The old distance does not move with you. " +
+                "Motion does not swap the lock every frame. Fast mode stays " +
                 "EfficientDet-Lite0. An unsure name is shown as object."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(4))
