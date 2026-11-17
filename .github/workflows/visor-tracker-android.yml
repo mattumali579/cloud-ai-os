@@ -62,3 +62,20 @@ jobs:
           name: visor-tracker-debug-apk
           path: experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  validate-windows-migration-script:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate migration script using Windows PowerShell 5.1 parser
+        shell: powershell
+        run: |
+          $path = "experiments/visor-tracker-android/scripts/Migrate-VisorTracker.ps1"
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | Format-List -Force
+            throw "Migration script has PowerShell syntax errors."
+          }
+          Write-Host "Migration script: PowerShell 5.1 syntax valid."
