@@ -208,7 +208,12 @@ try {
     $InstalledNew = $true
     Check-Package 4
     Import-DataArchive
-    Run-Adb -AdbArgs @('shell', 'am', 'start', '-n', "$Package/com.mattumali.visortracker.MainActivity") | Out-Null
+    # Opening the UI is optional: a locked phone may prevent Activity launch.
+    # Never roll back a correctly installed app merely because the screen is locked.
+    $launch = @(& $Adb shell am start -n "$Package/com.mattumali.visortracker.MainActivity" 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Report 'v0.4 installed correctly; unlock phone and open Visor Fast Tracking manually.'
+    }
     Report 'SUCCESS: v0.4 installed, versionCode verified, saved private data restored.'
     Report 'On your phone: check overlay permission, Visor Camera consent, and Higher Accuracy.'
     Report 'Then test boxes over an active Visor Live View. Hardware FPS is not proven by ADB installation.'
