@@ -34,8 +34,28 @@ jobs:
         run: |
           grep -Fq 'applicationId = "com.mattumali.visortracker.stream"' app/build.gradle.kts
           grep -Fq 'versionCode = 4' app/build.gradle.kts
+      - name: Load persistent signing key when configured
+        id: stable_signing
+        env:
+          KEYSTORE_B64: ${{ secrets.VISOR_TRACKER_KEYSTORE_B64 }}
+        run: |
+          if [[ -n "$KEYSTORE_B64" ]]; then
+            umask 077
+            mkdir -p "$RUNNER_TEMP/visor-signing"
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/visor-signing/tracker.jks"
+            echo "file=$RUNNER_TEMP/visor-signing/tracker.jks" >> "$GITHUB_OUTPUT"
+            echo "Signing: persistent keystore (certificate must match installed app)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "file=" >> "$GITHUB_OUTPUT"
+            echo "Signing: temporary debug keystore. NOT suitable for in-place upgrades across runs." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Build APK and run unit tests
         working-directory: experiments/visor-tracker-android
+        env:
+          VISOR_SIGNING_STORE_FILE: ${{ steps.stable_signing.outputs.file }}
+          VISOR_SIGNING_STORE_PASSWORD: ${{ secrets.VISOR_TRACKER_STORE_PASSWORD }}
+          VISOR_SIGNING_KEY_ALIAS: ${{ secrets.VISOR_TRACKER_KEY_ALIAS }}
+          VISOR_SIGNING_KEY_PASSWORD: ${{ secrets.VISOR_TRACKER_KEY_PASSWORD }}
         run: gradle --no-daemon assembleDebug testDebugUnitTest
       - uses: actions/upload-artifact@v4
         with:
