@@ -46,7 +46,7 @@ class MainActivity : ComponentActivity() {
             textSize = 24f
         })
         root.addView(TextView(this).apply {
-            text = identity.line + "\nIf this screen does not show 0.14.0 and " +
+            text = identity.line + "\nIf this screen does not show ${identity.versionName} and " +
                 "com.mattumali.visortracker.stable, this is the old Tracker. " +
                 "The old 0.1.0 app has no Check for updates button. Leave it installed."
             textSize = 15f
@@ -207,7 +207,7 @@ class MainActivity : ComponentActivity() {
                 "then toggle tracking from Quick Settings. " +
                 "The selected accuracy mode takes effect on the next start. " +
                 "After START, switch to Visor and keep Live View fully expanded. " +
-                "A small green corner mark reading v0.14.0 is the proof that Android " +
+                "A small green corner mark reading this version is the proof that Android " +
                 "is drawing over Live View, before any object box exists. " +
                 "Its second line is the first failed hop: OVERLAY BLOCKED, " +
                 "NO CAMERA FRAMES, or 0 OBJECTS DETECTED. " +

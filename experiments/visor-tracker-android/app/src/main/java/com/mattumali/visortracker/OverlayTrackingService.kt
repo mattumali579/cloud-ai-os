@@ -64,7 +64,12 @@ class OverlayTrackingService : Service() {
     private val totalInferences = AtomicInteger(0)
     private val rawDetections = AtomicInteger(0)
     private val stages = StageTimings()
-    private val windows by lazy { getSystemService(Context.WINDOW_SERVICE) as WindowManager }
+    // The service context ties the window to this app's task. Samsung then
+    // shows the boxes on the Tracker screen only. The application context
+    // keeps a TYPE_APPLICATION_OVERLAY above Visor after the user switches apps.
+    private val windows by lazy {
+        applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    }
 
     private var overlay: TrackingOverlayView? = null
     private var pipeline: VisionPipeline? = null
@@ -135,7 +140,7 @@ class OverlayTrackingService : Service() {
         createChannel()
         startForeground(NOTIFICATION_ID, notification("Attaching the Live View proof mark"))
         try {
-            val view = TrackingOverlayView(this)
+            val view = TrackingOverlayView(applicationContext)
             windows.addView(view, overlayLayout())
             overlay = view
             overlayAttached = true

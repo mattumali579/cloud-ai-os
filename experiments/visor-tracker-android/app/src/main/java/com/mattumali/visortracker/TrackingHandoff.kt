@@ -29,8 +29,10 @@ object InferenceCadence {
  *
  * The work slot holds one gray frame. A newer frame replaces it and counts a drop,
  * so a slow step cannot replay a backlog and present old coordinates as live.
- * [FrameBudget.REBASE_HISTORY] exists only so a detector result can be walked
- * forward onto the newest gray frame. If that walk fails, the old boxes are not painted.
+ * [FrameBudget.REBASE_HISTORY] exists so a detector result can be walked forward
+ * onto the newest gray frame. If that walk cannot follow every frame, the
+ * detection itself is still drawn. A detection older than the retained
+ * history is not drawn.
  */
 class TrackingHandoff(
     val metrics: LockMetrics = LockMetrics(),
@@ -117,17 +119,29 @@ class TrackingHandoff(
             sequence = detection.gray.sequence,
             capturedAtMs = detection.gray.capturedAtMs,
         )
+        var seedGray = detection.gray
+        var followedEveryFrame = true
         for (gray in after) {
             val step = scratch.step(gray, nowMs)
-            if (step.frame == null || step.frame.boxes.isEmpty()) return null
+            if (step.frame == null || step.frame.boxes.isEmpty()) {
+                followedEveryFrame = false
+                break
+            }
             latest = step.frame
+            seedGray = gray
         }
-        val newest = historyCopy.maxOfOrNull { it.sequence } ?: detection.gray.sequence
-        if (latest.sequence < newest) return null
-        tracker = scratch
+        // A failed block match used to return null, so the overlay stayed blank
+        // on a real Visor stream. Draw the last boxes we could still see.
+        tracker = if (followedEveryFrame) {
+            scratch
+        } else {
+            MotionTracker().also { it.reset(latest, seedGray) }
+        }
         armed = true
         markProcessed(detection.gray)
-        for (gray in after) markProcessed(gray)
+        if (followedEveryFrame) {
+            for (gray in after) markProcessed(gray)
+        }
         inLoss = false
         showing = latest.boxes.isNotEmpty()
         return publish(latest, nowMs, lockedId, lost = false)

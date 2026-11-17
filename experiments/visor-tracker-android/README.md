@@ -17,6 +17,12 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.15: draw the detection, and keep the window above Visor
+
+Version code 15. Same package and signing certificate.
+
+A detector box is drawn even when grayscale matching cannot follow every frame since that detection. An older detection outside the retained frames is still dropped. The overlay window is created from the application context, so Samsung does not keep it inside the Tracker task after the user opens Visor.
+
 ## Version 0.14: prove which hop failed
 
 Version code 14. Same package `com.mattumali.visortracker.stable` and the same signing certificate.

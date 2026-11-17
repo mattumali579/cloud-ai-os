@@ -101,6 +101,26 @@ class LockPerformanceTest {
         assertTrue(snap.intervalP95 > 50)
     }
 
+    @Test fun failedWalkStillDrawsTheDetection() {
+        val handoff = TrackingHandoff()
+        val first = gray(0, sequence = 1, capture = 1_000)
+        handoff.offer(first)
+        handoff.offer(flat(sequence = 2, capture = 1_033))
+        val box = BoxObservation("object", "chair", 0.91f, 30f, 30f, 50f, 50f, trackId = 3)
+        val event = handoff.pump(
+            nowMs = 1_040,
+            detection = DetectionBaseline(
+                FrameDetections(100, 80, listOf(box), sequence = 1, capturedAtMs = 1_000),
+                first,
+            ),
+            lockedId = null,
+        )
+        assertNotNull(event)
+        assertFalse(event!!.lost)
+        assertEquals(3, event.frame.boxes.single().trackId)
+        assertEquals(30f, event.frame.boxes.single().left, 0.1f)
+    }
+
     @Test fun staleDetectionDoesNotMoveTheLockedBox() {
         val handoff = armed()
         repeat(10) { index ->
