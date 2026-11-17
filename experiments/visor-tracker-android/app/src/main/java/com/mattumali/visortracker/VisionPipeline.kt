@@ -41,8 +41,8 @@ class VisionPipeline(context: Context, private val includeHandsFaces: Boolean = 
             ObjectDetector.ObjectDetectorOptions.builder()
                 .setBaseOptions(BaseOptions.builder().setModelAssetPath("efficientdet_lite0.tflite").build())
                 .setRunningMode(RunningMode.IMAGE)
-                .setMaxResults(6)
-                .setScoreThreshold(0.35f)
+                .setMaxResults(10)
+                .setScoreThreshold(0.25f)
                 .build()
         )
         hands = if (includeHandsFaces) HandLandmarker.createFromOptions(
