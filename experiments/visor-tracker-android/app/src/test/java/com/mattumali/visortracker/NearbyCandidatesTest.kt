@@ -26,6 +26,14 @@ class NearbyCandidatesTest {
         assertEquals(NearbyCandidates.DISPLAY_LIMIT, shown.size)
     }
 
+    @Test fun confirmedLockStaysOneBoxWhileTheOtherObjectRemains() {
+        val center = box(1, "chair", 40f, 80f, 60f, 120f)
+        val other = box(2, "chair", 0f, 10f, 20f, 40f)
+        val shown = NearbyCandidates().select(100, 200, listOf(center, other), lockedId = 2)
+        assertEquals(1, shown.size)
+        assertEquals(2, shown.single().trackId)
+    }
+
     @Test fun captionNamesOneObject() {
         assertEquals("one object", NearbyCandidates.CAPTION)
     }

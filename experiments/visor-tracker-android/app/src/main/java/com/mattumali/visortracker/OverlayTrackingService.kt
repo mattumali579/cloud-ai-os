@@ -64,6 +64,7 @@ class OverlayTrackingService : Service() {
     private val totalFrames = AtomicInteger(0)
     private val grayFrames = AtomicInteger(0)
     private val detectorBusy = AtomicBoolean(false)
+    private val stageFaults = StageFaults()
     private val totalInferences = AtomicInteger(0)
     private val rawDetections = AtomicInteger(0)
     private val stages = StageTimings()
@@ -225,11 +226,13 @@ class OverlayTrackingService : Service() {
                     val gray = try {
                         GrayFrame.capture(image, sequence = sequence, capturedAtMs = now)
                     } catch (error: Exception) {
-                        report("Grayscale extraction failed: " + (error.message ?: "unknown"))
+                        stageFail("gray", "Grayscale extraction failed: " + (error.message ?: "unknown"))
                         null
                     }
-                    if (gray != null) stages.record("g", SystemClock.elapsedRealtime() - grayStarted)
                     if (gray != null) {
+                        stages.record("g", SystemClock.elapsedRealtime() - grayStarted)
+                        stageFaults.clear("gray")
+                        refreshFaults()
                         grayFrames.incrementAndGet()
                         handoff.offer(gray)
                         scheduleMotion()
@@ -237,8 +240,8 @@ class OverlayTrackingService : Service() {
 
                     val anchor = gray
                     val locked = overlay?.selectedTrackId() != null
-                    val inferenceDue = anchor != null && InferenceCadence.due(now, lastOfferedAtMs, locked)
-                    if (anchor != null && inferenceDue && processing.compareAndSet(false, true)) {
+                    val inferenceDue = InferenceCadence.due(now, lastOfferedAtMs, locked)
+                    if (inferenceDue && processing.compareAndSet(false, true)) {
                         lastOfferedAtMs = now
                         try {
                             val snapshot = YuvSnapshot.capture(image)
@@ -250,30 +253,33 @@ class OverlayTrackingService : Service() {
                                     val yuvStarted = SystemClock.elapsedRealtime()
                                     bitmap = snapshot.toBitmap(preset.maxFrameWidth)
                                     stages.record("y", SystemClock.elapsedRealtime() - yuvStarted)
+                                    stageFaults.clear("yuv")
                                     val aiStarted = SystemClock.elapsedRealtime()
                                     val detections = pipeline?.detect(bitmap) ?: return@execute
                                     stages.record("ai", SystemClock.elapsedRealtime() - aiStarted)
+                                    stageFaults.clear("detect")
+                                    refreshFaults()
                                     inferenceFrames.incrementAndGet()
                                     totalInferences.incrementAndGet()
                                     val objectCount = detections.boxes.count { it.kind == "object" }
                                     rawDetections.set(objectCount)
-                                    Log.i(TAG, "detect objects=$objectCount seq=$sequence")
-                                    val candidates = detections
+                                    Log.i(TAG, "detect objects=$objectCount seq=$sequence gray=${anchor != null}")
+                                    val stamped = detections.copy(sequence = sequence, capturedAtMs = now)
                                     mainHandler.post {
                                         if (!running) return@post
-                                        val note = overlay?.observeCandidates(candidates)
+                                        val note = overlay?.observeCandidates(stamped)
                                         if (!note.isNullOrBlank()) report(note)
+                                        if (anchor == null) overlay?.updateFrame(stamped)
                                     }
-                                    val baseline = DetectionBaseline(
-                                        detections.copy(sequence = sequence, capturedAtMs = now),
-                                        anchor,
-                                    )
-                                    if (pendingDetection.getAndSet(baseline) != null) {
-                                        handoff.metrics.onStaleDetection()
+                                    if (anchor != null) {
+                                        val baseline = DetectionBaseline(stamped, anchor)
+                                        if (pendingDetection.getAndSet(baseline) != null) {
+                                            handoff.metrics.onStaleDetection()
+                                        }
+                                        scheduleMotion()
                                     }
-                                    scheduleMotion()
                                 } catch (error: Exception) {
-                                    report("Decode/detection failed: " + (error.message ?: "unknown"))
+                                    stageFail("detect", "Decode/detection failed: " + (error.message ?: "unknown"))
                                 } finally {
                                     snapshot.releasePlanes()
                                     YuvSnapshot.recycleDetached(bitmap)
@@ -284,7 +290,7 @@ class OverlayTrackingService : Service() {
                         } catch (error: Exception) {
                             detectorBusy.set(false)
                             processing.set(false)
-                            report("Hardware frame conversion failed: " + (error.message ?: "unknown"))
+                            stageFail("yuv", "Hardware frame conversion failed: " + (error.message ?: "unknown"))
                         }
                     }
                     if (now - lastReportAtMs >= REPORT_MS) {
@@ -305,7 +311,6 @@ class OverlayTrackingService : Service() {
                         )
                         val distance = view?.notificationDistance().orEmpty()
                         lastMetrics = if (distance.isEmpty()) metrics else "$metrics | $distance"
-                        if (videoFps > 0f) lastFailure = null
                         report(lastMetrics)
                     }
                 }.use { decoder ->
@@ -441,9 +446,19 @@ class OverlayTrackingService : Service() {
         mainHandler.postDelayed(diagnosticTick, DIAGNOSTIC_MS)
     }
 
+    private fun stageFail(stage: String, message: String) {
+        stageFaults.fail(stage, message)
+        refreshFaults()
+        report(message)
+    }
+
+    private fun refreshFaults() {
+        val summary = stageFaults.summary()
+        lastFailure = summary.ifBlank { null }
+    }
+
     private fun report(message: String, failure: Boolean = false) {
         if (failure) lastFailure = message
-        else if (message.startsWith("V") || message.startsWith("VDK connected")) lastFailure = null
         lastProgress = message
         renderStatus()
     }

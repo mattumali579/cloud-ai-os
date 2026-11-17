@@ -238,8 +238,8 @@ class TrackingHandoff(
         }
         if (objects.isEmpty()) return null
         val lockedPresent = lockedId != null && objects.any { it.trackId == lockedId }
-        // A live lock keeps its own box. A lock that was never on screen, or
-        // that is already lost, must not throw the center detection away.
+        // One foreign detection must not steal a live lock. AimLock changes
+        // the id after two centered frames, and the next pass draws that id.
         if (lockedId != null && !lockedPresent && showing) return null
         val chosen = display.select(
             detections.width,
