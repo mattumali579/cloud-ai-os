@@ -12,8 +12,8 @@ android {
         applicationId = "com.mattumali.visortracker.stable"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.8.0"
+        versionCode = 9
+        versionName = "0.9.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -38,6 +38,22 @@ android {
         }
         buildTypes.getByName("debug") {
             signingConfig = signingConfigs.getByName("persistent")
+        }
+        buildTypes.getByName("release") {
+            signingConfig = signingConfigs.getByName("persistent")
+        }
+    }
+
+    buildTypes.getByName("release") {
+        isMinifyEnabled = false
+        isDebuggable = false
+    }
+
+    // Samsung's installer reports only "App not installed" for a debuggable APK
+    // whose native libraries are stored uncompressed. Compress them.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 

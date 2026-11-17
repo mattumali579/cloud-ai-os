@@ -17,6 +17,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.9: download installs on the Samsung
+
+The file on the GitHub release is a normal release build of `com.mattumali.visortracker.stable`, signed with the same certificate as v0.6 and v0.8. v0.8 was a debuggable APK with uncompressed native libraries, which Samsung reports only as "App not installed." Download **Visor Fast Tracking 9**, not the older file still sitting in Downloads.
+
 ## Version 0.8: boxes on full-screen Live View, fresh positions
 
 Same package `com.mattumali.visortracker.stable` and the same signing configuration as v0.7. The overlay window is full-screen, fully opaque, and touch-through, using the same cover crop as Visor's expanded Live View. Grayscale motion follows head turns out to 16 pixels per frame on the 192-pixel motion image and drops a box when the match is lost instead of leaving it frozen. The notification reports video FPS, AI FPS, fresh box-coordinate FPS, draw FPS, and box age. A 60 Hz redraw of an unchanged box is not counted.

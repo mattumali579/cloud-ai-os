@@ -70,21 +70,21 @@ jobs:
           VISOR_SIGNING_STORE_PASSWORD: ${{ secrets.VISOR_TRACKER_STORE_PASSWORD }}
           VISOR_SIGNING_KEY_ALIAS: ${{ secrets.VISOR_TRACKER_KEY_ALIAS }}
           VISOR_SIGNING_KEY_PASSWORD: ${{ secrets.VISOR_TRACKER_KEY_PASSWORD }}
-        run: gradle --no-daemon assembleDebug testDebugUnitTest
+        run: gradle --no-daemon assembleRelease testDebugUnitTest
       - uses: actions/upload-artifact@v4
         with:
-          name: visor-tracker-debug-apk
-          path: experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk
+          name: visor-tracker-apk
+          path: experiments/visor-tracker-android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
       - name: Publish stable signed update to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/Visor-Fast-Tracking.apk"
+          cp experiments/visor-tracker-android/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/Visor-Fast-Tracking.apk"
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/Visor-Fast-Tracking.apk" \
             --title "Visor Fast Tracking ${GITHUB_REF_NAME#visor-tracker-v}" \
-            --notes "Signed same-package update for com.mattumali.visortracker.stable. Downloaded by the app's built-in updater."
+            --notes "Signed release build for com.mattumali.visortracker.stable. Install this APK. It is not a debug build."
           echo "Published signed Tracker APK as a public GitHub Release" >> "$GITHUB_STEP_SUMMARY"
 
   validate-windows-migration-script:
@@ -115,7 +115,7 @@ jobs:
       - name: Download the freshly built stable replacement
         uses: actions/download-artifact@v4
         with:
-          name: visor-tracker-debug-apk
+          name: visor-tracker-apk
           path: /tmp/new-tracker
       - name: Download v0.5 legacy-package APK for conflict regression test
         env:
@@ -145,7 +145,7 @@ jobs:
             adb wait-for-device
             adb install /tmp/Visor-Fast-Tracking.apk
             adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
-            adb install /tmp/new-tracker/app-debug.apk
+            adb install /tmp/new-tracker/app-release.apk
             adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'
-            adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=8'
-            echo "PASS: same-package v0.8 Tracker installs alongside legacy on Android 16, no signing conflict"
+            adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=9'
+            echo "PASS: same-package v0.9 Tracker installs alongside legacy on Android 16, no signing conflict"
