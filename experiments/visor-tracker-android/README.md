@@ -17,10 +17,18 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.6: one-time replacement for Android signing conflict
+
+The published v0.5 signed APK **successfully installs on clean Android 15 and Android 16 emulators**, but a Samsung phone still showed only "App not installed". That phone's underlying PackageInstaller failure code has NOT been captured.
+
+This version is built from the SAME existing cloud-ai-os Tracker project with the SAME permanent signing key and all previous tracking/updater functionality. To bypass a possible lingering v0.3 package with the LOST signing certificate (possibly installed in Samsung Secure Folder or another profile), v0.6 uses a **new stable Android package ID**: `com.mattumali.visortracker.stable`. This is technically a **new Android app identity**, not an in-place upgrade. There may be two Tracker entries if the old package is still installed; remove the old Tracker only after confirming the new app works. Do not uninstall Visor.
+
+Versions v0.6 and later **MUST NEVER change this package ID or signing key again**. Newer signed versions will update the installed stable-package app normally through the built-in updater. Android can still require user approval and Samsung Auto Blocker may block sideloading. The new ID only avoids old package-signature conflicts; it cannot bypass device installation restrictions.
+
 ## Install / run
 
 1. Keep **Visor** installed and set up on the glasses.
-2. Continue using the existing **Visor Fast Tracking** app package (`com.mattumali.visortracker.stream`). No new app package is created.
+2. Install the **v0.6 stable replacement** (`com.mattumali.visortracker.stable`) once. This is the same Tracker codebase but a new Android app identity required to isolate the lost v0.3 signing certificate. After it works, remove any obsolete Tracker v0.3 icon; leave Visor installed.
 3. Open Visor Fast Tracking and tap **Allow display over other apps**; enable it in Android Settings.
 4. Tap **Grant Visor camera access**; on Visor's consent screen allow **Camera** for the companion app.
 5. For best responsiveness, leave **Also detect hands and faces** unchecked. Toggle **Higher accuracy** if you want Lite2's increased recognition quality, understanding that AI FPS and battery life may be worse. The setting takes effect at the next tracking start.
@@ -41,9 +49,9 @@ Isolated app build; the rest of the Jarvis repo is untouched:
 
 GitHub Actions artifacts are ZIP files containing the APK. Extract `app-debug.apk` before installing; do not attempt to install the ZIP.
 
-### Signing limitation (important: installed app update identity)
+### Signing limitation (historical; previous installed app identity)
 
-GitHub Actions currently generates a temporary debug signing key per new runner. Android only accepts APK updates signed by the **same private key**. A package-name change is an install-as-new workaround, not an update fix. To support seamless future updates, the user must provide a secure persistent signing keystore through CI secrets or sign repeat builds locally with a single securely stored key. **Do not commit signing keys to GitHub.**
+Earlier GitHub Actions produced temporary debug signing keys per runner. Permanent signing is now configured in protected Actions secrets. Android only accepts APK updates signed by the **same private key**. A package-name change is an install-as-new workaround, not an update fix. To support seamless future updates, the user must provide a secure persistent signing keystore through CI secrets or sign repeat builds locally with a single securely stored key. **Do not commit signing keys to GitHub.**
 
 ## Verification ladder
 
@@ -77,7 +85,7 @@ signing migration is unavoidable. Never publish a signing keystore.
 
 ## Future automatic updates (v0.5+)
 
-- Keep the exact Android package ID `com.mattumali.visortracker.stream`.
+- From v0.6 onward keep the exact new stable Android package ID `com.mattumali.visortracker.stable`.
 - Sign each shipped version using the SAME private Android signing key (protected GitHub Actions secrets).
 - A GitHub Actions tag `visor-tracker-vN` (N = Android `versionCode`) publishes an APK asset named `Visor-Fast-Tracking.apk` to the public GitHub Release **only after Android tests pass** and stable signing is configured.
 - The app has a built-in updater: on app launch and periodically on **unmetered Wi-Fi**, it queries only published `visor-tracker-vN` releases, verifies the APK size, optional GitHub SHA-256 digest, package identity, versionCode, and lets Android PackageInstaller verify the signature. It never accepts an APK with a different package ID.
