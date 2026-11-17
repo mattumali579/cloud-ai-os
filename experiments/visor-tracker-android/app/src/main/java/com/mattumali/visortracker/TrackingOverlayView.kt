@@ -11,8 +11,8 @@ import kotlin.math.abs
 
 /**
  * Transparent, touch-through window over Visor's expanded Live View.
- * Native Live View remains full frame rate; new detection positions are
- * limited by Visor's developer JPEG frame feed (up to 5 FPS).
+ * Native Live View remains at its own frame rate. Detector results are
+ * updated by the existing VDK pipeline; this view only draws boxes/labels.
  */
 class TrackingOverlayView(context: Context) : View(context) {
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -33,6 +33,23 @@ class TrackingOverlayView(context: Context) : View(context) {
     private var latest: FrameDetections? = null
     private var receivedAt = 0L
     private val smoothBoxes = mutableMapOf<Int, RectF>()
+    private val distanceEstimator = RelativeDistanceEstimator()
+
+    /** Calibrate only the physical object currently nearest the camera center. */
+    fun calibrateDistance(feet: Float): String {
+        val frame = latest ?: return "No detected objects yet. Start Live View and tracking."
+        if (SystemClock.elapsedRealtime() - receivedAt > 1300L) {
+            return "No fresh video frame. Open Live View and retry."
+        }
+        val result = distanceEstimator.calibrate(frame, feet)
+        invalidate()
+        return result
+    }
+
+    fun clearDistance() {
+        distanceEstimator.clear()
+        invalidate()
+    }
 
     fun updateFrame(frame: FrameDetections) {
         latest = frame
@@ -75,7 +92,11 @@ class TrackingOverlayView(context: Context) : View(context) {
             }
             stroke.color = color
             canvas.drawRoundRect(current, dp(7f), dp(7f), stroke)
-            val label = observation.label + " #" + observation.trackId
+            val feet = distanceEstimator.estimate(frame.height, observation)
+            val distanceLabel = if (feet == null) "" else " ~%.1f ft".format(
+                java.util.Locale.US, feet
+            )
+            val label = observation.label + " #" + observation.trackId + distanceLabel
             val labelW = text.measureText(label) + dp(12f)
             val labelTop = (current.top - dp(25f)).coerceAtLeast(0f)
             canvas.drawRoundRect(
