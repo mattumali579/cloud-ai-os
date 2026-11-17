@@ -15,6 +15,7 @@ import android.content.BroadcastReceiver
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
@@ -79,11 +80,20 @@ object TrackerUpdater {
         scheduler.schedule(info)
     }
 
-    fun checkInBackground(context: Context, onStatus: (String) -> Unit = {}) {
+    fun checkInBackground(
+        context: Context,
+        allowMetered: Boolean = false,
+        onStatus: (String) -> Unit = {}
+    ) {
         if (!busy.compareAndSet(false, true)) return
         Thread {
             try {
-                installNewest(context.applicationContext, onStatus)
+                val network = context.getSystemService(ConnectivityManager::class.java)
+                if (!allowMetered && network.isActiveNetworkMetered) {
+                    onStatus("Automatic updates are waiting for unmetered Wi-Fi")
+                } else {
+                    installNewest(context.applicationContext, onStatus)
+                }
             } catch (error: Exception) {
                 Log.w(TAG, "Update check failed", error)
                 onStatus("Update check failed: " + (error.message ?: "unknown"))
