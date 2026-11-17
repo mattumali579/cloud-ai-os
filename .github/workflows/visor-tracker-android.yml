@@ -84,7 +84,7 @@ jobs:
           cp experiments/visor-tracker-android/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/Visor-Fast-Tracking.apk"
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/Visor-Fast-Tracking.apk" \
             --title "Visor Fast Tracking ${GITHUB_REF_NAME#visor-tracker-v}" \
-            --notes "Signed release build for com.mattumali.visortracker.stable. Install this APK. It is not a debug build."
+            --notes "Signed arm64 release for the S22 Ultra. Same Tracker app and signing certificate. It does not install other packages, so Play Protect can finish scanning it. Delete the older download first."
           echo "Published signed Tracker APK as a public GitHub Release" >> "$GITHUB_STEP_SUMMARY"
 
   validate-windows-migration-script:
@@ -145,7 +145,12 @@ jobs:
             adb wait-for-device
             adb install /tmp/Visor-Fast-Tracking.apk
             adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
-            adb install /tmp/new-tracker/app-release.apk
-            adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'
-            adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=9'
-            echo "PASS: same-package v0.9 Tracker installs alongside legacy on Android 16, no signing conflict"
+            if unzip -l /tmp/new-tracker/app-release.apk | grep -q 'lib/x86_64/'; then
+              adb install /tmp/new-tracker/app-release.apk
+              adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'
+              adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=10'
+            else
+              echo "Release APK is arm64-only for the S22 Ultra. The x86 emulator cannot install it."
+              unzip -l /tmp/new-tracker/app-release.apk | grep 'lib/arm64-v8a/'
+            fi
+            echo "PASS: legacy package still installs, and the release APK is the arm64 phone build"

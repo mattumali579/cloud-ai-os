@@ -17,6 +17,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.10: Play Protect can finish the scan
+
+Play Protect was calling the download harmful because the APK asked to install other packages, including a silent-update permission a normal app cannot use. Version 0.10 removes those. It is arm64 only, for the S22 Ultra, and smaller so the scan can finish. Same package and same signing certificate. Download **Visor Fast Tracking 10**. If a warning remains after the scan, open More details and choose Install anyway.
+
 ## Version 0.9: download installs on the Samsung
 
 The file on the GitHub release is a normal release build of `com.mattumali.visortracker.stable`, signed with the same certificate as v0.6 and v0.8. v0.8 was a debuggable APK with uncompressed native libraries, which Samsung reports only as "App not installed." Download **Visor Fast Tracking 9**, not the older file still sitting in Downloads.

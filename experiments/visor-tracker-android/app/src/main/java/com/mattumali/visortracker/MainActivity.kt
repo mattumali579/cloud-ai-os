@@ -140,17 +140,10 @@ class MainActivity : ComponentActivity() {
             }
         })
         root.addView(CheckBox(this).apply {
-            text = "Automatic signed updates (Wi-Fi, no USB or manual APK downloads)"
+            text = "Tell me when a signed update is published"
             isChecked = TrackerUpdater.enabled(this@MainActivity)
             setOnCheckedChangeListener { _, enabled ->
                 TrackerUpdater.configure(this@MainActivity, enabled)
-                if (enabled && android.os.Build.VERSION.SDK_INT >= 26 &&
-                    !packageManager.canRequestPackageInstalls()) {
-                    startActivity(Intent(
-                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:" + packageName)
-                    ))
-                }
             }
         })
         root.addView(Button(this).apply {
@@ -180,7 +173,7 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(status)
         root.addView(TextView(this).apply {
-            text = "Automatic updates use the same signed app, with Android approval if required. " +
+            text = "Updates open the signed GitHub release. The app does not install packages by itself. " +
                 "For fewer app switches: add the Visor Tracker Quick Settings tile " +
                 "(swipe down twice > Edit > add Visor Tracker). Open Live View first, " +
                 "then toggle tracking from Quick Settings. " +
