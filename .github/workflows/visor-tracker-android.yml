@@ -1,6 +1,9 @@
 name: Visor Tracker Android
 
 on:
+  push:
+    tags:
+      - "visor-tracker-v*"
   pull_request:
     paths:
       - "experiments/visor-tracker-android/**"
@@ -8,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-and-test:
@@ -33,7 +36,12 @@ jobs:
         working-directory: experiments/visor-tracker-android
         run: |
           grep -Fq 'applicationId = "com.mattumali.visortracker.stream"' app/build.gradle.kts
-          grep -Fq 'versionCode = 4' app/build.gradle.kts
+          grep -Eq 'versionCode = [1-9][0-9]*' app/build.gradle.kts
+          if [[ "$GITHUB_REF" == refs/tags/visor-tracker-v* ]]; then
+            actual="$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -1)"
+            expected="${GITHUB_REF_NAME#visor-tracker-v}"
+            test "$actual" = "$expected" || { echo "Tag and app versionCode mismatch"; exit 1; }
+          fi
       - name: Load persistent signing key when configured
         id: stable_signing
         env:
@@ -49,6 +57,12 @@ jobs:
             echo "file=" >> "$GITHUB_OUTPUT"
             echo "Signing: temporary debug keystore. NOT suitable for in-place upgrades across runs." >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Reject unsigned public releases
+        if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
+        env:
+          SIGNING_FILE: ${{ steps.stable_signing.outputs.file }}
+        run: |
+          test -n "$SIGNING_FILE" || { echo "No stable signing key; refusing release"; exit 1; }
       - name: Build APK and run unit tests
         working-directory: experiments/visor-tracker-android
         env:
@@ -62,6 +76,16 @@ jobs:
           name: visor-tracker-debug-apk
           path: experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Publish stable signed update to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/Visor-Fast-Tracking.apk"
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/Visor-Fast-Tracking.apk" \
+            --title "Visor Fast Tracking ${GITHUB_REF_NAME#visor-tracker-v}" \
+            --notes "Signed same-package update for com.mattumali.visortracker.stream. Downloaded by the app's built-in updater."
+          echo "Published signed Tracker APK as a public GitHub Release" >> "$GITHUB_STEP_SUMMARY"
 
   validate-windows-migration-script:
     runs-on: windows-latest
