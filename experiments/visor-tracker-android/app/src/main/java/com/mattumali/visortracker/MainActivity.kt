@@ -92,20 +92,23 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(accurate)
         root.addView(TextView(this).apply {
-            text = "5 nearby candidates (visual estimate). The overlay draws at most five " +
-                "objects. Ranking uses where the box sits in the frame and its size compared " +
-                "with the same label. It is not measured distance, and it is not 'closest to " +
-                "the center of the picture.' One camera plus one calibration cannot assign " +
-                "feet to five different kinds of objects. An unsure name is shown as object."
+            text = "Up to five visual candidates, and fewer when a name is uncertain. " +
+                "Ranking uses where the box sits in the frame and its size compared with " +
+                "the same label. It is not measured distance, and it is not 'closest to " +
+                "the center of the picture.' A detector score cutoff is not a percent-correct " +
+                "guarantee. An unsure name is shown as object."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(4))
         })
         root.addView(TextView(this).apply {
-            text = "OFFLINE DISTANCE (approximate, same object only): measure how far " +
-                "the object is from your glasses, enter that starting distance in feet, " +
-                "then aim at its center and choose Calibrate. The labeled distance changes " +
-                "as you or the object moves. Requires the FULL object in view. " +
-                "Does not measure arbitrary objects without calibration."
+            text = "ONE OBJECT DISTANCE: measure the object from the glasses, enter that " +
+                "distance in feet, aim so the object is centered and fully visible, then " +
+                "tap Calibrate. The notification Calibrate action works during Live View " +
+                "and confirms the reference feet. Only that track then shows approximate " +
+                "feet, D = D0 × (h0 / h), as its apparent height changes. Same object, " +
+                "roughly the same orientation. Tilt, rotation, and occlusion can miss by " +
+                "more than 25%. There is no depth sensor. If that track disappears, the " +
+                "overlay says distance unavailable instead of moving the feet to another object."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(4))
         })
@@ -188,8 +191,9 @@ class MainActivity : ComponentActivity() {
                 "then toggle tracking from Quick Settings. " +
                 "The selected accuracy mode takes effect on the next start. " +
                 "After START, switch to Visor and keep Live View fully expanded. " +
-                "The notification shows video FPS, AI FPS, fresh box FPS, draw FPS, box age, " +
-                "95th-percentile age, and dropped frames. " +
+                "The notification shows video FPS, AI FPS, changed-box FPS, draw FPS, box age, " +
+                "95th-percentile age, dropped frames, and median milliseconds for grayscale, " +
+                "YUV conversion, inference, motion, and detection age. " +
                 "For best speed, leave hands/faces unchecked. " +
                 "Tracking is on your PHONE; ordinary Ray-Ban Meta glasses have no display. " +
                 "For distance calibration without leaving Live View, first set the " +

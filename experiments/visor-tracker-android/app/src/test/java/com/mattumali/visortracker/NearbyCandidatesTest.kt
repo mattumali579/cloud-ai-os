@@ -27,7 +27,7 @@ class NearbyCandidatesTest {
     }
 
     @Test fun captionNamesTheVisualEstimateAndNotMeasuredDistance() {
-        assertEquals("5 nearby candidates (visual estimate)", NearbyCandidates.CAPTION)
+        assertEquals("up to 5 visual candidates", NearbyCandidates.CAPTION)
     }
 
     @Test fun lowerSameClassObjectBeatsOneNearTheFrameCenter() {
@@ -90,5 +90,26 @@ class NearbyCandidatesTest {
         assertEquals(6f, estimator.estimate(300, target)!!, 0.01f)
         assertNull(estimator.estimate(300, shown.first { it.trackId != 4 }))
         assertEquals(DistanceReadiness.LIVE, estimator.readiness(shown))
+    }
+
+    @Test fun weakUncertainNamesDoNotFillTheFive() {
+        val selector = NearbyCandidates()
+        val center = box(1, "object", 40f, 80f, 60f, 120f, score = 0.50f)
+        val weak = (2..6).map { box(it, "object", 0f, 10f, 20f, 30f, score = 0.50f) }
+        val chair = box(7, "chair", 0f, 160f, 40f, 190f, score = 0.9f)
+        val shown = selector.select(100, 200, weak + center + chair, lockedId = null)
+        assertTrue(shown.any { it.trackId == 7 })
+        assertTrue(shown.any { it.trackId == 1 })
+        assertTrue(shown.none { it.trackId in 2..6 })
+        assertTrue(shown.size < NearbyCandidates.DISPLAY_LIMIT)
+    }
+
+    @Test fun lockedUncertainTrackStaysEvenWhenOffCenter() {
+        val selector = NearbyCandidates()
+        val locked = box(4, "object", 0f, 10f, 20f, 40f, score = 0.50f)
+        val chairs = (1..5).map { box(10 + it, "chair", 0f, 150f, 30f, 190f, score = 0.9f) }
+        val shown = selector.select(100, 200, chairs + locked, lockedId = 4)
+        assertTrue(shown.any { it.trackId == 4 })
+        assertTrue(shown.size <= 5)
     }
 }

@@ -29,7 +29,7 @@ data class FrameDetections(
  */
 class VisionPipeline(
     context: Context,
-    private val includeHandsFaces: Boolean = true,
+    private val includeHandsFaces: Boolean = false,
     private val preset: DetectionPreset = DetectionPreset.FAST,
     private val lockedTrackId: () -> Int? = { null },
 ) : AutoCloseable {

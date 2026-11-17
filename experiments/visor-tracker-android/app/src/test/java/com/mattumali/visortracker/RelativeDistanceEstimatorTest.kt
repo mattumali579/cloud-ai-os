@@ -76,4 +76,44 @@ class RelativeDistanceEstimatorTest {
             .contains("Target too small"))
         assertNull(estimator.estimate(300, box()))
     }
+
+    @Test fun oneFrameSizeChangeUpdatesFeetImmediately() {
+        val estimator = RelativeDistanceEstimator()
+        assertTrue(estimator.calibrate(frame(box()), 6f).contains("6.0"))
+        assertEquals(3f, estimator.estimate(300, box(height = 200f))!!, 0.05f)
+    }
+
+    @Test fun knownThreeSixAndTenFootCasesAndTheTiltLimit() {
+        val estimator = RelativeDistanceEstimator()
+        val message = estimator.calibrate(frame(box(height = 120f)), 6f)
+        assertTrue(message.contains("Distance locked"))
+        assertTrue(message.contains("6.0"))
+        // Similar triangles: height scales as 1/distance. 120 px at 6 ft.
+        val at3 = estimator.estimate(300, box(height = 240f))!!
+        val at10 = estimator.estimate(300, box(height = 72f))!!
+        val at6 = estimator.estimate(300, box(height = 120f))!!
+        val err3 = DistanceScale.percentError(at3, 3f)
+        val err10 = DistanceScale.percentError(at10, 10f)
+        val err6 = DistanceScale.percentError(at6, 6f)
+        println("similar-triangles percent error: 3ft=$err3 6ft=$err6 10ft=$err10")
+        assertTrue("3 ft error $err3%", err3 < 5f)
+        assertTrue("10 ft error $err10%", err10 < 5f)
+        assertTrue("6 ft error $err6%", err6 < 5f)
+        assertNull(estimator.estimate(300, box(id = 99, height = 72f)))
+        assertEquals(DistanceReadiness.STALE, estimator.readiness(listOf(box(id = 99, height = 72f))))
+
+        // 8% box-height noise at the 10 ft pose stays inside 25%.
+        val noisy = DistanceScale.feet(6f, 120f, 72f * 1.08f)!!
+        val noisyErr = DistanceScale.percentError(noisy, 10f)
+        assertTrue("noise error $noisyErr%", noisyErr < 25f)
+
+        // A 35% shorter box from tilt is not a distance change. The formula
+        // still emits a number, and that number is not within 25%.
+        val tilted = DistanceScale.feet(6f, 120f, 72f * 0.65f)!!
+        val tiltErr = DistanceScale.percentError(tilted, 10f)
+        println("height-noise percent error at 10ft=$noisyErr tilt percent error=$tiltErr")
+        assertTrue("tilt error $tiltErr% must not be called accurate", tiltErr > 25f)
+        assertEquals("distance unavailable", estimator.shortStatus(emptyList()))
+        assertTrue(estimator.banner(listOf(box(height = 120f))).contains("6.0"))
+    }
 }

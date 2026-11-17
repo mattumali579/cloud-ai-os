@@ -33,17 +33,20 @@ data class GrayFrame(
             val plane = image.planes[0]
             val buffer = plane.buffer.duplicate()
             val origin = buffer.position()
-            val raw = ByteArray(buffer.remaining())
-            buffer.get(raw)
+            val limit = buffer.limit()
+            // Sample the luma plane in place. Copying the full frame here allocated
+            // about a megabyte on every decoded frame and stalled the decoder.
             val result = ByteArray(width * height)
             val rowStride = plane.rowStride
             val pixelStride = plane.pixelStride
             for (y in 0 until height) {
                 val iy = crop.top + y * crop.height() / height
                 val row = iy * rowStride - origin
+                val out = y * width
                 for (x in 0 until width) {
                     val index = row + (crop.left + x * crop.width() / width) * pixelStride
-                    result[y * width + x] = if (index in raw.indices) raw[index] else 0
+                    val pos = origin + index
+                    result[out + x] = if (pos < origin || pos >= limit) 0 else buffer.get(pos)
                 }
             }
             return GrayFrame(width, height, result, sequence, capturedAtMs)
@@ -210,5 +213,28 @@ class MotionTracker(
             }
         }
         return score
+    }
+}
+
+/** True when a newly measured frame actually moved or relabeled a box. */
+object BoxMotion {
+    fun positionsChanged(
+        before: List<BoxObservation>,
+        after: List<BoxObservation>,
+        epsilon: Float = 0.5f,
+    ): Boolean {
+        if (before.size != after.size) return true
+        if (after.isEmpty()) return false
+        val prior = HashMap<Int, BoxObservation>(before.size)
+        for (box in before) prior[box.trackId] = box
+        for (box in after) {
+            val old = prior[box.trackId] ?: return true
+            if (old.label != box.label || old.kind != box.kind) return true
+            if (abs(old.left - box.left) > epsilon) return true
+            if (abs(old.top - box.top) > epsilon) return true
+            if (abs(old.right - box.right) > epsilon) return true
+            if (abs(old.bottom - box.bottom) > epsilon) return true
+        }
+        return false
     }
 }

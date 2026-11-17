@@ -6,10 +6,12 @@ package com.mattumali.visortracker
  * examples, but inference uses substantially more CPU on phones.
  *
  * [maxResults] is a detector candidate pool, not the number of boxes drawn.
- * The overlay hard-caps display at [NearbyCandidates.DISPLAY_LIMIT]. A pool of
- * eight leaves room to prefer a visually nearer box, and to keep a calibrated
- * target, instead of blindly keeping the five highest scores. Raising the
- * score floor drops the 0.25 clutter that Lite0 was willing to name.
+ * The overlay hard-caps display at [NearbyCandidates.DISPLAY_LIMIT] and may
+ * show fewer. A pool of eight leaves room to keep a calibrated target.
+ * [scoreThreshold] is a category-score floor, not a percent of correct labels.
+ * 0.50 does not mean the model is right half the time. Fast mode stays Lite0;
+ * Lite2 is opt-in because this tree has no paired accuracy/FPS measurement
+ * that would justify making it the default.
  */
 enum class DetectionPreset(
     val modelAsset: String,

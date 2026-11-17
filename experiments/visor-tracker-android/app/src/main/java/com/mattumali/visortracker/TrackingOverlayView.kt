@@ -25,6 +25,11 @@ class TrackingOverlayView(context: Context) : View(context) {
         textSize = dp(13f)
         isFakeBoldText = true
     }
+    private val note = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+        textSize = dp(11f)
+    }
     private val background = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = 0xCC141414.toInt()
@@ -66,18 +71,22 @@ class TrackingOverlayView(context: Context) : View(context) {
 
     fun selectedTrackId(): Int? = distanceEstimator.selectedTrackId()
 
+    fun notificationDistance(): String = distanceEstimator.shortStatus(latest?.boxes.orEmpty())
+
     fun updateFrame(frame: FrameDetections) {
         if (frame.sequence < shownSequence) return
+        val previous = latest
         shownSequence = frame.sequence
         latest = frame
         receivedAt = SystemClock.elapsedRealtime()
         frameAgeMs = if (frame.capturedAtMs <= 0L) 0 else {
             (receivedAt - frame.capturedAtMs).toInt().coerceAtLeast(0)
         }
-        if (frame.boxes.isNotEmpty()) boxUpdates.incrementAndGet()
+        val moved = BoxMotion.positionsChanged(previous?.boxes.orEmpty(), frame.boxes)
+        if (moved) boxUpdates.incrementAndGet()
         removeCallbacks(expire)
         if (frame.boxes.isNotEmpty()) postDelayed(expire, 700L)
-        invalidate()
+        if (moved || previous == null) invalidate()
     }
 
     /** Drops boxes when motion expires, without letting an older clear beat a newer frame. */
@@ -104,10 +113,9 @@ class TrackingOverlayView(context: Context) : View(context) {
         super.onDraw(canvas)
         draws.incrementAndGet()
         val frame = latest ?: return
-        canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(22f), text)
-        if (distanceEstimator.readiness(frame.boxes) == DistanceReadiness.STALE) {
-            canvas.drawText("distance unavailable", dp(12f), dp(42f), text)
-        }
+        canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(18f), text)
+        canvas.drawText(distanceEstimator.banner(frame.boxes), dp(12f), dp(34f), text)
+        canvas.drawText(RelativeDistanceEstimator.LIMITATION, dp(12f), dp(48f), note)
         if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
         for (observation in frame.boxes) {
             val current = CoverGeometry.project(frame.width, frame.height, width, height, observation)

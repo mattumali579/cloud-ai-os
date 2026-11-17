@@ -17,6 +17,18 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.12: one calibrated distance, less replay lag
+
+Version code 12. Same package `com.mattumali.visortracker.stable` and the same signing certificate.
+
+Distance is still one track. Enter measured feet, aim that object at the center of Live View, and use Calibrate on the notification or in the app. The notification confirms the reference feet. Only that track id then shows approximate feet with `D = D0 × (h0 / h)`. A real change in apparent height shows on the next frame. A small jitter is smoothed. If the track leaves the frame, the overlay says **distance unavailable** and does not give those feet to another object. Tilt, rotation, and occlusion are not distance. Tests at 3, 6, and 10 ft are exact only when the box height scales as similar triangles; a 35% height change from tilt is more than 25% distance error. There is no depth sensor.
+
+The gray queue keeps six frames. Motion still steps those frames, then publishes the newest box once, so a backlog is not drawn as a trail of old positions. A detector result older than 300 ms that can no longer be walked onto the retained frames is dropped. Grayscale sampling no longer allocates a full-size luma copy on the decoder thread. YUV plane buffers are reused. The notification adds median milliseconds for grayscale (`g`), YUV-to-bitmap (`y`), MediaPipe (`ai`), the motion batch (`m`), and detection age (`d`). Changed-box FPS counts a new coordinate or label, not a redraw of the same box. Hands and faces stay off unless the checkbox is on. Fast mode remains EfficientDet-Lite0. The on-screen caption is **up to 5 visual candidates**. Weak `object` labels do not fill the five slots. This is not a claim about the five nearest objects.
+
+The v11 tag's publish job failed with `fatal: not a git repository` because `gh release create` ran without a checkout or `--repo`. That tag was not moved. v0.12's publish job checks out the repo, passes `--repo`, and uploads again if the release already exists.
+
+Physical Live View on the Galaxy S22 Ultra is still not measured here.
+
 ## Version 0.11: five nearby candidates, stabler names, same calibration
 
 The overlay draws at most five object boxes. The on-screen caption is **5 nearby candidates (visual estimate)**. That rank is not measured distance: one forward camera and one manual calibration cannot assign feet to five objects of different real sizes. Lower in the frame is treated as more likely to be near the wearer, and apparent size is compared only within the same label. Membership stays put unless a newcomer leads for several frames. The calibrated track keeps its slot while it is still tracked.

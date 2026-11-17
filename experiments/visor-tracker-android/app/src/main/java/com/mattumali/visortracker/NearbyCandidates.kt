@@ -12,7 +12,9 @@ package com.mattumali.visortracker
  *
  * Membership is sticky. A newcomer replaces the weakest visible track only
  * after it leads by [replaceMargin] for [promoteFrames] consecutive frames.
- * The calibrated track stays in the five whenever it is still a live object.
+ * The calibrated track stays inside the cap whenever it is still a live object.
+ * An uncertain name with a weak score is not used to fill empty slots.
+ * The object nearest the frame center is kept so calibration still has a target.
  * Hands and faces use leftover slots only, so they cannot push objects out.
  */
 class NearbyCandidates(
@@ -31,8 +33,9 @@ class NearbyCandidates(
         lockedId: Int?,
     ): List<BoxObservation> {
         if (frameWidth <= 0 || frameHeight <= 0 || limit <= 0) return emptyList()
-        val objects = boxes.filter { it.isLiveObject() }
-        val extras = boxes.filter { it.kind != "object" && it.trackId > 0 }
+        val prepared = poolForDisplay(frameWidth, frameHeight, boxes, lockedId)
+        val objects = prepared.filter { it.isLiveObject() }
+        val extras = prepared.filter { it.kind != "object" && it.trackId > 0 }
         val live = LinkedHashMap<Int, BoxObservation>()
         for (box in objects) live.putIfAbsent(box.trackId, box)
         val liveIds = live.keys
@@ -101,7 +104,29 @@ class NearbyCandidates(
 
     companion object {
         const val DISPLAY_LIMIT = 5
-        const val CAPTION = "5 nearby candidates (visual estimate)"
+        const val CAPTION = "up to 5 visual candidates"
+        /** Uncertain names below this score do not fill a slot. Not a correctness rate. */
+        const val UNCERTAIN_DISPLAY_SCORE = 0.62f
+
+        fun poolForDisplay(
+            frameWidth: Int,
+            frameHeight: Int,
+            boxes: List<BoxObservation>,
+            lockedId: Int?,
+        ): List<BoxObservation> {
+            if (frameWidth <= 0 || frameHeight <= 0) return boxes
+            val objects = boxes.filter { it.kind == "object" && it.trackId > 0 }
+            val centerId = objects.minByOrNull { box ->
+                val cx = (box.left + box.right) * 0.5f / frameWidth - 0.5f
+                val cy = (box.top + box.bottom) * 0.5f / frameHeight - 0.5f
+                cx * cx + cy * cy
+            }?.trackId
+            return boxes.filter { box ->
+                if (box.kind != "object") return@filter true
+                if (box.trackId == lockedId || box.trackId == centerId) return@filter true
+                box.label != LabelPolicy.UNCERTAIN || box.score >= UNCERTAIN_DISPLAY_SCORE
+            }
+        }
 
         fun visualNearness(box: BoxObservation, frameHeight: Int, peers: List<BoxObservation>): Float {
             val bottom = (box.bottom / frameHeight.toFloat()).coerceIn(0f, 1f)

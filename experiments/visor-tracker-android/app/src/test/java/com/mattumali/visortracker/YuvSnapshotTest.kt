@@ -1,6 +1,7 @@
 package com.mattumali.visortracker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class YuvSnapshotTest {
@@ -18,5 +19,24 @@ class YuvSnapshotTest {
         val g = (pixel shr 8) and 255
         val b = pixel and 255
         assertEquals(true, r > g && r > b)
+    }
+
+    @Test fun downscaleWritesOnlyTheOutputPixels() {
+        val frameWidth = 16
+        val frameHeight = 8
+        val y = ByteArray(frameWidth * frameHeight) { 235.toByte() }
+        val uv = ByteArray((frameWidth / 2) * (frameHeight / 2)) { 128.toByte() }
+        val rgb = IntArray(8 * 4)
+        val (width, height) = YuvSnapshot.writeArgb(
+            frameWidth, frameHeight, 8,
+            y, y.size, frameWidth, 1, 0, 0,
+            uv, uv.size, frameWidth / 2, 1, 0, 0,
+            uv, uv.size, frameWidth / 2, 1, 0, 0,
+            rgb,
+        )
+        assertEquals(8, width)
+        assertEquals(4, height)
+        assertTrue(width * height < frameWidth * frameHeight)
+        assertEquals(0xffffffff.toInt(), rgb[width * (height / 2) + width / 2])
     }
 }

@@ -1,7 +1,7 @@
 package com.mattumali.visortracker
 
+import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.max
 
 /**
  * An offline, calibrated *relative* distance estimate for ONE physical target.
@@ -19,6 +19,26 @@ import kotlin.math.max
  * the feet value.
  */
 enum class DistanceReadiness { UNCALIBRATED, LIVE, STALE }
+
+/**
+ * Similar-triangles scale for one object: D = D0 × (h0 / h).
+ * Heights may be pixels or fractions of the frame; they must use the same unit.
+ * This is not a depth measurement. [percentError] is for tests and logs.
+ */
+object DistanceScale {
+    fun feet(referenceFeet: Float, referenceHeight: Float, observedHeight: Float): Float? {
+        if (!referenceFeet.isFinite() || !referenceHeight.isFinite() || !observedHeight.isFinite()) return null
+        if (referenceHeight <= 0f || observedHeight <= 0f) return null
+        val raw = referenceFeet * referenceHeight / observedHeight
+        if (!raw.isFinite() || raw !in 0.5f..150f) return null
+        return raw
+    }
+
+    fun percentError(estimated: Float, measuredTruth: Float): Float {
+        if (!measuredTruth.isFinite() || measuredTruth == 0f) return Float.POSITIVE_INFINITY
+        return abs(estimated - measuredTruth) / abs(measuredTruth) * 100f
+    }
+}
 
 class RelativeDistanceEstimator {
     @Volatile private var selectedId: Int? = null
@@ -59,8 +79,8 @@ class RelativeDistanceEstimator {
         originalHeightFraction = heightFraction
         originalFeet = measuredFeet
         smoothedFeet = measuredFeet
-        return "Distance locked: ${centered.label} #${centered.trackId} at ~%.1f ft".format(
-            java.util.Locale.US, measuredFeet
+        return "Distance locked: ${centered.label} #${centered.trackId} at %.1f ft. Same object and orientation only.".format(
+            Locale.US, measuredFeet
         )
     }
 
@@ -69,14 +89,31 @@ class RelativeDistanceEstimator {
         if (box.kind != "object" || box.trackId != selectedId || frameHeight <= 0) return null
         val fraction = (box.bottom - box.top) / frameHeight
         if (!fraction.isFinite() || fraction < 0.03f) return null
-        val raw = originalFeet * originalHeightFraction / fraction
-        if (!raw.isFinite() || raw !in 0.5f..150f) return null
+        val raw = DistanceScale.feet(originalFeet, originalHeightFraction, fraction) ?: return null
 
-        // Suppress box-size jitter without lagging excessively during movement.
+        // Small box jitter is smoothed. A real size change (more than 8%) shows
+        // on the next frame so the feet reading is not stuck on the reference.
         val previous = smoothedFeet
-        val next = if (previous == null) raw else previous + (raw - previous) * 0.35f
-        smoothedFeet = max(0.5f, next)
+        val next = if (previous == null || previous <= 0f ||
+            abs(raw - previous) / previous >= 0.08f
+        ) raw else previous + (raw - previous) * 0.35f
+        smoothedFeet = next.coerceIn(0.5f, 150f)
         return smoothedFeet
+    }
+
+    /** Short line for the ongoing notification. Blank before the first lock. */
+    fun shortStatus(boxes: List<BoxObservation>): String = when (readiness(boxes)) {
+        DistanceReadiness.UNCALIBRATED -> ""
+        DistanceReadiness.STALE -> "distance unavailable"
+        DistanceReadiness.LIVE -> "cal %.1f ft".format(Locale.US, originalFeet)
+    }
+
+    /** Overlay line while Live View is up. */
+    fun banner(boxes: List<BoxObservation>): String = when (readiness(boxes)) {
+        DistanceReadiness.UNCALIBRATED -> "Aim at one full object, then Calibrate"
+        DistanceReadiness.STALE -> "distance unavailable"
+        DistanceReadiness.LIVE ->
+            "Calibrated %.1f ft · same object, same orientation".format(Locale.US, originalFeet)
     }
 
     fun selectedTrackId(): Int? = selectedId
@@ -88,6 +125,11 @@ class RelativeDistanceEstimator {
         } else {
             DistanceReadiness.STALE
         }
+    }
+
+    companion object {
+        const val LIMITATION =
+            "No depth sensor. Tilt, rotation, or occlusion can miss by more than 25%."
     }
 
     fun clear() {

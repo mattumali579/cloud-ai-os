@@ -1,6 +1,7 @@
 package com.mattumali.visortracker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -56,5 +57,12 @@ class MotionTrackerTest {
         tracker.advance(patterned(0))
         tracker.advance(patterned(0))
         assertEquals(null, tracker.advance(patterned(0)))
+    }
+
+    @Test fun unchangedCoordinatesAreNotAFreshBoxUpdate() {
+        val box = BoxObservation("object", "chair", 0.9f, 10f, 10f, 40f, 50f, trackId = 2)
+        assertFalse(BoxMotion.positionsChanged(listOf(box), listOf(box.copy())))
+        assertTrue(BoxMotion.positionsChanged(listOf(box), listOf(box.copy(left = 14f))))
+        assertTrue(BoxMotion.positionsChanged(listOf(box), listOf(box.copy(label = "object"))))
     }
 }
