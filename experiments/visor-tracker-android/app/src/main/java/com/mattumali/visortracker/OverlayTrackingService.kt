@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.ComponentName
+import android.service.quicksettings.TileService
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -62,6 +64,7 @@ class OverlayTrackingService : Service() {
     private var streamJob: Job? = null
     private var running = false
     private var includeHandsFaces = false
+    private var preset = DetectionPreset.FAST
     private var lastOfferedAtMs = 0L
     private var lastReportAtMs = 0L
     private var lastBoxCount = 0
@@ -80,7 +83,13 @@ class OverlayTrackingService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        includeHandsFaces = intent?.getBooleanExtra(EXTRA_ALL_DETECTORS, false) ?: false
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        includeHandsFaces = intent?.getBooleanExtra(
+            EXTRA_ALL_DETECTORS, prefs.getBoolean(PREF_HANDS_FACES, false)
+        ) ?: prefs.getBoolean(PREF_HANDS_FACES, false)
+        preset = DetectionPreset.read(
+            intent?.getStringExtra(EXTRA_PRESET) ?: prefs.getString(PREF_PRESET, null)
+        )
 
         createChannel()
         startForeground(NOTIFICATION_ID, notification("Preparing VDK camera overlay"))
@@ -108,10 +117,11 @@ class OverlayTrackingService : Service() {
 
         running = true
         active = true
-        report("Loading detector (VDK video up to 30 FPS)")
+        refreshTile()
+        report("Loading " + preset.name.lowercase() + " detector (VDK video up to 30 FPS)")
         worker.execute {
             try {
-                val ready = VisionPipeline(applicationContext, includeHandsFaces)
+                val ready = VisionPipeline(applicationContext, includeHandsFaces, preset)
                 mainHandler.post {
                     if (!running) {
                         worker.execute { ready.close() }
@@ -199,7 +209,7 @@ class OverlayTrackingService : Service() {
                                 var bitmap: Bitmap? = null
                                 try {
                                     if (!running) return@execute
-                                    bitmap = snapshot.toBitmap()
+                                    bitmap = snapshot.toBitmap(preset.maxFrameWidth)
                                     val detections = pipeline?.detect(bitmap) ?: return@execute
                                     inferenceFrames.incrementAndGet()
                                     lastBoxCount = detections.boxes.size
@@ -283,6 +293,7 @@ class OverlayTrackingService : Service() {
     override fun onDestroy() {
         running = false
         active = false
+        refreshTile()
         streamJob?.cancel()
         scope.cancel()
         visor?.close()
@@ -302,7 +313,19 @@ class OverlayTrackingService : Service() {
         super.onDestroy()
     }
 
+    private fun refreshTile() {
+        try {
+            TileService.requestListeningState(
+                this, ComponentName(this, TrackerQuickTile::class.java)
+            )
+        } catch (_: Exception) { /* The tile is optional; never break tracking. */ }
+    }
+
     companion object {
+        const val PREFS = "tracker"
+        const val PREF_PRESET = "detector_preset"
+        const val PREF_HANDS_FACES = "detect_hands_faces"
+        const val EXTRA_PRESET = "preset"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
         const val EXTRA_ALL_DETECTORS = "all_detectors"
