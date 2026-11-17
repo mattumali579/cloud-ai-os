@@ -241,7 +241,9 @@ class OverlayTrackingService : Service() {
                     val anchor = gray
                     val locked = overlay?.selectedTrackId() != null
                     val inferenceDue = InferenceCadence.due(now, lastOfferedAtMs, locked)
-                    if (inferenceDue && processing.compareAndSet(false, true)) {
+                    if (DetectorSchedule.shouldStart(inferenceDue, !processing.get()) &&
+                        processing.compareAndSet(false, true)
+                    ) {
                         lastOfferedAtMs = now
                         try {
                             val snapshot = YuvSnapshot.capture(image)

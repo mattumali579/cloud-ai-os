@@ -14,9 +14,6 @@ android {
         targetSdk = 35
         versionCode = 22
         versionName = "0.22.0"
-        ndk {
-            abiFilters += "arm64-v8a"
-        }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -50,6 +47,11 @@ android {
     buildTypes.getByName("release") {
         isMinifyEnabled = false
         isDebuggable = false
+        // The signed phone APK stays arm64. Debug and androidTest keep the
+        // emulator ABIs that ship inside MediaPipe so a real detector test can run.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     // Samsung's installer reports only "App not installed" for a debuggable APK
@@ -74,6 +76,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.core:core-ktx:1.15.0")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }
 
 val visionModels = mapOf(
