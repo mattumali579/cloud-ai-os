@@ -62,6 +62,8 @@ class TrackingOverlayView(context: Context) : View(context) {
     fun clear() {
         latest = null
         smoothBoxes.clear()
+        // A restarted camera session must be calibrated again.
+        distanceEstimator.clear()
         invalidate()
     }
 
