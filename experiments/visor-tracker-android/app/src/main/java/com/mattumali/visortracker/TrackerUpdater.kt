@@ -317,7 +317,7 @@ class TrackerUpdateReceiver : BroadcastReceiver() {
                 @Suppress("DEPRECATION")
                 val confirmation = if (Build.VERSION.SDK_INT >= 33) {
                     intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
-                } else intent.getParcelableExtra(Intent.EXTRA_INTENT)
+                } else intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 if (confirmation != null) {
                     confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     TrackerUpdater.notifyAction(
