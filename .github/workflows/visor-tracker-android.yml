@@ -29,6 +29,11 @@ jobs:
         run: |
           sdkmanager --list --channel=3 | grep -E "platforms;android-37" || true
           sdkmanager --channel=3 --install "platforms;android-37.0" "build-tools;36.0.0"
+      - name: Verify existing Tracker app identity
+        working-directory: experiments/visor-tracker-android
+        run: |
+          grep -Fq 'applicationId = "com.mattumali.visortracker.stream"' app/build.gradle.kts
+          grep -Fq 'versionCode = 4' app/build.gradle.kts
       - name: Build APK and run unit tests
         working-directory: experiments/visor-tracker-android
         run: gradle --no-daemon assembleDebug testDebugUnitTest
