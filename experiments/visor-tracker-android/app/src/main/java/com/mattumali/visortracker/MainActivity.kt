@@ -17,6 +17,7 @@ import com.macedonga.visor.kit.protocol.Scope
 /** Launcher for the VDK camera grant and background overlay. No developer token needed. */
 class MainActivity : ComponentActivity() {
     private lateinit var includeAll: CheckBox
+    private lateinit var accurate: CheckBox
     private lateinit var status: TextView
 
     private val grantCamera = registerForActivityResult(RequestScopes()) { grants ->
@@ -29,6 +30,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prefs = getSharedPreferences(OverlayTrackingService.PREFS, MODE_PRIVATE)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val pad = dp(20)
@@ -68,9 +70,25 @@ class MainActivity : ComponentActivity() {
         })
         includeAll = CheckBox(this).apply {
             text = "Also detect hands and faces (slower)"
-            isChecked = false
+            isChecked = prefs.getBoolean(OverlayTrackingService.PREF_HANDS_FACES, false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(OverlayTrackingService.PREF_HANDS_FACES, checked).apply()
+            }
         }
         root.addView(includeAll)
+        accurate = CheckBox(this).apply {
+            text = "Higher accuracy (EfficientDet-Lite2; more battery / lower AI FPS)"
+            isChecked = DetectionPreset.read(
+                prefs.getString(OverlayTrackingService.PREF_PRESET, null)
+            ) == DetectionPreset.ACCURATE
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putString(
+                    OverlayTrackingService.PREF_PRESET,
+                    if (checked) DetectionPreset.ACCURATE.name else DetectionPreset.FAST.name
+                ).apply()
+            }
+        }
+        root.addView(accurate)
         root.addView(Button(this).apply {
             text = "3. START FAST OVERLAY"
             setOnClickListener { startOverlay() }
@@ -89,7 +107,11 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(status)
         root.addView(TextView(this).apply {
-            text = "After START, switch to Visor and keep Live View fully expanded. " +
+            text = "For fewer app switches: add the Visor Tracker Quick Settings tile " +
+                "(swipe down twice > Edit > add Visor Tracker). Open Live View first, " +
+                "then toggle tracking from Quick Settings. " +
+                "The selected accuracy mode takes effect on the next start. " +
+                "After START, switch to Visor and keep Live View fully expanded. " +
                 "The system notification shows measured VIDEO FPS and DETECTION FPS. " +
                 "For best speed, leave hands/faces unchecked. " +
                 "Tracking is on your PHONE; ordinary Ray-Ban Meta glasses have no display. " +
@@ -116,7 +138,9 @@ class MainActivity : ComponentActivity() {
         try {
             startForegroundService(Intent(this, OverlayTrackingService::class.java)
                 .setAction(OverlayTrackingService.ACTION_START)
-                .putExtra(OverlayTrackingService.EXTRA_ALL_DETECTORS, includeAll.isChecked))
+                .putExtra(OverlayTrackingService.EXTRA_ALL_DETECTORS, includeAll.isChecked)
+                .putExtra(OverlayTrackingService.EXTRA_PRESET,
+                    if (accurate.isChecked) DetectionPreset.ACCURATE.name else DetectionPreset.FAST.name))
             status.text = "Starting fast overlay; open Visor Live View"
         } catch (error: Exception) {
             status.text = "Could not start tracking: " + error.message
