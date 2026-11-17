@@ -105,3 +105,47 @@ jobs:
           }
           Write-Host "$path syntax valid on Windows PowerShell 5.1."
           }
+
+  install-android16-with-legacy-present:
+    name: Install stable replacement on Android 16 with legacy Tracker still installed
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download the freshly built stable replacement
+        uses: actions/download-artifact@v4
+        with:
+          name: visor-tracker-debug-apk
+          path: /tmp/new-tracker
+      - name: Download v0.5 legacy-package APK for conflict regression test
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download visor-tracker-v5 -R mattumali579/cloud-ai-os \
+            --pattern Visor-Fast-Tracking.apk --dir /tmp
+          printf '0e957c8dcf42fea00fe60584a603d17cd64e304b6bb2a97e86cf9468707f455e  /tmp/Visor-Fast-Tracking.apk\n' | sha256sum -c -
+      - name: Configure KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=1"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify legacy and new stable app can both install on Android 16
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 2048M
+          heap-size: 512M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            set -euxo pipefail
+            adb wait-for-device
+            adb install /tmp/Visor-Fast-Tracking.apk
+            adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
+            adb install /tmp/new-tracker/app-debug.apk
+            adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'
+            adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=6'
+            echo "PASS: new stable Tracker installs alongside legacy on Android 16, no signing conflict"
