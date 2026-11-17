@@ -40,9 +40,21 @@ class PipelineBenchmarkTest {
             assertNotNull(moved)
             assertEquals(3, moved!!.boxes.size)
         }
-        println("pipeline bench median us: yuv1280x720to384=$yuvMs motion3boxes=$motionMs")
+        val lockedMs = medianMicros(30) {
+            val tracker = MotionTracker()
+            tracker.reset(FrameDetections(192, 108, listOf(
+                BoxObservation("object", "chair", 0.9f, 40f, 30f, 90f, 80f, trackId = 1),
+            )), textured(192, 108, 0))
+            val moved = tracker.advance(textured(192, 108, 2))
+            assertNotNull(moved)
+            assertEquals(1, moved!!.boxes.size)
+        }
+        println("pipeline bench median us: yuv1280x720to384=$yuvMs motion3boxes=$motionMs locked1box=$lockedMs")
         assertTrue("yuv median ${yuvMs}us", yuvMs in 1..80_000)
         assertTrue("motion median ${motionMs}us", motionMs in 1..80_000)
+        // One locked box has to finish well inside a 33 ms camera frame on this JVM.
+        // This is not a Galaxy S22 Ultra measurement.
+        assertTrue("locked motion median ${lockedMs}us", lockedMs in 1..15_000)
     }
 
     private fun textured(width: Int, height: Int, dx: Int): GrayFrame {

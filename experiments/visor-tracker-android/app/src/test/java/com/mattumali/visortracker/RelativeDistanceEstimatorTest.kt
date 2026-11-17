@@ -63,6 +63,7 @@ class RelativeDistanceEstimatorTest {
         val estimator = RelativeDistanceEstimator()
         estimator.calibrate(frame(box()), 8f)
         assertEquals(DistanceReadiness.STALE, estimator.readiness(emptyList()))
+        assertTrue(estimator.banner(emptyList()).contains("lock lost"))
         assertNull(estimator.estimate(300, box(id = 15, height = 180f)))
         assertEquals(4, estimator.selectedTrackId())
         assertEquals(DistanceReadiness.LIVE, estimator.readiness(listOf(box(height = 50f))))
@@ -75,6 +76,17 @@ class RelativeDistanceEstimatorTest {
         assertTrue(estimator.calibrate(frame(box(height = 10f)), 6f)
             .contains("Target too small"))
         assertNull(estimator.estimate(300, box()))
+    }
+
+    @Test fun redrawOfTheSameFrameDoesNotMoveFeet() {
+        val estimator = RelativeDistanceEstimator()
+        estimator.calibrate(frame(box()), 6f)
+        val first = estimator.estimate(300, box(height = 104f), sequence = 3)!!
+        val redraw = estimator.estimate(300, box(height = 104f), sequence = 3)!!
+        assertEquals(first, redraw, 0.0001f)
+        val nextFrame = estimator.estimate(300, box(height = 104f), sequence = 4)!!
+        val raw = DistanceScale.feet(6f, 100f, 104f)!!
+        assertTrue(kotlin.math.abs(nextFrame - raw) < kotlin.math.abs(first - raw))
     }
 
     @Test fun oneFrameSizeChangeUpdatesFeetImmediately() {

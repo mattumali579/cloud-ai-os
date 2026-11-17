@@ -82,11 +82,13 @@ class TrackingOverlayView(context: Context) : View(context) {
         frameAgeMs = if (frame.capturedAtMs <= 0L) 0 else {
             (receivedAt - frame.capturedAtMs).toInt().coerceAtLeast(0)
         }
-        val moved = BoxMotion.positionsChanged(previous?.boxes.orEmpty(), frame.boxes)
+        val previousBoxes = previous?.boxes.orEmpty()
+        val moved = BoxMotion.positionsChanged(previousBoxes, frame.boxes)
+        val cleared = frame.boxes.isEmpty() && previousBoxes.isNotEmpty()
         if (moved) boxUpdates.incrementAndGet()
         removeCallbacks(expire)
         if (frame.boxes.isNotEmpty()) postDelayed(expire, 700L)
-        if (moved || previous == null) invalidate()
+        if (moved || cleared || previous == null) invalidate()
     }
 
     /** Drops boxes when motion expires, without letting an older clear beat a newer frame. */
@@ -116,6 +118,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(18f), text)
         canvas.drawText(distanceEstimator.banner(frame.boxes), dp(12f), dp(34f), text)
         canvas.drawText(RelativeDistanceEstimator.LIMITATION, dp(12f), dp(48f), note)
+        if (frame.boxes.isEmpty()) return
         if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
         for (observation in frame.boxes) {
             val current = CoverGeometry.project(frame.width, frame.height, width, height, observation)
@@ -128,7 +131,7 @@ class TrackingOverlayView(context: Context) : View(context) {
             }
             stroke.color = color
             canvas.drawRoundRect(current, dp(7f), dp(7f), stroke)
-            val feet = distanceEstimator.estimate(frame.height, observation)
+            val feet = distanceEstimator.estimate(frame.height, observation, frame.sequence)
             val distanceLabel = if (feet == null) "" else " ~%.1f ft".format(
                 java.util.Locale.US, feet
             )

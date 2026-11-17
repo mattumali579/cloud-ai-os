@@ -54,42 +54,128 @@ data class GrayFrame(
     }
 }
 
+/** What one grayscale frame did to the locked boxes. */
+data class MotionStep(
+    val frame: FrameDetections?,
+    val lost: Boolean,
+    val reacquired: Boolean,
+    val reacquireMs: Int = -1,
+)
+
 /**
  * Between MediaPipe results, follows textured patches using bounded block matching.
  * No extra model, cloud service or native tracking library. Estimates TRANSLATION,
- * not depth, identity or camera pose. Resets whenever a new detector result arrives.
+ * not depth, identity or camera pose.
+ *
+ * A failed match hides the box. The last good patch is searched again with a wider
+ * window for [reacquireMs], then the lock stays hidden until a new detector result.
+ * Coasting or repeating the last rectangle is not used: that is a frozen box.
  */
 class MotionTracker(
     private val searchRadius: Int = 16,
     private val patchRadius: Int = 4,
-    private val maxPredictionFrames: Int = 36
+    private val maxPredictionFrames: Int = 45,
+    private val reacquireRadius: Int = 28,
+    private val reacquireMs: Long = 250L,
 ) {
     private var previous: GrayFrame? = null
     private var current: FrameDetections? = null
     private var age = 0
+    private var lostAtMs: Long? = null
+    private var lostGray: GrayFrame? = null
+    private var lostFrame: FrameDetections? = null
 
     fun reset(detections: FrameDetections, capturedAt: GrayFrame) {
         current = detections.copy(boxes = detections.boxes.map { it.copy(points = it.points.toList()) })
         previous = capturedAt
         age = 0
+        clearLost()
     }
 
-    fun advance(frame: GrayFrame): FrameDetections? {
+    fun advance(frame: GrayFrame): FrameDetections? = step(frame, frame.capturedAtMs).frame
+
+    fun step(frame: GrayFrame, nowMs: Long): MotionStep {
+        if (lostAtMs != null) return tryReacquire(frame, nowMs)
         val old = previous
         val visible = current
         previous = frame
         if (visible == null || old == null || age++ > maxPredictionFrames) {
             current = null
-            return null
+            return MotionStep(null, lost = visible != null, reacquired = false)
         }
         if (old.width != frame.width || old.height != frame.height) {
             current = null
-            return null
+            return MotionStep(null, lost = true, reacquired = false)
         }
-        val ratioX = visible.width.toFloat() / frame.width
-        val ratioY = visible.height.toFloat() / frame.height
+        val shifted = shiftBoxes(old, frame, visible, searchRadius) ?: run {
+            // The template is the last good frame, not this blurred one.
+            lostAtMs = nowMs
+            lostGray = old
+            lostFrame = visible
+            current = null
+            return MotionStep(
+                hidden(visible, frame),
+                lost = true,
+                reacquired = false,
+            )
+        }
+        current = shifted
+        return MotionStep(shifted, lost = false, reacquired = false)
+    }
+
+    private fun tryReacquire(frame: GrayFrame, nowMs: Long): MotionStep {
+        val start = lostAtMs
+        val template = lostGray
+        val visible = lostFrame
+        val elapsed = if (start == null) Long.MAX_VALUE else nowMs - start
+        if (start == null || template == null || visible == null || elapsed > reacquireMs ||
+            template.width != frame.width || template.height != frame.height
+        ) {
+            clearLost()
+            previous = frame
+            current = null
+            return MotionStep(null, lost = true, reacquired = false)
+        }
+        val shifted = shiftBoxes(template, frame, visible, reacquireRadius)
+        if (shifted == null) {
+            return MotionStep(hidden(visible, frame), lost = true, reacquired = false)
+        }
+        val found = shifted.copy(sequence = frame.sequence, capturedAtMs = frame.capturedAtMs)
+        current = found
+        previous = frame
+        age = 0
+        clearLost()
+        return MotionStep(
+            found,
+            lost = false,
+            reacquired = true,
+            reacquireMs = elapsed.toInt().coerceAtLeast(0),
+        )
+    }
+
+    private fun hidden(visible: FrameDetections, frame: GrayFrame) = visible.copy(
+        boxes = emptyList(),
+        sequence = frame.sequence,
+        capturedAtMs = frame.capturedAtMs,
+    )
+
+    private fun clearLost() {
+        lostAtMs = null
+        lostGray = null
+        lostFrame = null
+    }
+
+    /** Null when every patch is too smooth, out of range, or an unsafe match. */
+    private fun shiftBoxes(
+        before: GrayFrame,
+        after: GrayFrame,
+        visible: FrameDetections,
+        radius: Int,
+    ): FrameDetections? {
+        val ratioX = visible.width.toFloat() / after.width
+        val ratioY = visible.height.toFloat() / after.height
         val boxes = visible.boxes.mapNotNull { box ->
-            val shift = estimate(old, frame, box, ratioX, ratioY) ?: return@mapNotNull null
+            val shift = estimate(before, after, box, ratioX, ratioY, radius) ?: return@mapNotNull null
             val (dx, dy) = shift
             box.copy(
                 left = box.left + dx, right = box.right + dx,
@@ -97,14 +183,12 @@ class MotionTracker(
                 points = box.points.map { (x, y) -> x + dx to y + dy }
             )
         }
-        val published = visible.copy(
+        if (boxes.isEmpty()) return null
+        return visible.copy(
             boxes = boxes,
-            sequence = frame.sequence,
-            capturedAtMs = frame.capturedAtMs,
+            sequence = after.sequence,
+            capturedAtMs = after.capturedAtMs,
         )
-        // A failed match drops the box. Holding the last coordinate is a frozen box.
-        current = if (boxes.isEmpty()) null else published
-        return published
     }
 
     private fun estimate(
@@ -112,7 +196,8 @@ class MotionTracker(
         after: GrayFrame,
         box: BoxObservation,
         ratioX: Float,
-        ratioY: Float
+        ratioY: Float,
+        radius: Int,
     ): Pair<Float, Float>? {
         val midX = (box.left + box.right) / 2f / ratioX
         val midY = (box.top + box.bottom) / 2f / ratioY
@@ -123,14 +208,26 @@ class MotionTracker(
             (midX - qX).toInt() to (midY - qY).toInt(),
             (midX + qX).toInt() to (midY + qY).toInt()
         )
-        val offsets = centers.mapNotNull { (cx, cy) -> matchPatch(before, after, cx, cy) }
+        val offsets = centers.mapNotNull { (cx, cy) -> matchPatch(before, after, cx, cy, radius) }
         if (offsets.isEmpty()) return null
-        val dx = offsets.map { it.first }.sorted()[offsets.size / 2]
-        val dy = offsets.map { it.second }.sorted()[offsets.size / 2]
+        var dx = offsets.map { it.first }.sorted()[offsets.size / 2]
+        var dy = offsets.map { it.second }.sorted()[offsets.size / 2]
+        val zero = scoreAt(before, after, midX.toInt(), midY.toInt(), 0, 0)
+        val best = scoreAt(before, after, midX.toInt(), midY.toInt(), dx, dy)
+        if (zero != null && best != null && suppressStationaryJitter(dx, dy, zero, best)) {
+            dx = 0
+            dy = 0
+        }
         return dx * ratioX to dy * ratioY
     }
 
-    private fun matchPatch(before: GrayFrame, after: GrayFrame, cx: Int, cy: Int): Pair<Int, Int>? {
+    private fun matchPatch(
+        before: GrayFrame,
+        after: GrayFrame,
+        cx: Int,
+        cy: Int,
+        radius: Int,
+    ): Pair<Int, Int>? {
         if (cx - patchRadius < 0 || cy - patchRadius < 0 ||
             cx + patchRadius >= before.width || cy + patchRadius >= before.height) return null
 
@@ -149,9 +246,9 @@ class MotionTracker(
         // Coarse step finds head-turn motion; the fine steps restore the old 1 px result.
         var bestDx = 0
         var bestDy = 0
-        val stages = arrayOf(4 to searchRadius, 2 to 4, 1 to 1)
-        for ((step, radius) in stages) {
-            val found = searchAround(before, after, cx, cy, bestDx, bestDy, radius, step) ?: return null
+        val stages = arrayOf(4 to radius, 2 to 4, 1 to 1)
+        for ((step, window) in stages) {
+            val found = searchAround(before, after, cx, cy, bestDx, bestDy, window, step) ?: return null
             bestDx = found.first
             bestDy = found.second
         }
@@ -216,6 +313,15 @@ class MotionTracker(
     }
 }
 
+/** A 1px match that is no better than staying put is sensor noise, not motion. */
+internal fun suppressStationaryJitter(dx: Int, dy: Int, zeroScore: Int, bestScore: Int): Boolean {
+    if (dx == 0 && dy == 0) return false
+    if (abs(dx) > 1 || abs(dy) > 1) return false
+    return zeroScore <= bestScore + STATIONARY_SLACK
+}
+
+private const val STATIONARY_SLACK = 12
+
 /** True when a newly measured frame actually moved or relabeled a box. */
 object BoxMotion {
     fun positionsChanged(
@@ -223,8 +329,9 @@ object BoxMotion {
         after: List<BoxObservation>,
         epsilon: Float = 0.5f,
     ): Boolean {
-        if (before.size != after.size) return true
+        // Hiding a lost lock is not a fresh coordinate. Counting it inflates box FPS.
         if (after.isEmpty()) return false
+        if (before.size != after.size) return true
         val prior = HashMap<Int, BoxObservation>(before.size)
         for (box in before) prior[box.trackId] = box
         for (box in after) {

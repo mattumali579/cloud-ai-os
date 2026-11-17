@@ -26,7 +26,6 @@ import com.macedonga.visor.kit.Visor
 import com.macedonga.visor.kit.protocol.LiveConfig
 import com.macedonga.visor.kit.protocol.LiveQuality
 import com.macedonga.visor.kit.protocol.Scope
-import java.util.ArrayDeque
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -45,27 +44,22 @@ import kotlinx.coroutines.launch
  *
  * No camera server, no second phone camera session, no JPEG polling and no user
  * token sent over the network. The VDK requires a one-time CAMERA scope grant.
- * Decoding happens on an IO coroutine; inference runs on a separate worker so
- * slow AI never blocks the video decoder. A frame already processing is dropped.
+ * Decoding happens on an IO coroutine. The motion tracker steps the newest gray
+ * frame. Object recognition stays at 5 Hz before a lock and 4 Hz after it, on a
+ * separate worker, so a slow detection cannot block the camera frames.
  */
 class OverlayTrackingService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val motionWorker = Executors.newSingleThreadExecutor()
     private val motionBusy = AtomicBoolean(false)
-    private val motionTracker = MotionTracker()
+    private val handoff = TrackingHandoff()
     private val pendingDetection = AtomicReference<DetectionBaseline?>(null)
     private val frameSequence = AtomicLong(0)
-    private val grayQueue = ArrayDeque<GrayFrame>()
-    private val grayLock = Any()
-    private val motionHistory = ArrayDeque<GrayFrame>()
-    private data class DetectionBaseline(val detections: FrameDetections, val gray: GrayFrame)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val processing = AtomicBoolean(false)
     private val decodedFrames = AtomicInteger(0)
     private val inferenceFrames = AtomicInteger(0)
-    private val motionFrames = AtomicInteger(0)
-    private val stats = PipelineStats()
     private val stages = StageTimings()
     private val windows by lazy { getSystemService(Context.WINDOW_SERVICE) as WindowManager }
 
@@ -176,7 +170,8 @@ class OverlayTrackingService : Service() {
                 streamBeginMs = lastReportAtMs
                 decodedFrames.set(0)
                 inferenceFrames.set(0)
-                motionFrames.set(0)
+                handoff.reset()
+                handoff.metrics.snapshotAndReset()
                 report("VDK connected; waiting for Visor Live View")
 
                 val requested = LiveConfig {
@@ -200,20 +195,13 @@ class OverlayTrackingService : Service() {
                     }
                     if (gray != null) stages.record("g", SystemClock.elapsedRealtime() - grayStarted)
                     if (gray != null) {
-                        synchronized(grayLock) {
-                            var dropped = 0
-                            while (grayQueue.size >= FrameBudget.MAX_GRAY_QUEUE) {
-                                grayQueue.removeFirst()
-                                dropped++
-                            }
-                            grayQueue.addLast(gray)
-                            if (dropped > 0) stats.recordDiscard(dropped)
-                        }
+                        handoff.offer(gray)
                         scheduleMotion()
                     }
 
                     val anchor = gray
-                    val inferenceDue = anchor != null && now - lastOfferedAtMs >= MIN_INFERENCE_INTERVAL_MS
+                    val locked = overlay?.selectedTrackId() != null
+                    val inferenceDue = anchor != null && InferenceCadence.due(now, lastOfferedAtMs, locked)
                     if (anchor != null && inferenceDue && processing.compareAndSet(false, true)) {
                         lastOfferedAtMs = now
                         try {
@@ -233,7 +221,9 @@ class OverlayTrackingService : Service() {
                                         detections.copy(sequence = sequence, capturedAtMs = now),
                                         anchor,
                                     )
-                                    if (pendingDetection.getAndSet(baseline) != null) stats.recordDiscard()
+                                    if (pendingDetection.getAndSet(baseline) != null) {
+                                        handoff.metrics.onStaleDetection()
+                                    }
                                     scheduleMotion()
                                 } catch (error: Exception) {
                                     report("Decode/detection failed: " + (error.message ?: "unknown"))
@@ -247,23 +237,20 @@ class OverlayTrackingService : Service() {
                             processing.set(false)
                             report("Hardware frame conversion failed: " + (error.message ?: "unknown"))
                         }
-                    } else if (inferenceDue) {
-                        stats.recordDiscard()
                     }
                     if (now - lastReportAtMs >= REPORT_MS) {
                         val seconds = (now - lastReportAtMs).coerceAtLeast(1) / 1000f
                         val videoFps = decodedFrames.getAndSet(0) / seconds
                         val detectFps = inferenceFrames.getAndSet(0) / seconds
                         val view = overlay
-                        val boxFps = (view?.consumeBoxUpdates() ?: motionFrames.getAndSet(0)) / seconds
+                        val boxFps = (view?.consumeBoxUpdates() ?: 0) / seconds
                         val drawFps = (view?.consumeDraws() ?: 0) / seconds
-                        val age = view?.frameAgeMs ?: 0
-                        val window = stats.snapshotAndReset()
+                        val window = handoff.metrics.snapshotAndReset()
+                        val trackFps = window.processed / seconds
                         lastReportAtMs = now
                         val metrics = PipelineStats.formatReport(
-                            videoFps, detectFps, boxFps, drawFps,
-                            age, window.p95AgeMs, window.discarded, lastBoxCount,
-                            stageSuffix(),
+                            videoFps, detectFps, trackFps, boxFps, drawFps,
+                            window, lastBoxCount, stageSuffix(),
                         )
                         val distance = view?.notificationDistance().orEmpty()
                         report(if (distance.isEmpty()) metrics else "$metrics | $distance")
@@ -295,37 +282,16 @@ class OverlayTrackingService : Service() {
             try {
                 while (running) {
                     val started = SystemClock.elapsedRealtime()
-                    val drained = synchronized(grayLock) {
-                        if (grayQueue.isEmpty()) emptyList() else grayQueue.toList().also { grayQueue.clear() }
-                    }
-                    val (batch, dropped) = FrameBudget.coalesceNewest(drained, FrameBudget.MAX_GRAY_QUEUE)
-                    if (dropped > 0) stats.recordDiscard(dropped)
-                    for (frame in batch) rememberFrame(frame)
                     val pending = pendingDetection.getAndSet(null)
-                    when {
-                        pending != null && canRebase(pending) -> {
-                            recordDetectionAge(pending)
-                            rebase(pending)
-                        }
-                        pending != null && FrameBudget.shouldDropStaleDetection(false, detectionAgeMs(pending)) -> {
-                            // The detector frame is no longer in the grayscale history.
-                            // Painting it would put boxes back where the objects were.
-                            stats.recordDiscard()
-                            publishMotion(batch)
-                        }
-                        pending != null -> {
-                            stats.recordDiscard()
-                            recordDetectionAge(pending)
-                            motionTracker.reset(pending.detections, pending.gray)
-                            val after = batch.filter { it.sequence > pending.gray.sequence }
-                            val stepped = stepMotion(after)
-                            if (stepped != null) publish(stepped)
-                            else if (after.isEmpty()) publish(pending.detections)
-                        }
-                        else -> publishMotion(batch)
-                    }
+                    if (pending != null) recordDetectionAge(pending)
+                    val event = handoff.pump(
+                        SystemClock.elapsedRealtime(),
+                        pending,
+                        overlay?.selectedTrackId(),
+                    )
                     stages.record("m", SystemClock.elapsedRealtime() - started)
-                    val more = synchronized(grayLock) { grayQueue.isNotEmpty() } || pendingDetection.get() != null
+                    if (event != null) publish(event.frame)
+                    val more = handoff.hasPending() || pendingDetection.get() != null
                     if (!more) break
                 }
             } catch (error: Exception) {
@@ -333,7 +299,7 @@ class OverlayTrackingService : Service() {
             } finally {
                 motionBusy.set(false)
             }
-            val more = running && (synchronized(grayLock) { grayQueue.isNotEmpty() } || pendingDetection.get() != null)
+            val more = running && (handoff.hasPending() || pendingDetection.get() != null)
             if (more) scheduleMotion()
         }
     }
@@ -350,63 +316,8 @@ class OverlayTrackingService : Service() {
     private fun stageSuffix(): String =
         "g${stages.median("g")} y${stages.median("y")} ai${stages.median("ai")} m${stages.median("m")} d${stages.median("d")}ms"
 
-    private fun rememberFrame(frame: GrayFrame) {
-        motionHistory.addLast(frame)
-        while (motionHistory.size > FrameBudget.MAX_GRAY_QUEUE) motionHistory.removeFirst()
-    }
-
-    /** A detector result is usable when its grayscale frame is still in the short history. */
-    private fun canRebase(pending: DetectionBaseline): Boolean {
-        if (motionHistory.isEmpty()) return true
-        return pending.gray.sequence >= motionHistory.first().sequence
-    }
-
-    private fun rebase(pending: DetectionBaseline) {
-        motionTracker.reset(pending.detections, pending.gray)
-        var latest: FrameDetections? = null
-        for (frame in motionHistory) {
-            if (frame.sequence <= pending.gray.sequence) continue
-            val stepped = motionTracker.advance(frame) ?: break
-            if (stepped.boxes.isEmpty()) {
-                publishLoss(frame.sequence)
-                return
-            }
-            latest = stepped
-        }
-        publish(latest ?: pending.detections)
-    }
-
-    /** Step every frame so the matcher stays continuous, then publish only the newest. */
-    private fun publishMotion(batch: List<GrayFrame>) {
-        if (batch.isEmpty()) return
-        val latest = stepMotion(batch) ?: return
-        publish(latest)
-    }
-
-    private fun stepMotion(frames: List<GrayFrame>): FrameDetections? {
-        var latest: FrameDetections? = null
-        for (frame in frames) {
-            val stepped = motionTracker.advance(frame)
-            if (stepped == null || stepped.boxes.isEmpty()) {
-                publishLoss(frame.sequence)
-                return null
-            }
-            latest = stepped
-        }
-        return latest
-    }
-
-    private fun publishLoss(sequence: Long) {
-        if (lastBoxCount == 0) return
-        lastBoxCount = 0
-        mainHandler.post { if (running) overlay?.clearUpTo(sequence) }
-    }
-
     private fun publish(frame: FrameDetections) {
         lastBoxCount = frame.boxes.count { it.kind == "object" }
-        if (frame.capturedAtMs > 0L) {
-            stats.recordAge((SystemClock.elapsedRealtime() - frame.capturedAtMs).toInt().coerceAtLeast(0))
-        }
         mainHandler.post { if (running) overlay?.updateFrame(frame) }
     }
 
@@ -493,6 +404,7 @@ class OverlayTrackingService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("Visor VDK tracking")
             .setContentText(line)
+            .setStyle(Notification.BigTextStyle().bigText(line))
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(android.R.drawable.ic_menu_compass, "Calibrate", calibrate)
@@ -509,7 +421,7 @@ class OverlayTrackingService : Service() {
         visor?.close()
         visor = null
         try { applicationContext.unregisterComponentCallbacks(displayCallbacks) } catch (_: Exception) { }
-        synchronized(grayLock) { grayQueue.clear() }
+        handoff.reset()
         overlay?.let {
             it.clear()
             try { windows.removeViewImmediate(it) } catch (_: Exception) { }
@@ -546,7 +458,6 @@ class OverlayTrackingService : Service() {
         const val EXTRA_ALL_DETECTORS = "all_detectors"
         private const val CHANNEL_ID = "visor_tracker_high_fps"
         private const val NOTIFICATION_ID = 4421
-        private const val MIN_INFERENCE_INTERVAL_MS = 66L // Up to ~15 detections/sec if hardware permits.
         private const val REPORT_MS = 4000L
         @Volatile var active: Boolean = false
             private set

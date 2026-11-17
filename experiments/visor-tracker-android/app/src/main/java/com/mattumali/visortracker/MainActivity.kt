@@ -191,9 +191,11 @@ class MainActivity : ComponentActivity() {
                 "then toggle tracking from Quick Settings. " +
                 "The selected accuracy mode takes effect on the next start. " +
                 "After START, switch to Visor and keep Live View fully expanded. " +
-                "The notification shows video FPS, AI FPS, changed-box FPS, draw FPS, box age, " +
-                "95th-percentile age, dropped frames, and median milliseconds for grayscale, " +
+                "The notification shows decoded video FPS, detector FPS, motion-tracker FPS, " +
+                "changed-box FPS, draw FPS, tracker interval and box age as p50/p95/p99 milliseconds, " +
+                "dropped frames, and median milliseconds for grayscale, " +
                 "YUV conversion, inference, motion, and detection age. " +
+                "Changed-box FPS does not count a redraw of the same rectangle. " +
                 "For best speed, leave hands/faces unchecked. " +
                 "Tracking is on your PHONE; ordinary Ray-Ban Meta glasses have no display. " +
                 "For distance calibration without leaving Live View, first set the " +

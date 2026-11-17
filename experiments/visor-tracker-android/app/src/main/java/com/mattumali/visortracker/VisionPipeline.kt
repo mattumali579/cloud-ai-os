@@ -117,7 +117,9 @@ class VisionPipeline(
             frameNumber++
             observed += recentHands
             observed += recentFaces
-            val tracked = tracks.update(observed)
+            // Drop grace-held rectangles before display. TrackIds still remembers
+            // the id internally; painting the hold would freeze the box in place.
+            val tracked = tracks.update(observed).filter { !it.held }
             val visible = nearby.select(width, height, tracked, lockedTrackId())
             // copy avoids mutations of cached detection objects after delivery to the UI.
             return FrameDetections(width, height, visible.map { it.copy(points = it.points.toList()) })

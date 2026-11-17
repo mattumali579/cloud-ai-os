@@ -25,14 +25,35 @@ class PipelineStatsTest {
         assertEquals(0, cleared.discarded)
     }
 
-    @Test fun reportNamesFreshRatesAgeAndDrops() {
-        assertEquals(
-            "V30 AI8 box20 draw30 age140ms p95220ms drop4 5obj",
-            PipelineStats.formatReport(30f, 8f, 20f, 30f, 140, 220, 4, 5)
+    @Test fun percentile50And99UseNearestRank() {
+        assertEquals(50, PipelineStats.percentile((1..100).toList(), 0.50))
+        assertEquals(99, PipelineStats.percentile((1..100).toList(), 0.99))
+    }
+
+    @Test fun reportNamesTrackerIntervalsAgeAndDrops() {
+        val lock = LockSnapshot(
+            decoded = 30,
+            processed = 29,
+            intervalP50 = 33,
+            intervalP95 = 40,
+            intervalP99 = 48,
+            ageP50 = 8,
+            ageP95 = 18,
+            ageP99 = 40,
+            dropped = 1,
+            staleDetections = 0,
+            jitterP95Fraction = 0.004f,
+            idSwitches = 0,
+            lockLosses = 0,
+            reacquireP95Ms = -1,
         )
         assertEquals(
-            "V30 AI8 box20 draw30 age140ms p95220ms drop4 5obj g1 y8 ai40 m3 d90ms",
-            PipelineStats.formatReport(30f, 8f, 20f, 30f, 140, 220, 4, 5, "g1 y8 ai40 m3 d90ms")
+            "V30 AI4 trk29 box2 draw30 i33/40/48 a8/18/40 drop1 stale0 jit0.40% id0 loss0 ra- 1obj",
+            PipelineStats.formatReport(30f, 4f, 29f, 2f, 30f, lock, 1)
+        )
+        assertEquals(
+            "V30 AI4 trk29 box2 draw30 i33/40/48 a8/18/40 drop1 stale0 jit0.40% id0 loss0 ra- 1obj g1 y8 ai40 m3 d90ms",
+            PipelineStats.formatReport(30f, 4f, 29f, 2f, 30f, lock, 1, "g1 y8 ai40 m3 d90ms")
         )
     }
 }
@@ -60,5 +81,12 @@ class FrameBudgetTest {
         assertTrue(FrameBudget.shouldDropStaleDetection(canRebase = false, ageMs = 301))
         assertFalse(FrameBudget.shouldDropStaleDetection(canRebase = true, ageMs = 800))
         assertFalse(FrameBudget.shouldDropStaleDetection(canRebase = false, ageMs = 120))
+    }
+
+    @Test fun anchorOutsideTheRebaseHistoryCannotBeWalked() {
+        assertTrue(FrameBudget.anchorStillInHistory(5, oldestSequence = 5))
+        assertTrue(FrameBudget.anchorStillInHistory(6, oldestSequence = 5))
+        assertFalse(FrameBudget.anchorStillInHistory(4, oldestSequence = 5))
+        assertTrue(FrameBudget.anchorStillInHistory(1, oldestSequence = null))
     }
 }

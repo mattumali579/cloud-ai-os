@@ -12,7 +12,9 @@ data class BoxObservation(
     val right: Float,
     val bottom: Float,
     val points: List<Pair<Float, Float>> = emptyList(),
-    var trackId: Int = 0
+    var trackId: Int = 0,
+    /** True when this box is a remembered miss, not a measurement on this frame. */
+    val held: Boolean = false,
 ) {
     fun area(): Float = max(0f, right - left) * max(0f, bottom - top)
 }
@@ -104,11 +106,15 @@ class TrackIds(
         }
 
         tracks.removeAll { it.missed > maxMissedFrames }
-        // Keep a missed box visible for a couple of detector frames, giving
-        // the grayscale motion tracker a chance to follow it until reacquired.
+        // Identity survives a short miss so the same track can be reacquired.
+        // held=true means the rectangle is the last measurement, not this frame.
+        // The overlay must not paint it: a remembered box is a frozen box.
         val held = tracks.filter { it.missed in 1..graceFrames.coerceAtMost(maxMissedFrames) }
             .map { track ->
-                track.box.copy(score = track.box.score * if (track.missed == 1) 0.8f else 0.6f)
+                track.box.copy(
+                    score = track.box.score * if (track.missed == 1) 0.8f else 0.6f,
+                    held = true,
+                )
             }
         return rendered.filterNotNull() + held
     }

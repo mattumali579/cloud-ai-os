@@ -45,6 +45,8 @@ class RelativeDistanceEstimator {
     private var originalHeightFraction = 0f
     private var originalFeet = 0f
     private var smoothedFeet: Float? = null
+    /** Last camera frame that was allowed to move the smoothed feet. Redraws reuse it. */
+    private var appliedSequence = -1L
 
     fun calibrate(frame: FrameDetections, measuredFeet: Float): String {
         if (!measuredFeet.isFinite() || measuredFeet !in 0.5f..150f) {
@@ -79,20 +81,27 @@ class RelativeDistanceEstimator {
         originalHeightFraction = heightFraction
         originalFeet = measuredFeet
         smoothedFeet = measuredFeet
+        appliedSequence = -1L
         return "Distance locked: ${centered.label} #${centered.trackId} at %.1f ft. Same object and orientation only.".format(
             Locale.US, measuredFeet
         )
     }
 
-    /** Returns null for all other objects, invalid boxes, or uncalibrated state. */
-    fun estimate(frameHeight: Int, box: BoxObservation): Float? {
+    /**
+     * Returns null for every object except the locked track.
+     * [sequence] is the camera frame. A second call with the same sequence is a
+     * redraw and does not move the feet again.
+     */
+    fun estimate(frameHeight: Int, box: BoxObservation, sequence: Long = -1L): Float? {
         if (box.kind != "object" || box.trackId != selectedId || frameHeight <= 0) return null
         val fraction = (box.bottom - box.top) / frameHeight
         if (!fraction.isFinite() || fraction < 0.03f) return null
         val raw = DistanceScale.feet(originalFeet, originalHeightFraction, fraction) ?: return null
+        if (sequence >= 0L && sequence == appliedSequence && smoothedFeet != null) return smoothedFeet
+        if (sequence >= 0L) appliedSequence = sequence
 
         // Small box jitter is smoothed. A real size change (more than 8%) shows
-        // on the next frame so the feet reading is not stuck on the reference.
+        // on the next camera frame so the feet reading is not stuck on the reference.
         val previous = smoothedFeet
         val next = if (previous == null || previous <= 0f ||
             abs(raw - previous) / previous >= 0.08f
@@ -111,7 +120,7 @@ class RelativeDistanceEstimator {
     /** Overlay line while Live View is up. */
     fun banner(boxes: List<BoxObservation>): String = when (readiness(boxes)) {
         DistanceReadiness.UNCALIBRATED -> "Aim at one full object, then Calibrate"
-        DistanceReadiness.STALE -> "distance unavailable"
+        DistanceReadiness.STALE -> "lock lost · distance unavailable"
         DistanceReadiness.LIVE ->
             "Calibrated %.1f ft · same object, same orientation".format(Locale.US, originalFeet)
     }
@@ -137,5 +146,6 @@ class RelativeDistanceEstimator {
         originalHeightFraction = 0f
         originalFeet = 0f
         smoothedFeet = null
+        appliedSequence = -1L
     }
 }
