@@ -77,6 +77,26 @@ class OverlayTrackingService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_CALIBRATE) {
+            val measured = intent.getFloatExtra(EXTRA_REFERENCE_FEET, 0f)
+            if (running) {
+                report(overlay?.calibrateDistance(measured) ?: "Overlay not ready")
+            } else {
+                lastStatus = "Start tracking and Live View before calibrating"
+                stopSelf(startId)
+            }
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_CLEAR_DISTANCE) {
+            if (running) {
+                overlay?.clearDistance()
+                report("Distance calibration cleared")
+            } else {
+                lastStatus = "Distance measurement not running"
+                stopSelf(startId)
+            }
+            return START_NOT_STICKY
+        }
         if (running) return START_NOT_STICKY
         if (!Settings.canDrawOverlays(this)) {
             lastStatus = "Grant Android Display over other apps permission first"
@@ -280,12 +300,21 @@ class OverlayTrackingService : Service() {
             this, 2, Intent(this, OverlayTrackingService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val referenceFeet = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getString("reference_distance_feet", "6")?.toFloatOrNull() ?: 6f
+        val calibrate = PendingIntent.getService(
+            this, 3, Intent(this, OverlayTrackingService::class.java)
+                .setAction(ACTION_CALIBRATE)
+                .putExtra(EXTRA_REFERENCE_FEET, referenceFeet),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("Visor VDK tracking")
             .setContentText(line)
             .setContentIntent(open)
             .setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_compass, "Calibrate", calibrate)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
             .build()
     }
@@ -328,6 +357,9 @@ class OverlayTrackingService : Service() {
         const val EXTRA_PRESET = "preset"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
+        const val ACTION_CALIBRATE = "com.mattumali.visortracker.CALIBRATE_DISTANCE"
+        const val ACTION_CLEAR_DISTANCE = "com.mattumali.visortracker.CLEAR_DISTANCE"
+        const val EXTRA_REFERENCE_FEET = "measured_reference_feet"
         const val EXTRA_ALL_DETECTORS = "all_detectors"
         private const val CHANNEL_ID = "visor_tracker_high_fps"
         private const val NOTIFICATION_ID = 4421

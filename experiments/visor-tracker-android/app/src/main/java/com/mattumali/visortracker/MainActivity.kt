@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.text.InputType
+import android.widget.EditText
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.LinearLayout
@@ -89,6 +91,54 @@ class MainActivity : ComponentActivity() {
             }
         }
         root.addView(accurate)
+        root.addView(TextView(this).apply {
+            text = "OFFLINE DISTANCE (approximate, same object only): measure how far " +
+                "the object is from your glasses, enter that starting distance in feet, " +
+                "then aim at its center and choose Calibrate. The labeled distance changes " +
+                "as you or the object moves. Requires the FULL object in view. " +
+                "Does not measure arbitrary objects without calibration."
+            textSize = 14f
+            setPadding(0, dp(10), 0, dp(4))
+        })
+        val referenceDistance = EditText(this).apply {
+            hint = "Starting distance in feet (e.g. 6)"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setSingleLine(true)
+            setText(prefs.getString("reference_distance_feet", "6"))
+        }
+        root.addView(referenceDistance)
+        root.addView(Button(this).apply {
+            text = "CALIBRATE CENTER OBJECT"
+            setOnClickListener {
+                val measured = referenceDistance.text.toString().trim().toFloatOrNull()
+                if (measured == null || !measured.isFinite() || measured !in 0.5f..150f) {
+                    status.text = "Enter an actual measured distance from 0.5 to 150 ft"
+                } else if (!OverlayTrackingService.active) {
+                    status.text = "Start tracking and open Live View first"
+                } else {
+                    prefs.edit().putString("reference_distance_feet", measured.toString()).apply()
+                    startService(Intent(this@MainActivity, OverlayTrackingService::class.java)
+                        .setAction(OverlayTrackingService.ACTION_CALIBRATE)
+                        .putExtra(OverlayTrackingService.EXTRA_REFERENCE_FEET, measured))
+                    status.text = "Calibrating the detected object near camera center..."
+                    status.postDelayed({
+                        if (::status.isInitialized) status.text = OverlayTrackingService.lastStatus
+                    }, 250L)
+                }
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "CLEAR DISTANCE"
+            setOnClickListener {
+                if (!OverlayTrackingService.active) {
+                    status.text = "Distance measurement not running"
+                } else {
+                    startService(Intent(this@MainActivity, OverlayTrackingService::class.java)
+                        .setAction(OverlayTrackingService.ACTION_CLEAR_DISTANCE))
+                    status.text = "Distance calibration cleared"
+                }
+            }
+        })
         root.addView(CheckBox(this).apply {
             text = "Automatic signed updates (Wi-Fi, no USB or manual APK downloads)"
             isChecked = TrackerUpdater.enabled(this@MainActivity)
@@ -139,6 +189,9 @@ class MainActivity : ComponentActivity() {
                 "The system notification shows measured VIDEO FPS and DETECTION FPS. " +
                 "For best speed, leave hands/faces unchecked. " +
                 "Tracking is on your PHONE; ordinary Ray-Ban Meta glasses have no display. " +
+                "For distance calibration without leaving Live View, first set the " +
+                "starting distance above, then use the ongoing notification's " +
+                "Calibrate action while aiming at the target. " +
                 "Tap Stop in the ongoing notification when finished."
             textSize = 13f
         })

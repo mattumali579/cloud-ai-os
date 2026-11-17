@@ -147,5 +147,5 @@ jobs:
             adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
             adb install /tmp/new-tracker/app-debug.apk
             adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'
-            adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=6'
-            echo "PASS: new stable Tracker installs alongside legacy on Android 16, no signing conflict"
+            adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=7'
+            echo "PASS: same-package v0.7 Tracker installs alongside legacy on Android 16, no signing conflict"

@@ -17,6 +17,39 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.7: offline distance estimate for a calibrated object
+
+The existing tracking overlay now supports a **single-object approximate distance**.
+It needs NO internet, cloud inference, new ML model, or additional app. It is
+**not** depth sensing and does not know every object's size. Its measurement
+only applies to the same physical target until tracking stops or the stream is
+lost, because the camera has no reliable absolute 3D scale.
+
+1. Start Tracker and Visor Live View as usual.
+2. Measure the real starting distance between the **glasses camera** and a
+   stationary, fully visible COCO-detectable object (for example, a chair).
+3. In Tracker, set **Starting distance in feet** to that measurement (defaults to
+   6 ft). Alternatively, prepare the distance in Tracker beforehand.
+4. While aiming the **glasses at the center of that object**, use
+   **CALIBRATE CENTER OBJECT** in Tracker or **Calibrate** on its ongoing
+   foreground notification. The latter works while keeping Live View open.
+5. The selected tracking box adds a label such as `chair #4 ~6.0 ft` and updates
+   as the target's visible box grows/shrinks. Other object boxes have no distance.
+6. Recalibrate when the object rotates significantly, is partly hidden, the
+   tracker switches IDs, or the camera feed restarts. Do not interpret this
+   value as precise rangefinding or use it for collision safety.
+
+Distance uses **D = D0 × (h0 / h)** with image-height fractions to handle
+different frame resolutions. Temporal smoothing reduces flicker but also
+slightly delays changes. The box must continue to represent the same
+physical object's full visible height; if its shape changes, so does the
+estimate. Pure Kotlin tests cover calibration, scale, invalid measurements,
+and cross-object isolation.
+
+**Android identity unchanged:** `com.mattumali.visortracker.stable`, using
+the same permanent signing configuration as v0.6. The app versionCode is
+incremented to 7 so the existing updater can accept a correctly signed update.
+
 ## Version 0.6: one-time replacement for Android signing conflict
 
 The published v0.5 signed APK **successfully installs on clean Android 15 and Android 16 emulators**, but a Samsung phone still showed only "App not installed". That phone's underlying PackageInstaller failure code has NOT been captured.
