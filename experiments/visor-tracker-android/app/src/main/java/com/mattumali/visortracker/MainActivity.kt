@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
             text = "CHECK FOR UPDATES NOW"
             setOnClickListener {
                 status.text = "Checking signed GitHub releases..."
-                TrackerUpdater.checkInBackground(this@MainActivity) { message ->
+                TrackerUpdater.checkInBackground(this@MainActivity, allowMetered = true) { message ->
                     runOnUiThread { if (::status.isInitialized) status.text = message }
                 }
             }
