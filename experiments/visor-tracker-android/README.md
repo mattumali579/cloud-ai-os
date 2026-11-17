@@ -17,6 +17,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.16: an Install update button
+
+Version code 16. Check for updates only changed a line of text and hid the download in a notification. When a newer signed release exists, the screen shows **INSTALL VERSION**. That opens the APK. Android still asks you to confirm the install.
+
 ## Version 0.15: draw the detection, and keep the window above Visor
 
 Version code 15. Same package and signing certificate.

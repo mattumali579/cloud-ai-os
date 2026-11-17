@@ -74,7 +74,8 @@ object TrackerUpdater {
     fun checkInBackground(
         context: Context,
         allowMetered: Boolean = false,
-        onStatus: (String) -> Unit = {}
+        onStatus: (String) -> Unit = {},
+        onOffer: (UpdateOffer?) -> Unit = {}
     ) {
         if (!busy.compareAndSet(false, true)) return
         Thread {
@@ -82,17 +83,22 @@ object TrackerUpdater {
                 val network = context.getSystemService(ConnectivityManager::class.java)
                 if (!allowMetered && network.isActiveNetworkMetered) {
                     onStatus("Automatic updates are waiting for unmetered Wi-Fi")
+                    onOffer(null)
                 } else {
-                    installNewest(context.applicationContext, onStatus)
+                    onOffer(installNewest(context.applicationContext, onStatus))
                 }
             } catch (error: Exception) {
                 Log.w(TAG, "Update check failed", error)
                 onStatus("Update check failed: " + (error.message ?: "unknown"))
+                onOffer(null)
             } finally {
                 busy.set(false)
             }
         }.apply { name = "visor-tracker-updates"; isDaemon = true }.start()
     }
+
+    /** A signed release newer than the installed app. The screen button opens [url]. */
+    data class UpdateOffer(val version: Long, val url: String)
 
     private data class Release(
         val version: Long,
@@ -157,20 +163,21 @@ object TrackerUpdater {
         }
     }
 
-    private fun installNewest(context: Context, status: (String) -> Unit) {
+    private fun installNewest(context: Context, status: (String) -> Unit): UpdateOffer? {
         val release = fetchRelease()
         if (release == null || release.version <= currentVersion(context)) {
             status("Tracker is up to date")
-            return
+            return null
         }
-        status("Version " + release.version + " is ready to download")
+        status("Version " + release.version + " is ready. Tap INSTALL UPDATE.")
         val view = Intent(Intent.ACTION_VIEW, Uri.parse(release.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         notifyAction(
             context,
             "Tracker update " + release.version,
-            "Download the signed release, then install it.",
+            "Tap INSTALL UPDATE on the Tracker screen.",
             view
         )
+        return UpdateOffer(release.version, release.url)
     }
 
     private fun channel(context: Context): NotificationManager {

@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
+import android.view.View
 import android.widget.EditText
 import android.widget.Button
 import android.widget.CheckBox
@@ -22,6 +23,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var includeAll: CheckBox
     private lateinit var accurate: CheckBox
     private lateinit var status: TextView
+    private lateinit var installUpdate: Button
+    private var pendingOffer: TrackerUpdater.UpdateOffer? = null
 
     private val grantCamera = registerForActivityResult(RequestScopes()) { grants ->
         status.text = if (Scope.CAMERA in grants) {
@@ -167,15 +170,31 @@ class MainActivity : ComponentActivity() {
                 TrackerUpdater.configure(this@MainActivity, enabled)
             }
         })
+        installUpdate = Button(this).apply {
+            text = "INSTALL UPDATE"
+            visibility = View.GONE
+            setOnClickListener {
+                val offer = pendingOffer ?: return@setOnClickListener
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(offer.url)))
+                status.text = "Downloading version " + offer.version + ". Open the file, then tap Install."
+            }
+        }
         root.addView(Button(this).apply {
             text = "CHECK FOR UPDATES NOW"
             setOnClickListener {
                 status.text = "Checking signed GitHub releases..."
-                TrackerUpdater.checkInBackground(this@MainActivity, allowMetered = true) { message ->
-                    runOnUiThread { if (::status.isInitialized) status.text = message }
-                }
+                showOffer(null)
+                TrackerUpdater.checkInBackground(
+                    this@MainActivity,
+                    allowMetered = true,
+                    onStatus = { message ->
+                        runOnUiThread { if (::status.isInitialized) status.text = message }
+                    },
+                    onOffer = { offer -> runOnUiThread { showOffer(offer) } },
+                )
             }
         })
+        root.addView(installUpdate)
         root.addView(CheckBox(this).apply {
             text = "Show the Live View proof mark"
             isChecked = prefs.getBoolean(OverlayTrackingService.PREF_PROBE, true)
@@ -229,11 +248,13 @@ class MainActivity : ComponentActivity() {
         setContentView(scroll)
         TrackerUpdater.schedule(this)
         if (TrackerUpdater.enabled(this)) {
-            TrackerUpdater.checkInBackground(this) { message ->
-                runOnUiThread {
-                    if (::status.isInitialized) status.text = message
-                }
-            }
+            TrackerUpdater.checkInBackground(
+                this,
+                onStatus = { message ->
+                    runOnUiThread { if (::status.isInitialized) status.text = message }
+                },
+                onOffer = { offer -> runOnUiThread { showOffer(offer) } },
+            )
         }
     }
 
@@ -259,6 +280,13 @@ class MainActivity : ComponentActivity() {
         val versionName = info.versionName ?: "?"
         val versionCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
         return InstallIdentity(versionName, "$packageName  $versionName ($versionCode)")
+    }
+
+    private fun showOffer(offer: TrackerUpdater.UpdateOffer?) {
+        pendingOffer = offer
+        if (!::installUpdate.isInitialized) return
+        installUpdate.visibility = if (offer == null) View.GONE else View.VISIBLE
+        if (offer != null) installUpdate.text = "INSTALL VERSION " + offer.version
     }
 
     private fun startOverlay() {
