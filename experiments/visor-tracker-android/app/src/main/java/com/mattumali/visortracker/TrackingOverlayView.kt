@@ -15,6 +15,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * measured box coordinates once. This view does not repaint unchanged boxes.
  */
 class TrackingOverlayView(context: Context) : View(context) {
+    init {
+        // A View with no background can skip onDraw. The proof mark has to draw
+        // before any detection exists.
+        setWillNotDraw(false)
+    }
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dp(2.5f)
@@ -41,6 +46,7 @@ class TrackingOverlayView(context: Context) : View(context) {
     private val boxUpdates = AtomicInteger(0)
     private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
+    private var probeLines: List<String> = emptyList()
     @Volatile var frameAgeMs: Int = 0
         private set
 
@@ -52,6 +58,13 @@ class TrackingOverlayView(context: Context) : View(context) {
 
     fun consumeBoxUpdates(): Int = boxUpdates.getAndSet(0)
     fun consumeDraws(): Int = draws.getAndSet(0)
+
+    /** Corner text that stays visible when there are no boxes. Empty hides it. */
+    fun setProbe(lines: List<String>) {
+        if (lines == probeLines) return
+        probeLines = lines
+        invalidate()
+    }
 
     /** Calibrate only the physical object currently nearest the camera center. */
     fun calibrateDistance(feet: Float): String {
@@ -114,6 +127,7 @@ class TrackingOverlayView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         draws.incrementAndGet()
+        drawProbe(canvas)
         val frame = latest ?: return
         canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(18f), text)
         canvas.drawText(distanceEstimator.banner(frame.boxes), dp(12f), dp(34f), text)
@@ -152,6 +166,26 @@ class TrackingOverlayView(context: Context) : View(context) {
                     canvas.drawCircle(ox + x * scale, oy + y * scale, dp(2.5f), point)
                 }
             }
+        }
+    }
+
+    private fun drawProbe(canvas: Canvas) {
+        val lines = probeLines
+        if (lines.isEmpty() || width <= 0) return
+        val left = dp(12f)
+        val top = dp(52f)
+        val lineH = dp(16f)
+        val pad = dp(8f)
+        var maxW = dp(120f)
+        for (line in lines) maxW = maxOf(maxW, text.measureText(line))
+        val right = (left + maxW + pad * 2).coerceAtMost(width - dp(12f))
+        val bottom = top + pad * 2 + lineH * lines.size
+        val box = RectF(left, top, right, bottom)
+        canvas.drawRoundRect(box, dp(6f), dp(6f), background)
+        stroke.color = 0xFF80F45D.toInt()
+        canvas.drawRoundRect(box, dp(6f), dp(6f), stroke)
+        lines.forEachIndexed { index, line ->
+            canvas.drawText(line, left + pad, top + pad + lineH * (index + 1) - dp(3f), text)
         }
     }
 

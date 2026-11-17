@@ -60,6 +60,9 @@ class OverlayTrackingService : Service() {
     private val processing = AtomicBoolean(false)
     private val decodedFrames = AtomicInteger(0)
     private val inferenceFrames = AtomicInteger(0)
+    private val totalFrames = AtomicInteger(0)
+    private val totalInferences = AtomicInteger(0)
+    private val rawDetections = AtomicInteger(0)
     private val stages = StageTimings()
     private val windows by lazy { getSystemService(Context.WINDOW_SERVICE) as WindowManager }
 
@@ -74,6 +77,17 @@ class OverlayTrackingService : Service() {
     private var lastReportAtMs = 0L
     private var lastBoxCount = 0
     private var streamBeginMs = 0L
+    private var overlayAttached = false
+    private var overlayError: String? = null
+    private var cameraGranted: Boolean? = null
+    private var liveConnected = false
+    private var lastFailure: String? = null
+    private var lastProgress = ""
+    private var lastMetrics = ""
+    private var decoderFps = 0f
+    private var aiFps = 0f
+    private var versionName = "?"
+    private var versionCode = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -103,8 +117,10 @@ class OverlayTrackingService : Service() {
             return START_NOT_STICKY
         }
         if (running) return START_NOT_STICKY
+        readVersion()
         if (!Settings.canDrawOverlays(this)) {
-            lastStatus = "Grant Android Display over other apps permission first"
+            lastFailure = "Display over other apps is denied"
+            renderStatus()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -117,14 +133,18 @@ class OverlayTrackingService : Service() {
         )
 
         createChannel()
-        startForeground(NOTIFICATION_ID, notification("Preparing VDK camera overlay"))
+        startForeground(NOTIFICATION_ID, notification("Attaching the Live View proof mark"))
         try {
             val view = TrackingOverlayView(this)
             windows.addView(view, overlayLayout())
             overlay = view
+            overlayAttached = true
+            overlayError = null
             applicationContext.registerComponentCallbacks(displayCallbacks)
         } catch (error: Exception) {
-            lastStatus = "Overlay failed: " + (error.message ?: "unknown")
+            overlayAttached = false
+            overlayError = error.message ?: error.javaClass.simpleName
+            renderStatus()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -132,6 +152,8 @@ class OverlayTrackingService : Service() {
         running = true
         active = true
         refreshTile()
+        mainHandler.removeCallbacks(diagnosticTick)
+        mainHandler.post(diagnosticTick)
         report("Loading " + preset.name.lowercase() + " detector (VDK video up to 30 FPS)")
         worker.execute {
             try {
@@ -147,7 +169,7 @@ class OverlayTrackingService : Service() {
                     }
                 }
             } catch (error: Exception) {
-                mainHandler.post { report("MediaPipe failed: " + (error.message ?: "unknown")) }
+                mainHandler.post { report("MediaPipe failed: " + (error.message ?: "unknown"), failure = true) }
             }
         }
         return START_NOT_STICKY
@@ -159,8 +181,13 @@ class OverlayTrackingService : Service() {
                 report("Connecting to Visor camera.live")
                 val linked = Visor.connect(applicationContext)
                 visor = linked
-                if (Scope.CAMERA !in linked.scopes()) {
-                    report("Visor camera access NOT GRANTED. Open Tracker and tap Grant camera access.")
+                cameraGranted = Scope.CAMERA in linked.scopes()
+                renderStatus()
+                if (cameraGranted != true) {
+                    report(
+                        "Visor camera access NOT GRANTED. Open Tracker and tap Grant camera access.",
+                        failure = true,
+                    )
                     return@launch
                 }
                 if (!running) return@launch
@@ -172,6 +199,7 @@ class OverlayTrackingService : Service() {
                 inferenceFrames.set(0)
                 handoff.reset()
                 handoff.metrics.snapshotAndReset()
+                liveConnected = true
                 report("VDK connected; waiting for Visor Live View")
 
                 val requested = LiveConfig {
@@ -182,6 +210,7 @@ class OverlayTrackingService : Service() {
                 LiveVideoDecoder { image, _ ->
                     if (!running) return@LiveVideoDecoder
                     decodedFrames.incrementAndGet()
+                    totalFrames.incrementAndGet()
                     val now = SystemClock.elapsedRealtime()
                     val sequence = frameSequence.incrementAndGet()
                     // Copy pixels and return. The VDK suspends after 64 unread samples,
@@ -217,6 +246,8 @@ class OverlayTrackingService : Service() {
                                     val detections = pipeline?.detect(bitmap) ?: return@execute
                                     stages.record("ai", SystemClock.elapsedRealtime() - aiStarted)
                                     inferenceFrames.incrementAndGet()
+                                    totalInferences.incrementAndGet()
+                                    rawDetections.set(detections.boxes.size)
                                     val baseline = DetectionBaseline(
                                         detections.copy(sequence = sequence, capturedAtMs = now),
                                         anchor,
@@ -242,6 +273,8 @@ class OverlayTrackingService : Service() {
                         val seconds = (now - lastReportAtMs).coerceAtLeast(1) / 1000f
                         val videoFps = decodedFrames.getAndSet(0) / seconds
                         val detectFps = inferenceFrames.getAndSet(0) / seconds
+                        decoderFps = videoFps
+                        aiFps = detectFps
                         val view = overlay
                         val boxFps = (view?.consumeBoxUpdates() ?: 0) / seconds
                         val drawFps = (view?.consumeDraws() ?: 0) / seconds
@@ -253,7 +286,9 @@ class OverlayTrackingService : Service() {
                             window, lastBoxCount, stageSuffix(),
                         )
                         val distance = view?.notificationDistance().orEmpty()
-                        report(if (distance.isEmpty()) metrics else "$metrics | $distance")
+                        lastMetrics = if (distance.isEmpty()) metrics else "$metrics | $distance"
+                        if (videoFps > 0f) lastFailure = null
+                        report(lastMetrics)
                     }
                 }.use { decoder ->
                     // Visor serves the very same video being shown in its own Live View.
@@ -263,11 +298,20 @@ class OverlayTrackingService : Service() {
                         decoder.decode(sample)
                     }
                 }
-                if (running) report("Live View ended; open it in Visor to restart")
+                liveConnected = false
+                lastBoxCount = 0
+                if (running) report("Live View ended; open it in Visor to restart", failure = true)
             } catch (_: CancellationException) {
                 // User stopped the overlay.
             } catch (error: Exception) {
-                if (running) report("VDK stream failed: " + (error.message ?: error.javaClass.simpleName))
+                liveConnected = false
+                lastBoxCount = 0
+                if (running) {
+                    report(
+                        "VDK stream failed: " + (error.message ?: error.javaClass.simpleName),
+                        failure = true,
+                    )
+                }
             } finally {
                 visor?.close()
                 visor = null
@@ -368,13 +412,68 @@ class OverlayTrackingService : Service() {
         return params
     }
 
-    private fun report(message: String) {
-        lastStatus = message
-        if (!running) return
-        mainHandler.post {
-            if (running) (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                .notify(NOTIFICATION_ID, notification(message))
+    private val diagnosticTick: Runnable = Runnable {
+        if (!running) return@Runnable
+        renderStatus()
+        mainHandler.postDelayed(diagnosticTick, DIAGNOSTIC_MS)
+    }
+
+    private fun report(message: String, failure: Boolean = false) {
+        if (failure) lastFailure = message
+        else if (message.startsWith("V") || message.startsWith("VDK connected")) lastFailure = null
+        lastProgress = message
+        renderStatus()
+    }
+
+    private fun renderStatus() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { renderStatus() }
+            return
         }
+        val snapshot = currentSnapshot()
+        val diagnosis = OverlayDiagnostics.diagnose(snapshot)
+        val extra = listOf(lastMetrics, lastProgress)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString(" | ")
+        val line = OverlayDiagnostics.notificationLine(snapshot, diagnosis, extra)
+        lastStatus = line
+        overlay?.setProbe(OverlayDiagnostics.probeLines(snapshot, diagnosis))
+        if (!running) return
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(NOTIFICATION_ID, notification(line))
+    }
+
+    private fun currentSnapshot(): OverlaySnapshot {
+        val probe = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_PROBE, true)
+        return OverlaySnapshot(
+            versionName = versionName,
+            versionCode = versionCode,
+            packageName = packageName,
+            overlayPermission = Settings.canDrawOverlays(this),
+            serviceRunning = running,
+            overlayAttached = overlayAttached && overlay != null,
+            overlayError = overlayError,
+            cameraGranted = cameraGranted,
+            liveConnected = liveConnected,
+            framesReceived = totalFrames.get(),
+            inferencesCompleted = totalInferences.get(),
+            rawDetections = rawDetections.get(),
+            freshBoxes = lastBoxCount,
+            boxAgeMs = overlay?.frameAgeMs ?: -1,
+            decoderFps = decoderFps,
+            aiFps = aiFps,
+            failure = lastFailure,
+            probeEnabled = probe,
+        )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun readVersion() {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        versionName = info.versionName ?: "?"
+        versionCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode.toInt() else info.versionCode
     }
 
     private fun createChannel() {
@@ -402,7 +501,7 @@ class OverlayTrackingService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("Visor VDK tracking")
+            .setContentTitle("Visor Tracker $versionName")
             .setContentText(line)
             .setStyle(Notification.BigTextStyle().bigText(line))
             .setContentIntent(open)
@@ -413,8 +512,10 @@ class OverlayTrackingService : Service() {
     }
 
     override fun onDestroy() {
+        val failed = overlayError != null || lastFailure != null
         running = false
         active = false
+        mainHandler.removeCallbacks(diagnosticTick)
         refreshTile()
         streamJob?.cancel()
         scope.cancel()
@@ -427,13 +528,15 @@ class OverlayTrackingService : Service() {
             try { windows.removeViewImmediate(it) } catch (_: Exception) { }
         }
         overlay = null
+        overlayAttached = false
+        liveConnected = false
         val old = pipeline
         pipeline = null
         if (old != null) worker.execute { old.close() }
         worker.shutdown()
         motionWorker.shutdown()
         pendingDetection.set(null)
-        lastStatus = "Overlay stopped"
+        if (!failed) lastStatus = "SERVICE STOPPED | Tracking service is not running"
         super.onDestroy()
     }
 
@@ -449,6 +552,7 @@ class OverlayTrackingService : Service() {
         const val PREFS = "tracker"
         const val PREF_PRESET = "detector_preset"
         const val PREF_HANDS_FACES = "detect_hands_faces"
+        const val PREF_PROBE = "show_overlay_probe"
         const val EXTRA_PRESET = "preset"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
@@ -459,6 +563,7 @@ class OverlayTrackingService : Service() {
         private const val CHANNEL_ID = "visor_tracker_high_fps"
         private const val NOTIFICATION_ID = 4421
         private const val REPORT_MS = 4000L
+        private const val DIAGNOSTIC_MS = 1000L
         @Volatile var active: Boolean = false
             private set
         @Volatile var lastStatus: String = "Overlay not started"

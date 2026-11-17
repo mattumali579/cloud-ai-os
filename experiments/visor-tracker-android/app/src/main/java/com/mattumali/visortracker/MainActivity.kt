@@ -2,6 +2,7 @@ package com.mattumali.visortracker
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -39,9 +40,17 @@ class MainActivity : ComponentActivity() {
             setPadding(pad, pad, pad, pad)
         }
         val scroll = ScrollView(this).apply { addView(root) }
+        val identity = installedIdentity()
         root.addView(TextView(this).apply {
-            text = "Visor Fast Tracking"
+            text = "Visor Fast Tracking ${identity.versionName}"
             textSize = 24f
+        })
+        root.addView(TextView(this).apply {
+            text = identity.line + "\nIf this screen does not show 0.14.0 and " +
+                "com.mattumali.visortracker.stable, this is the old Tracker. " +
+                "The old 0.1.0 app has no Check for updates button. Leave it installed."
+            textSize = 15f
+            setPadding(0, dp(8), 0, dp(8))
         })
         root.addView(TextView(this).apply {
             text = "Uses Visor's VDK camera.live hardware video stream " +
@@ -167,6 +176,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         })
+        root.addView(CheckBox(this).apply {
+            text = "Show the Live View proof mark"
+            isChecked = prefs.getBoolean(OverlayTrackingService.PREF_PROBE, true)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(OverlayTrackingService.PREF_PROBE, checked).apply()
+            }
+        })
         root.addView(Button(this).apply {
             text = "3. START FAST OVERLAY"
             setOnClickListener { startOverlay() }
@@ -191,6 +207,12 @@ class MainActivity : ComponentActivity() {
                 "then toggle tracking from Quick Settings. " +
                 "The selected accuracy mode takes effect on the next start. " +
                 "After START, switch to Visor and keep Live View fully expanded. " +
+                "A small green corner mark reading v0.14.0 is the proof that Android " +
+                "is drawing over Live View, before any object box exists. " +
+                "Its second line is the first failed hop: OVERLAY BLOCKED, " +
+                "NO CAMERA FRAMES, or 0 OBJECTS DETECTED. " +
+                "The same line is in the ongoing notification. " +
+                "Turn the mark off with the checkbox above when you no longer need it. " +
                 "The notification shows decoded video FPS, detector FPS, motion-tracker FPS, " +
                 "changed-box FPS, draw FPS, tracker interval and box age as p50/p95/p99 milliseconds, " +
                 "dropped frames, and median milliseconds for grayscale, " +
@@ -218,10 +240,25 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (::status.isInitialized) {
-            status.text = if (OverlayTrackingService.active) OverlayTrackingService.lastStatus
-            else if (!Settings.canDrawOverlays(this)) "Overlay permission not granted"
-            else "Overlay permission granted. Grant Visor camera access, then Start."
+            val known = OverlayTrackingService.lastStatus
+            status.text = when {
+                OverlayTrackingService.active -> known
+                known != "Overlay not started" -> known
+                !Settings.canDrawOverlays(this) ->
+                    "OVERLAY BLOCKED | Display over other apps is denied"
+                else -> "Overlay permission granted. Grant Visor camera access, then Start."
+            }
         }
+    }
+
+    private data class InstallIdentity(val versionName: String, val line: String)
+
+    @Suppress("DEPRECATION")
+    private fun installedIdentity(): InstallIdentity {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val versionName = info.versionName ?: "?"
+        val versionCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+        return InstallIdentity(versionName, "$packageName  $versionName ($versionCode)")
     }
 
     private fun startOverlay() {
