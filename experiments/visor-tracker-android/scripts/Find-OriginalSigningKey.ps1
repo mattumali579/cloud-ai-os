@@ -45,15 +45,27 @@ $unverified = New-Object 'System.Collections.Generic.List[string]'
 foreach ($file in $candidates | Select-Object -Unique) {
     # Android debug.keystore uses the well-known 'android' password.
     # Other keystores may use a custom password; those are NOT modified.
-    $result = & $keytool[0] -list -v -keystore $file -storepass android 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
+    # Do not turn an expected "wrong store password" stderr line into a fatal PowerShell error.
+    $before = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $result = & $keytool[0] -list -v -keystore $file -storepass android 2>$null | Out-String
+        $status = $LASTEXITCODE
+    } catch {
+        $result = ''
+        $status = 1
+    } finally {
+        $ErrorActionPreference = $before
+    }
+    if ($status -ne 0) {
         $unverified.Add($file)
         continue
     }
-    $match = [regex]::Match($result, '(?i)SHA256:\s*([0-9A-F:]+)')
-    if (!$match.Success) { $unverified.Add($file); continue }
-    $digest = $match.Groups[1].Value.Replace(':','').ToUpperInvariant()
-    if ($digest -eq $target) {
+    $digests = [regex]::Matches($result, '(?i)SHA256:\s*([0-9A-F:]+)')
+    if ($digests.Count -eq 0) { $unverified.Add($file); continue }
+    if (@($digests | Where-Object {
+        $_.Groups[1].Value.Replace(':','').ToUpperInvariant() -eq $target
+    }).Count -gt 0) {
         Write-Host "MATCH FOUND: $file"
         Write-Host 'Preserve this file securely. It is the original signer; do not post it publicly.'
         $found = $true
