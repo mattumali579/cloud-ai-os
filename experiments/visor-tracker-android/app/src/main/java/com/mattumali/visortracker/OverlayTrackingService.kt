@@ -77,6 +77,26 @@ class OverlayTrackingService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_CALIBRATE) {
+            val measured = intent.getFloatExtra(EXTRA_REFERENCE_FEET, 0f)
+            if (running) {
+                report(overlay?.calibrateDistance(measured) ?: "Overlay not ready")
+            } else {
+                lastStatus = "Start tracking and Live View before calibrating"
+                stopSelf(startId)
+            }
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_CLEAR_DISTANCE) {
+            if (running) {
+                overlay?.clearDistance()
+                report("Distance calibration cleared")
+            } else {
+                lastStatus = "Distance measurement not running"
+                stopSelf(startId)
+            }
+            return START_NOT_STICKY
+        }
         if (running) return START_NOT_STICKY
         if (!Settings.canDrawOverlays(this)) {
             lastStatus = "Grant Android Display over other apps permission first"
@@ -328,6 +348,9 @@ class OverlayTrackingService : Service() {
         const val EXTRA_PRESET = "preset"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
+        const val ACTION_CALIBRATE = "com.mattumali.visortracker.CALIBRATE_DISTANCE"
+        const val ACTION_CLEAR_DISTANCE = "com.mattumali.visortracker.CLEAR_DISTANCE"
+        const val EXTRA_REFERENCE_FEET = "measured_reference_feet"
         const val EXTRA_ALL_DETECTORS = "all_detectors"
         private const val CHANNEL_ID = "visor_tracker_high_fps"
         private const val NOTIFICATION_ID = 4421
