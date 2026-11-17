@@ -32,18 +32,53 @@ class RelativeDistanceEstimatorTest {
             BoxObservation("hand", "hand", 0.9f, 100f, 100f, 200f, 200f, trackId = 4)))
     }
 
-    @Test fun fingerLockCalibratesThatObjectEvenWhenItIsNotCentered() {
+    private fun at(id: Int, centerX: Float, height: Float = 100f) =
+        box(id = id, height = height, x = centerX - 50f)
+
+    @Test fun pointingAtCenterLocksThatTrack() {
         val estimator = RelativeDistanceEstimator()
-        val side = box(id = 8, x = 220f)
-        assertTrue(estimator.calibrate(frame(side), 6f).contains("Aim"))
-        assertTrue(estimator.select(8).contains("Locked #8"))
-        assertTrue(estimator.calibrate(frame(side), 10f).contains("#8"))
+        val target = at(4, 150f)
+        assertNull(estimator.observe(frame(target)))
+        assertNull(estimator.observe(frame(target)))
+        val locked = estimator.observe(frame(target))
+        assertTrue(locked!!.contains("Locked #4"))
+        assertEquals(4, estimator.selectedTrackId())
+        assertTrue(estimator.calibrate(frame(target), 6f).contains("#4"))
+        assertEquals(6f, estimator.estimate(300, target)!!, 0.01f)
+    }
+
+    @Test fun holdingANewCenterTargetClearsTheOldDistance() {
+        val estimator = RelativeDistanceEstimator()
+        val first = at(4, 150f)
+        repeat(3) { estimator.observe(frame(first)) }
+        assertTrue(estimator.calibrate(frame(first), 6f).contains("6.0"))
+        val next = at(8, 150f)
+        val aside = at(4, 40f)
+        var switched: String? = null
+        repeat(4) { assertNull(estimator.observe(frame(next, aside))) }
+        switched = estimator.observe(frame(next, aside))
+        assertTrue(switched!!.contains("Distance cleared"))
         assertEquals(8, estimator.selectedTrackId())
-        assertEquals(10f, estimator.estimate(300, side)!!, 0.01f)
-        assertNull(estimator.estimate(300, box()))
-        estimator.select(4)
-        assertNull(estimator.estimate(300, side))
-        assertEquals(DistanceReadiness.UNCALIBRATED, estimator.readiness(listOf(box())))
+        assertNull(estimator.estimate(300, first))
+        assertNull(estimator.estimate(300, next))
+        assertTrue(estimator.calibrate(frame(next, aside), 10f).contains("#8"))
+        assertEquals(10f, estimator.estimate(300, next)!!, 0.01f)
+        assertNull(estimator.estimate(300, first))
+    }
+
+    @Test fun motionJitterDoesNotSwapTheLockEveryFrame() {
+        val estimator = RelativeDistanceEstimator()
+        val held = at(4, 160f)
+        repeat(3) { estimator.observe(frame(held)) }
+        estimator.calibrate(frame(held), 6f)
+        val intruder = at(8, 150f)
+        repeat(8) { index ->
+            val picture = if (index % 2 == 0) frame(held, intruder) else frame(held, at(8, 20f))
+            assertNull(estimator.observe(picture))
+        }
+        assertEquals(4, estimator.selectedTrackId())
+        assertEquals(6f, estimator.estimate(300, held)!!, 0.05f)
+        assertNull(estimator.estimate(300, intruder))
     }
 
     @Test fun noCalibrationForBadMeasurementsOrUncenteredObjects() {

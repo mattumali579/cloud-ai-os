@@ -42,23 +42,36 @@ object DistanceScale {
 
 class RelativeDistanceEstimator {
     @Volatile private var selectedId: Int? = null
+    private val aim = AimLock()
     private var originalHeightFraction = 0f
     private var originalFeet = 0f
     private var smoothedFeet: Float? = null
     /** Last camera frame that was allowed to move the smoothed feet. Redraws reuse it. */
     private var appliedSequence = -1L
 
-    /** Finger lock. Does not copy another object's distance onto this one. */
-    fun select(trackId: Int): String {
-        if (trackId <= 0) return "Tap a detected object"
-        if (selectedId != trackId) {
+    /**
+     * Point the glasses at an object to lock it. Holding a different object
+     * near the center switches the lock and drops the old distance.
+     * Returns a status line only when the lock changes.
+     */
+    fun observe(frame: FrameDetections): String? {
+        val before = selectedId
+        val hadFeet = originalHeightFraction > 0f && before != null
+        val decision = aim.observe(frame)
+        val id = decision.lockedId ?: return null
+        if (id == selectedId) return null
+        if (selectedId != id) {
             originalHeightFraction = 0f
             originalFeet = 0f
             smoothedFeet = null
             appliedSequence = -1L
         }
-        selectedId = trackId
-        return "Locked #$trackId. Measure it, then tap Calibrate."
+        selectedId = id
+        return if (hadFeet) {
+            "Locked #$id. Distance cleared until you calibrate this object."
+        } else {
+            "Locked #$id. Hold the glasses on it, then tap Calibrate."
+        }
     }
 
     fun calibrate(frame: FrameDetections, measuredFeet: Float): String {
@@ -137,11 +150,11 @@ class RelativeDistanceEstimator {
             return if (boxes.any { it.kind == "object" && it.trackId == id }) {
                 "Locked #$id. Tap Calibrate."
             } else {
-                "Locked object left the picture. Tap Pick."
+                "Locked object left the picture. Point at it again."
             }
         }
         return when (readiness(boxes)) {
-            DistanceReadiness.UNCALIBRATED -> "Tap Pick, touch the object, then Calibrate"
+            DistanceReadiness.UNCALIBRATED -> "Point the glasses at an object to lock it"
             DistanceReadiness.STALE -> "lock lost · distance unavailable"
             DistanceReadiness.LIVE ->
                 "Calibrated %.1f ft · same object, same orientation".format(Locale.US, originalFeet)
@@ -166,6 +179,7 @@ class RelativeDistanceEstimator {
     }
 
     fun clear() {
+        aim.reset()
         selectedId = null
         originalHeightFraction = 0f
         originalFeet = 0f

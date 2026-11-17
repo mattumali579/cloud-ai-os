@@ -6,7 +6,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.os.SystemClock
-import android.view.MotionEvent
 import android.view.View
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -48,8 +47,6 @@ class TrackingOverlayView(context: Context) : View(context) {
     private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
     private var probeLines: List<String> = emptyList()
-    private var picking = false
-    var onPicked: ((String) -> Unit)? = null
     @Volatile var frameAgeMs: Int = 0
         private set
 
@@ -63,12 +60,6 @@ class TrackingOverlayView(context: Context) : View(context) {
     fun consumeDraws(): Int = draws.getAndSet(0)
 
     /** Corner text that stays visible when there are no boxes. Empty hides it. */
-    fun setPicking(enabled: Boolean) {
-        picking = enabled
-        isClickable = enabled
-        invalidate()
-    }
-
     fun setProbe(lines: List<String>) {
         if (lines == probeLines) return
         probeLines = lines
@@ -95,8 +86,8 @@ class TrackingOverlayView(context: Context) : View(context) {
 
     fun notificationDistance(): String = distanceEstimator.shortStatus(latest?.boxes.orEmpty())
 
-    fun updateFrame(frame: FrameDetections) {
-        if (frame.sequence < shownSequence) return
+    fun updateFrame(frame: FrameDetections): String? {
+        if (frame.sequence < shownSequence) return null
         val previous = latest
         shownSequence = frame.sequence
         latest = frame
@@ -111,6 +102,9 @@ class TrackingOverlayView(context: Context) : View(context) {
         removeCallbacks(expire)
         if (frame.boxes.isNotEmpty()) postDelayed(expire, 700L)
         if (moved || cleared || previous == null) invalidate()
+        val note = distanceEstimator.observe(frame)
+        if (note != null) invalidate()
+        return note
     }
 
     /** Drops boxes when motion expires, without letting an older clear beat a newer frame. */
@@ -137,7 +131,6 @@ class TrackingOverlayView(context: Context) : View(context) {
         super.onDraw(canvas)
         draws.incrementAndGet()
         drawProbe(canvas)
-        if (picking) canvas.drawText("TAP THE OBJECT TO LOCK", dp(12f), dp(28f), text)
         val frame = latest ?: return
         canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(18f), text)
         canvas.drawText(distanceEstimator.banner(frame.boxes), dp(12f), dp(34f), text)
@@ -179,35 +172,6 @@ class TrackingOverlayView(context: Context) : View(context) {
                 }
             }
         }
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!picking) return false
-        if (event.actionMasked == MotionEvent.ACTION_UP) onPicked?.invoke(lockAt(event.x, event.y))
-        return true
-    }
-
-    private fun lockAt(x: Float, y: Float): String {
-        val frame = latest ?: return "No camera frame yet"
-        if (frame.width <= 0 || frame.height <= 0 || width <= 0 || height <= 0) {
-            return "Overlay has no size yet"
-        }
-        var chosen: BoxObservation? = null
-        var best = Float.MAX_VALUE
-        for (box in frame.boxes) {
-            if (box.kind != "object" || box.trackId <= 0) continue
-            val projected = CoverGeometry.project(frame.width, frame.height, width, height, box)
-            val cx = (projected.left + projected.right) / 2f
-            val cy = (projected.top + projected.bottom) / 2f
-            val inside = x in projected.left..projected.right && y in projected.top..projected.bottom
-            val distance = kotlin.math.hypot(x - cx, y - cy)
-            if ((inside || distance <= dp(48f)) && distance < best) {
-                chosen = box
-                best = distance
-            }
-        }
-        val hit = chosen ?: return "Missed. Tap the box, not the empty picture."
-        return distanceEstimator.select(hit.trackId) + " " + hit.label
     }
 
     private fun drawProbe(canvas: Canvas) {
