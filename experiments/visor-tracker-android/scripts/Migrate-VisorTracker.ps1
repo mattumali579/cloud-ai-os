@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Package = 'com.mattumali.visortracker.stream'
 $ExpectedSize = 77718494L
+$ExpectedSha256 = 'D22E9DDA1B1E5EA07DF9EFCF9524D22817BAD17AB313C3DD3A4610FF5F607206'
 $Workspace = Join-Path $env:LOCALAPPDATA 'VisorTrackerMigration'
 $BackupDir = Join-Path $Workspace ("backup-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $OldApk = Join-Path $BackupDir 'original-v0.3.apk'
@@ -158,8 +159,12 @@ try {
             Fail 'Invalid APK layout. No uninstall performed.'
         }
     } finally { $zip.Dispose() }
+    $hash = (Get-FileHash -LiteralPath $apk.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($hash -ne $ExpectedSha256) {
+        Fail 'APK SHA-256 does not match the verified v0.4 stable-signed artifact. No uninstall performed.'
+    }
     Report ("Verified APK file: " + $apk.FullName)
-    Report ("SHA256: " + (Get-FileHash -LiteralPath $apk.FullName -Algorithm SHA256).Hash)
+    Report ("Verified SHA256: " + $hash)
 
     $installed = @(Run-Adb -AdbArgs @('shell', 'pm', 'path', $Package))
     $base = @($installed | Where-Object { $_ -match '^package:.*base\.apk$' })
