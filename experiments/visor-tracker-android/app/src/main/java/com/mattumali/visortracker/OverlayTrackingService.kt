@@ -300,12 +300,21 @@ class OverlayTrackingService : Service() {
             this, 2, Intent(this, OverlayTrackingService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val referenceFeet = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getString("reference_distance_feet", "6")?.toFloatOrNull() ?: 6f
+        val calibrate = PendingIntent.getService(
+            this, 3, Intent(this, OverlayTrackingService::class.java)
+                .setAction(ACTION_CALIBRATE)
+                .putExtra(EXTRA_REFERENCE_FEET, referenceFeet),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("Visor VDK tracking")
             .setContentText(line)
             .setContentIntent(open)
             .setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_compass, "Calibrate", calibrate)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
             .build()
     }
