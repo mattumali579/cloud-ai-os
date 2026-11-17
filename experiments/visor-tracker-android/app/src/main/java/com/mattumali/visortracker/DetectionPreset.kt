@@ -6,8 +6,8 @@ package com.mattumali.visortracker
  * examples, but inference uses substantially more CPU on phones.
  *
  * [maxResults] is a detector candidate pool, not the number of boxes drawn.
- * The overlay hard-caps display at [NearbyCandidates.DISPLAY_LIMIT] and may
- * show fewer. A pool of eight leaves room to keep a calibrated target.
+ * The overlay draws one object. A pool of eight is only so pointing can
+ * choose the center candidate. It does not make inference faster.
  * [scoreThreshold] is a category-score floor, not a percent of correct labels.
  * 0.50 does not mean the model is right half the time. Fast mode stays Lite0;
  * Lite2 is opt-in because this tree has no paired accuracy/FPS measurement

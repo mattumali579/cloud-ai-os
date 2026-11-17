@@ -13,11 +13,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.pm.PackageInstaller
-import android.app.DownloadManager
 import android.net.Uri
 import android.net.ConnectivityManager
 import android.os.Build
-import android.os.Environment
+import androidx.core.content.FileProvider
+import java.io.File
 import android.util.Log
 import java.net.HttpURLConnection
 import java.net.URL
@@ -171,7 +171,7 @@ object TrackerUpdater {
             status("Tracker is up to date")
             return null
         }
-        status("Version " + release.version + " is ready. Tap INSTALL UPDATE.")
+        status("Version " + release.version + " is downloading. Confirm Update. Do not uninstall.")
         val view = Intent(Intent.ACTION_VIEW, Uri.parse(release.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         notifyAction(
             context,
@@ -192,22 +192,35 @@ object TrackerUpdater {
         return manager
     }
 
-    /** Downloads the signed APK for this same package. Android then offers Update, not a new app. */
-    fun enqueueUpdate(context: Context, offer: UpdateOffer): String {
-        val manager = context.getSystemService(DownloadManager::class.java)
-        val request = DownloadManager.Request(Uri.parse(offer.url))
-            .setTitle("Visor Tracker " + offer.version)
-            .setDescription("Updates this app. Do not uninstall.")
-            .setMimeType("application/vnd.android.package-archive")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(
-                Environment.DIRECTORY_DOWNLOADS,
-                "Visor-Fast-Tracking-" + offer.version + ".apk"
-            )
-            .setAllowedOverMetered(true)
-        manager.enqueue(request)
-        return "Downloading version " + offer.version +
-            ". When it finishes, tap the download, then Update. Do not uninstall."
+    /** Saves the signed APK and opens Android's update screen for this same package. */
+    fun downloadUpdate(context: Context, offer: UpdateOffer): File {
+        val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val dest = File(dir, "Visor-Fast-Tracking.apk")
+        val connection = URL(offer.url).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = true
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 120_000
+        connection.setRequestProperty("User-Agent", "Visor-Fast-Tracking-Android-Updater")
+        connection.setRequestProperty("Accept", "application/octet-stream")
+        try {
+            if (connection.responseCode !in 200..299) {
+                throw IllegalStateException("Download failed: " + connection.responseCode)
+            }
+            connection.inputStream.use { input ->
+                dest.outputStream().use { output -> input.copyTo(output) }
+            }
+        } finally {
+            connection.disconnect()
+        }
+        if (dest.length() < 1_000_000L) throw IllegalStateException("Downloaded update was empty")
+        return dest
+    }
+
+    fun installIntent(context: Context, apk: File): Intent {
+        val uri = FileProvider.getUriForFile(context, context.packageName + ".files", apk)
+        return Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
     fun notifyAction(context: Context, title: String, detail: String, action: Intent) {

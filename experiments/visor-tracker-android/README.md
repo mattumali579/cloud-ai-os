@@ -17,9 +17,13 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 The old 5-FPS `LIVE_FRAMES` JPEG service is no longer used by this version. VDK streaming can deliver higher frame rates; real-world alignment and sustained FPS **must still be measured on the actual phone**.
 
+## Version 0.19: one Update this app button
+
+Version code 19. The overlay draws one object: the one being pointed at, then only that lock. Fast mode stays EfficientDet-Lite0. **UPDATE THIS APP** checks, downloads the signed APK, and opens Android's update screen for this same package. Do not uninstall.
+
 ## Version 0.18: point the glasses to lock an object
 
-Version code 18. The object nearest the center of Live View becomes the lock after it stays there for a few frames. Pointing at a different object and holding it there switches the lock and clears the old distance until you calibrate the new one. Movement and box jitter do not swap the lock every frame. The overlay stays touch-through. **INSTALL VERSION** still downloads an update for this same app. Do not uninstall.
+Version code 18. The object nearest the center of Live View becomes the lock after it stays there for a few frames. Pointing at a different object and holding it there switches the lock and clears the old distance until you calibrate the new one. Movement and box jitter do not swap the lock every frame. The overlay stays touch-through.
 
 ## Version 0.17: tap a box to lock it, then update this same app
 

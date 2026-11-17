@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
-import android.view.View
 import android.widget.EditText
 import android.widget.Button
 import android.widget.CheckBox
@@ -24,7 +23,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var accurate: CheckBox
     private lateinit var status: TextView
     private lateinit var installUpdate: Button
-    private var pendingOffer: TrackerUpdater.UpdateOffer? = null
 
     private val grantCamera = registerForActivityResult(RequestScopes()) { grants ->
         status.text = if (Scope.CAMERA in grants) {
@@ -104,11 +102,10 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(accurate)
         root.addView(TextView(this).apply {
-            text = "Up to five visual candidates, and fewer when a name is uncertain. " +
-                "Ranking uses where the box sits in the frame and its size compared with " +
-                "the same label. It is not measured distance, and it is not 'closest to " +
-                "the center of the picture.' A detector score cutoff is not a percent-correct " +
-                "guarantee. An unsure name is shown as object."
+            text = "One object. Point the glasses at it until it locks. Point at a " +
+                "different object and hold to switch. The old distance does not move " +
+                "with you. Motion does not swap the lock every frame. Fast mode stays " +
+                "EfficientDet-Lite0. An unsure name is shown as object."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(4))
         })
@@ -171,34 +168,9 @@ class MainActivity : ComponentActivity() {
             }
         })
         installUpdate = Button(this).apply {
-            text = "INSTALL UPDATE"
-            visibility = View.GONE
-            setOnClickListener {
-                val offer = pendingOffer ?: return@setOnClickListener
-                try {
-                    status.text = TrackerUpdater.enqueueUpdate(this@MainActivity, offer)
-                } catch (error: Exception) {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(offer.url)))
-                    status.text = "Could not download inside the app (" +
-                        (error.message ?: "unknown") + "). Opened the file instead. Tap Update. Do not uninstall."
-                }
-            }
+            text = "UPDATE THIS APP"
+            setOnClickListener { updateThisApp() }
         }
-        root.addView(Button(this).apply {
-            text = "CHECK FOR UPDATES NOW"
-            setOnClickListener {
-                status.text = "Checking signed GitHub releases..."
-                showOffer(null)
-                TrackerUpdater.checkInBackground(
-                    this@MainActivity,
-                    allowMetered = true,
-                    onStatus = { message ->
-                        runOnUiThread { if (::status.isInitialized) status.text = message }
-                    },
-                    onOffer = { offer -> runOnUiThread { showOffer(offer) } },
-                )
-            }
-        })
         root.addView(installUpdate)
         root.addView(CheckBox(this).apply {
             text = "Show the Live View proof mark"
@@ -258,7 +230,7 @@ class MainActivity : ComponentActivity() {
                 onStatus = { message ->
                     runOnUiThread { if (::status.isInitialized) status.text = message }
                 },
-                onOffer = { offer -> runOnUiThread { showOffer(offer) } },
+                onOffer = { _ -> },
             )
         }
     }
@@ -287,11 +259,43 @@ class MainActivity : ComponentActivity() {
         return InstallIdentity(versionName, "$packageName  $versionName ($versionCode)")
     }
 
-    private fun showOffer(offer: TrackerUpdater.UpdateOffer?) {
-        pendingOffer = offer
-        if (!::installUpdate.isInitialized) return
-        installUpdate.visibility = if (offer == null) View.GONE else View.VISIBLE
-        if (offer != null) installUpdate.text = "INSTALL VERSION " + offer.version
+    private fun updateThisApp() {
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            status.text = "Allow this app to install updates, then tap UPDATE THIS APP again."
+            startActivity(Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName")
+            ))
+            return
+        }
+        status.text = "Checking for an update..."
+        installUpdate.isEnabled = false
+        TrackerUpdater.checkInBackground(
+            this,
+            allowMetered = true,
+            onStatus = { message ->
+                runOnUiThread { if (::status.isInitialized) status.text = message }
+            },
+            onOffer = { offer ->
+                if (offer == null) {
+                    runOnUiThread { installUpdate.isEnabled = true }
+                    return@checkInBackground
+                }
+                try {
+                    val apk = TrackerUpdater.downloadUpdate(applicationContext, offer)
+                    runOnUiThread {
+                        installUpdate.isEnabled = true
+                        startActivity(TrackerUpdater.installIntent(this, apk))
+                        status.text = "Tap Update. Do not uninstall."
+                    }
+                } catch (error: Exception) {
+                    runOnUiThread {
+                        installUpdate.isEnabled = true
+                        status.text = "Update failed: " + (error.message ?: "unknown")
+                    }
+                }
+            },
+        )
     }
 
     private fun startOverlay() {

@@ -12,8 +12,8 @@ android {
         applicationId = "com.mattumali.visortracker.stable"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.18.0"
+        versionCode = 19
+        versionName = "0.19.0"
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -72,6 +72,7 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.35")
     implementation("com.macedonga.visor:kit:0.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("androidx.core:core-ktx:1.15.0")
     testImplementation("junit:junit:4.13.2")
 }
 
