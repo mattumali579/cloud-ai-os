@@ -50,8 +50,17 @@ function Resolve-Adb {
 }
 
 function Run-Adb([string[]]$AdbArgs) {
-    $result = @(& $script:Adb @AdbArgs 2>&1)
-    if ($LASTEXITCODE -ne 0) {
+    # In Windows PowerShell 5.1, native stderr can become a terminating
+    # NativeCommandError even when adb succeeds. Judge the native exit code.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $result = @(& $script:Adb @AdbArgs 2>&1)
+        $status = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($status -ne 0) {
         Fail ("adb failed: " + ($AdbArgs -join ' ') + " : " + ($result -join ' '))
     }
     return $result
