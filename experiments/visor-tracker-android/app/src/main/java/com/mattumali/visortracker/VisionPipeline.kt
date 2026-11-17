@@ -25,7 +25,11 @@ data class FrameDetections(
  *
  * Called on one dedicated worker thread. Never invoke detect() concurrently.
  */
-class VisionPipeline(context: Context, private val includeHandsFaces: Boolean = true) : AutoCloseable {
+class VisionPipeline(
+    context: Context,
+    private val includeHandsFaces: Boolean = true,
+    private val preset: DetectionPreset = DetectionPreset.FAST
+) : AutoCloseable {
     private val tracks = TrackIds()
     private val objects: ObjectDetector
     private val hands: HandLandmarker?
@@ -39,10 +43,10 @@ class VisionPipeline(context: Context, private val includeHandsFaces: Boolean = 
         objects = ObjectDetector.createFromOptions(
             app,
             ObjectDetector.ObjectDetectorOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath("efficientdet_lite0.tflite").build())
+                .setBaseOptions(BaseOptions.builder().setModelAssetPath(preset.modelAsset).build())
                 .setRunningMode(RunningMode.IMAGE)
-                .setMaxResults(10)
-                .setScoreThreshold(0.25f)
+                .setMaxResults(preset.maxResults)
+                .setScoreThreshold(preset.scoreThreshold)
                 .build()
         )
         hands = if (includeHandsFaces) HandLandmarker.createFromOptions(
@@ -68,7 +72,7 @@ class VisionPipeline(context: Context, private val includeHandsFaces: Boolean = 
 
     fun detect(input: Bitmap): FrameDetections {
         // Reducing input pixels cuts resize/conversion overhead before MediaPipe.
-        val width = min(384, input.width)
+        val width = min(preset.maxFrameWidth, input.width)
         val height = max(1, (input.height.toDouble() * width / input.width).toInt())
         val resized = if (input.width != width || input.height != height) {
             Bitmap.createScaledBitmap(input, width, height, true)
