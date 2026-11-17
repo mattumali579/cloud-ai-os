@@ -175,8 +175,13 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
             setOnClickListener {
                 val offer = pendingOffer ?: return@setOnClickListener
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(offer.url)))
-                status.text = "Downloading version " + offer.version + ". Open the file, then tap Install."
+                try {
+                    status.text = TrackerUpdater.enqueueUpdate(this@MainActivity, offer)
+                } catch (error: Exception) {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(offer.url)))
+                    status.text = "Could not download inside the app (" +
+                        (error.message ?: "unknown") + "). Opened the file instead. Tap Update. Do not uninstall."
+                }
             }
         }
         root.addView(Button(this).apply {

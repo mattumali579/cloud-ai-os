@@ -93,12 +93,21 @@ class OverlayTrackingService : Service() {
     private var aiFps = 0f
     private var versionName = "?"
     private var versionCode = 0
+    private var picking = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_PICK) {
+            if (!running || overlay == null) {
+                lastStatus = "Start tracking and Live View before picking"
+                return START_NOT_STICKY
+            }
+            setPicking(!picking)
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_CALIBRATE) {
@@ -141,6 +150,7 @@ class OverlayTrackingService : Service() {
         startForeground(NOTIFICATION_ID, notification("Attaching the Live View proof mark"))
         try {
             val view = TrackingOverlayView(applicationContext)
+            view.onPicked = { message -> setPicking(false, message) }
             windows.addView(view, overlayLayout())
             overlay = view
             overlayAttached = true
@@ -386,7 +396,7 @@ class OverlayTrackingService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                (if (picking) 0 else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
@@ -421,6 +431,18 @@ class OverlayTrackingService : Service() {
         if (!running) return@Runnable
         renderStatus()
         mainHandler.postDelayed(diagnosticTick, DIAGNOSTIC_MS)
+    }
+
+    private fun setPicking(enabled: Boolean, status: String? = null) {
+        picking = enabled
+        val view = overlay
+        view?.setPicking(enabled)
+        if (view != null) {
+            try {
+                windows.updateViewLayout(view, overlayLayout())
+            } catch (_: Exception) { }
+        }
+        report(status ?: if (enabled) "Tap the object you want to lock" else "Pick cancelled")
     }
 
     private fun report(message: String, failure: Boolean = false) {
@@ -498,6 +520,10 @@ class OverlayTrackingService : Service() {
         )
         val referenceFeet = getSharedPreferences(PREFS, MODE_PRIVATE)
             .getString("reference_distance_feet", "6")?.toFloatOrNull() ?: 6f
+        val pick = PendingIntent.getService(
+            this, 4, Intent(this, OverlayTrackingService::class.java).setAction(ACTION_PICK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val calibrate = PendingIntent.getService(
             this, 3, Intent(this, OverlayTrackingService::class.java)
                 .setAction(ACTION_CALIBRATE)
@@ -511,6 +537,7 @@ class OverlayTrackingService : Service() {
             .setStyle(Notification.BigTextStyle().bigText(line))
             .setContentIntent(open)
             .setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_edit, if (picking) "Cancel pick" else "Pick", pick)
             .addAction(android.R.drawable.ic_menu_compass, "Calibrate", calibrate)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
             .build()
@@ -561,6 +588,7 @@ class OverlayTrackingService : Service() {
         const val EXTRA_PRESET = "preset"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
+        const val ACTION_PICK = "com.mattumali.visortracker.PICK_OBJECT"
         const val ACTION_CALIBRATE = "com.mattumali.visortracker.CALIBRATE_DISTANCE"
         const val ACTION_CLEAR_DISTANCE = "com.mattumali.visortracker.CLEAR_DISTANCE"
         const val EXTRA_REFERENCE_FEET = "measured_reference_feet"

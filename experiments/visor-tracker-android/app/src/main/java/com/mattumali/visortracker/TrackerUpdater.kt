@@ -13,9 +13,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.pm.PackageInstaller
+import android.app.DownloadManager
 import android.net.Uri
 import android.net.ConnectivityManager
 import android.os.Build
+import android.os.Environment
 import android.util.Log
 import java.net.HttpURLConnection
 import java.net.URL
@@ -188,6 +190,24 @@ object TrackerUpdater {
             )
         )
         return manager
+    }
+
+    /** Downloads the signed APK for this same package. Android then offers Update, not a new app. */
+    fun enqueueUpdate(context: Context, offer: UpdateOffer): String {
+        val manager = context.getSystemService(DownloadManager::class.java)
+        val request = DownloadManager.Request(Uri.parse(offer.url))
+            .setTitle("Visor Tracker " + offer.version)
+            .setDescription("Updates this app. Do not uninstall.")
+            .setMimeType("application/vnd.android.package-archive")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(
+                Environment.DIRECTORY_DOWNLOADS,
+                "Visor-Fast-Tracking-" + offer.version + ".apk"
+            )
+            .setAllowedOverMetered(true)
+        manager.enqueue(request)
+        return "Downloading version " + offer.version +
+            ". When it finishes, tap the download, then Update. Do not uninstall."
     }
 
     fun notifyAction(context: Context, title: String, detail: String, action: Intent) {

@@ -48,29 +48,42 @@ class RelativeDistanceEstimator {
     /** Last camera frame that was allowed to move the smoothed feet. Redraws reuse it. */
     private var appliedSequence = -1L
 
+    /** Finger lock. Does not copy another object's distance onto this one. */
+    fun select(trackId: Int): String {
+        if (trackId <= 0) return "Tap a detected object"
+        if (selectedId != trackId) {
+            originalHeightFraction = 0f
+            originalFeet = 0f
+            smoothedFeet = null
+            appliedSequence = -1L
+        }
+        selectedId = trackId
+        return "Locked #$trackId. Measure it, then tap Calibrate."
+    }
+
     fun calibrate(frame: FrameDetections, measuredFeet: Float): String {
         if (!measuredFeet.isFinite() || measuredFeet !in 0.5f..150f) {
             return "Enter a real measured distance between 0.5 and 150 ft"
         }
         if (frame.width <= 0 || frame.height <= 0) return "No camera image for calibration"
 
-        // A touch-through overlay cannot receive taps. Aim the glasses at the
-        // target and choose the object whose box is closest to camera center.
         val objects = frame.boxes.filter {
             it.kind == "object" && it.trackId > 0 &&
                 it.right > it.left && it.bottom > it.top &&
                 it.score >= 0.3f
         }
-        val centered = objects.minByOrNull {
+        val locked = objects.firstOrNull { it.trackId == selectedId }
+        val centered = locked ?: objects.minByOrNull {
             val cx = (it.left + it.right) * 0.5f / frame.width
             val cy = (it.top + it.bottom) * 0.5f / frame.height
             (cx - 0.5f) * (cx - 0.5f) + (cy - 0.5f) * (cy - 0.5f)
         } ?: return "No detected object. Face the object and keep Live View running."
-
-        val centerX = (centered.left + centered.right) * 0.5f / frame.width
-        val centerY = (centered.top + centered.bottom) * 0.5f / frame.height
-        if (abs(centerX - 0.5f) > 0.3f || abs(centerY - 0.5f) > 0.3f) {
-            return "Aim the center of your glasses at the object, then calibrate"
+        if (locked == null) {
+            val centerX = (centered.left + centered.right) * 0.5f / frame.width
+            val centerY = (centered.top + centered.bottom) * 0.5f / frame.height
+            if (abs(centerX - 0.5f) > 0.3f || abs(centerY - 0.5f) > 0.3f) {
+                return "Aim the center of your glasses at the object, then calibrate"
+            }
         }
         val heightFraction = (centered.bottom - centered.top) / frame.height
         if (heightFraction !in 0.08f..0.98f) {
@@ -118,17 +131,28 @@ class RelativeDistanceEstimator {
     }
 
     /** Overlay line while Live View is up. */
-    fun banner(boxes: List<BoxObservation>): String = when (readiness(boxes)) {
-        DistanceReadiness.UNCALIBRATED -> "Aim at one full object, then Calibrate"
-        DistanceReadiness.STALE -> "lock lost · distance unavailable"
-        DistanceReadiness.LIVE ->
-            "Calibrated %.1f ft · same object, same orientation".format(Locale.US, originalFeet)
+    fun banner(boxes: List<BoxObservation>): String {
+        val id = selectedId
+        if (id != null && originalHeightFraction <= 0f) {
+            return if (boxes.any { it.kind == "object" && it.trackId == id }) {
+                "Locked #$id. Tap Calibrate."
+            } else {
+                "Locked object left the picture. Tap Pick."
+            }
+        }
+        return when (readiness(boxes)) {
+            DistanceReadiness.UNCALIBRATED -> "Tap Pick, touch the object, then Calibrate"
+            DistanceReadiness.STALE -> "lock lost · distance unavailable"
+            DistanceReadiness.LIVE ->
+                "Calibrated %.1f ft · same object, same orientation".format(Locale.US, originalFeet)
+        }
     }
 
     fun selectedTrackId(): Int? = selectedId
 
     fun readiness(boxes: List<BoxObservation>): DistanceReadiness {
         val id = selectedId ?: return DistanceReadiness.UNCALIBRATED
+        if (originalHeightFraction <= 0f) return DistanceReadiness.UNCALIBRATED
         return if (boxes.any { it.kind == "object" && it.trackId == id }) {
             DistanceReadiness.LIVE
         } else {

@@ -32,6 +32,20 @@ class RelativeDistanceEstimatorTest {
             BoxObservation("hand", "hand", 0.9f, 100f, 100f, 200f, 200f, trackId = 4)))
     }
 
+    @Test fun fingerLockCalibratesThatObjectEvenWhenItIsNotCentered() {
+        val estimator = RelativeDistanceEstimator()
+        val side = box(id = 8, x = 220f)
+        assertTrue(estimator.calibrate(frame(side), 6f).contains("Aim"))
+        assertTrue(estimator.select(8).contains("Locked #8"))
+        assertTrue(estimator.calibrate(frame(side), 10f).contains("#8"))
+        assertEquals(8, estimator.selectedTrackId())
+        assertEquals(10f, estimator.estimate(300, side)!!, 0.01f)
+        assertNull(estimator.estimate(300, box()))
+        estimator.select(4)
+        assertNull(estimator.estimate(300, side))
+        assertEquals(DistanceReadiness.UNCALIBRATED, estimator.readiness(listOf(box())))
+    }
+
     @Test fun noCalibrationForBadMeasurementsOrUncenteredObjects() {
         val estimator = RelativeDistanceEstimator()
         assertTrue(estimator.calibrate(frame(box()), 0f).contains("Enter"))
