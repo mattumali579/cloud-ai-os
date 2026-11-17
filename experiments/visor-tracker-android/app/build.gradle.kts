@@ -17,6 +17,30 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Optional persistent signing for future in-place updates. With no stored
+    // secret, CI continues producing a normal ephemeral debug APK for tests.
+    // Never commit a signing key. Android cannot update an installed APK
+    // without the installed APK's original certificate/private key.
+    val signingStorePath = System.getenv("VISOR_SIGNING_STORE_FILE").orEmpty()
+    if (signingStorePath.isNotBlank()) {
+        val signingStore = file(signingStorePath)
+        require(signingStore.isFile) { "Stable signing key file missing" }
+        val signingStorePassword = System.getenv("VISOR_SIGNING_STORE_PASSWORD").orEmpty()
+        val signingAlias = System.getenv("VISOR_SIGNING_KEY_ALIAS").orEmpty()
+        val signingKeyPassword = System.getenv("VISOR_SIGNING_KEY_PASSWORD").orEmpty()
+        require(signingStorePassword.isNotBlank() && signingAlias.isNotBlank() &&
+            signingKeyPassword.isNotBlank()) { "Incomplete stable signing credentials" }
+        signingConfigs.create("persistent") {
+            storeFile = signingStore
+            storePassword = signingStorePassword
+            keyAlias = signingAlias
+            keyPassword = signingKeyPassword
+        }
+        buildTypes.getByName("debug") {
+            signingConfig = signingConfigs.getByName("persistent")
+        }
+    }
+
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/visionAssets").get().asFile)
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
