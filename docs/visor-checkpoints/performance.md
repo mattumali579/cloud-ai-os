@@ -62,3 +62,12 @@ Objects-only 60,001 ms replay (`replay-stage.txt`): 960 inferences, 960 painted 
 Release APK artifact `visor-tracker-apk` id `14415995260` on run `44277058072`: `com.mattumali.visortracker.stable`, versionCode 27, versionName 0.27.0, signer SHA-256 `afb36d6baa0eb0b14e038ea7b141bc92662350bdfdf9be30151bb7d759a02308`. Publish stayed skipped. No release tag was created.
 
 The same commit also completed run `44277049465` with conclusion success. The stage numbers above are from run `44277058072`.
+
+The same tracker code was measured again on commit `7e627cf`, run `44279416931`, artifact `visor-detector-simulation` id `14417340466`. `OK (4 tests)`. Still emulator people.jpg, not a phone.
+
+- Switch stayed one detect pass: `reusedKnownFrame=true`, `switchToBMs=741`, objects 324 ms, hand 415 ms. Still above 500 ms.
+- 60,077 ms replay: 210 object and 210 hand inferences. Wall-clock 3.50 fps. Detect-only 3.67 fps (`detectMs=57293`). Draw and motion were 3.50 fps and are not inferences.
+- Hand score 0.931, ray person #1, center person #2, GPU hand fell back to CPU, overlay 17,526 white and 3,506 cyan.
+- The 320 px probe still found the ray (`hand320Ms=818`). Production stayed at 640.
+
+The two emulator samples of the same code are 6.41 and 3.67 detect-only fps, and 1,016 ms and 741 ms to switch. Both are one detect instead of the 0.26.0 two-detect 2,528 ms. Neither switch is under 500 ms. The spread is emulator variance, not a phone result.
