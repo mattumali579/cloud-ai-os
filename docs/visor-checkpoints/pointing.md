@@ -19,4 +19,17 @@ The ray is 2D on the camera image. It is not a measured 3D direction. Two object
 
 Isolated geometry is `IndexPointTest` and `AimLockTest`. Those use constructed landmarks.
 
-Real recognition is the emulator test `realHandPointsAtOneObjectThenTheOtherIsAcquired` on `people.jpg`: a photograph of an extended index finger aimed across two people. It runs Hand Landmarker and EfficientDet-Lite0, the production ray and `AimLock`, then paints `TrackingOverlayView`. The stage file is `pointing-stage.txt` and the rendered frame is `pointing-overlay.png` in the `visor-detector-simulation` artifact. JVM tests do not load the native models.
+Real recognition is the emulator test `realHandPointsAtOneObjectThenTheOtherIsAcquired` on `people.jpg`. Commit `03ad6452e6d34827441870e8e541d62b4935a8e0` passed `OK (4 tests)` in 136.4s. JVM tests do not load the native models.
+
+Measured on that run, from `pointing-stage.txt`:
+
+- One hand, score 0.931. Wrist (298, 137), index MCP (321, 126), PIP (331, 125), DIP (338, 125), tip (344, 125).
+- Four EfficientDet objects. The ray selected person #1. The object nearest the center was person #2.
+- Lock stayed on #1 after a 36px shift. After #1 was covered, lock moved to person #2 in 4062ms.
+- Overlay painted 17,526 white pixels on the locked box and 3,506 cyan ray pixels. The saved frame shows the white box, the label `person #1`, and the cyan finger joints and ray.
+- 60,076ms continuous replay: 248 object inferences and 248 hand inferences, 4.13 fps each, 248 frames still contained an object. 49 invalid frames were injected and all 49 recovered.
+- First call took 2017ms (objects 303ms, hand 1142ms). The two-frame dwell then reused that finished frame.
+
+The release APK is `com.mattumali.visortracker.stable` versionCode 25, signer SHA-256 `afb36d6baa0eb0b14e038ea7b141bc92662350bdfdf9be30151bb7d759a02308`.
+
+A tall phone cover-crops a wide camera frame, so a fingertip at the extreme edge can fall outside the preview even though the ray is correct in camera coordinates. The proof frame uses the detection frame's 16:9 shape so the ray stays on screen.
