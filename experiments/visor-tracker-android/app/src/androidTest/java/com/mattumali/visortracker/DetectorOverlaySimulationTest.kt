@@ -339,17 +339,21 @@ class DetectorOverlaySimulationTest {
             assertTrue("covering the pointed object did not acquire the other one\n$report", replacement != null)
 
             val view = TrackingOverlayView(context)
+            // Same 16:9 shape as the detection frame, so cover-crop does not
+            // clip the fingertip that sits at the right edge.
+            val viewWidth = 1280
+            val viewHeight = 720
             view.measure(
-                android.view.View.MeasureSpec.makeMeasureSpec(480, android.view.View.MeasureSpec.EXACTLY),
-                android.view.View.MeasureSpec.makeMeasureSpec(854, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(viewWidth, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(viewHeight, android.view.View.MeasureSpec.EXACTLY),
             )
-            view.layout(0, 0, 480, 854)
+            view.layout(0, 0, viewWidth, viewHeight)
             view.observeCandidates(first.copy(sequence = 1, capturedAtMs = 1))
             view.observeCandidates(first.copy(sequence = 2, capturedAtMs = 2))
             view.updateFrame(first.copy(sequence = 2, capturedAtMs = 2))
-            val painted = Bitmap.createBitmap(480, 854, Bitmap.Config.ARGB_8888)
+            val painted = Bitmap.createBitmap(viewWidth, viewHeight, Bitmap.Config.ARGB_8888)
             view.draw(Canvas(painted))
-            val projected = CoverGeometry.project(first.width, first.height, 480, 854, pointed)
+            val projected = CoverGeometry.project(first.width, first.height, viewWidth, viewHeight, pointed)
             val white = whitePixelsOnBox(painted, projected)
             val cyan = countCyan(painted)
             report.appendLine("overlay whiteOnLock=$white cyanRay=$cyan drawn=${view.drawnBoxCount()} selected=${view.selectedTrackId()}")
@@ -447,8 +451,8 @@ class DetectorOverlaySimulationTest {
 
     private fun countCyan(bitmap: Bitmap): Int {
         var count = 0
-        for (y in 0 until bitmap.height step 2) {
-            for (x in 0 until bitmap.width step 2) {
+        for (y in 0 until bitmap.height) {
+            for (x in 0 until bitmap.width) {
                 val pixel = bitmap.getPixel(x, y)
                 val red = android.graphics.Color.red(pixel)
                 val green = android.graphics.Color.green(pixel)
