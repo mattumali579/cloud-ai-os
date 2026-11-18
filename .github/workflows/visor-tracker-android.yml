@@ -245,7 +245,7 @@ jobs:
               echo "v11 artifact is no longer downloadable; tag visor-tracker-v11 stays without a Release asset"
             fi
           fi
-          NOTES="Signed arm64 release for the S22 Ultra. Same package com.mattumali.visortracker.stable and the same signing certificate. One calibrated object shows an approximate distance. Up to five boxes. No depth sensor. It does not install other packages."
+          NOTES="Signed arm64 release for the S22 Ultra. Same package com.mattumali.visortracker.stable and the same signing certificate. One selected object box follows the chosen target. Calibrated distance is approximate and uses no depth sensor. It does not install other packages."
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" --repo "$REPO" --clobber
           else
