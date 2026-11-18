@@ -218,7 +218,7 @@ jobs:
 
   publish-release:
     name: Publish signed release after tests and emulator check
-    if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
+    if: startsWith(github.ref, 'refs/tags/visor-tracker-v') || github.ref == 'refs/heads/feat/visor-overlay-phase1'
     needs: [build-and-test, install-android16-with-legacy-present, detector-simulation]
     runs-on: ubuntu-latest
     steps:
@@ -236,6 +236,17 @@ jobs:
           set -euo pipefail
           REPO="${GITHUB_REPOSITORY}"
           TAG="${GITHUB_REF_NAME}"
+          # Publish the v0.28.1 (versionCode 29) hotfix once so the existing
+          # in-app release updater can discover it. Never replace that release
+          # automatically on later branch pushes.
+          if [[ "${GITHUB_REF}" == refs/heads/feat/visor-overlay-phase1 ]]; then
+            grep -Fq 'versionCode = 29' experiments/visor-tracker-android/app/build.gradle.kts
+            TAG="visor-tracker-v29"
+            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+              echo "Hotfix release already exists; not replacing it."
+              exit 0
+            fi
+          fi
           APK="${RUNNER_TEMP}/Visor-Fast-Tracking.apk"
           test -f /tmp/new-tracker/app-release.apk
           cp /tmp/new-tracker/app-release.apk "$APK"
@@ -262,7 +273,7 @@ jobs:
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" --repo "$REPO" --clobber
           else
-            gh release create "$TAG" "$APK" --repo "$REPO" \
+            gh release create "$TAG" "$APK" --repo "$REPO" --target "$GITHUB_SHA" \
               --title "Visor Fast Tracking ${TAG#visor-tracker-v}" \
               --notes "$NOTES"
           fi
