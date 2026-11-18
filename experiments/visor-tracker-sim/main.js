@@ -1,14 +1,21 @@
 import * as THREE from "https://esm.sh/three@0.170.0"
-import { createLockPolicy } from "./policy.js"
+import { createLockPolicy, createResultGate } from "./policy.js"
 
 const canvas = document.querySelector("#view")
 const fpsEl = document.querySelector("#fps")
+const detectEl = document.querySelector("#detect")
+const ageEl = document.querySelector("#age")
 const lockEl = document.querySelector("#lock")
 const switchEl = document.querySelector("#switch")
 const statusEl = document.querySelector("#status")
+const stageNoteEl = document.querySelector("#stage-note")
+
+function cappedPixelRatio() {
+  return Math.min(window.devicePixelRatio || 1, 1)
+}
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "low-power" })
-renderer.setPixelRatio(1)
+renderer.setPixelRatio(cappedPixelRatio())
 renderer.setSize(window.innerWidth, window.innerHeight, false)
 
 const scene = new THREE.Scene()
@@ -49,6 +56,19 @@ const targets = [
 const hidden = new Set()
 let motionOn = true
 const policy = createLockPolicy()
+const gate = createResultGate()
+let mode = "ideal"
+let inferenceDelayMs = 80
+let handIntervalMs = 66
+let objectIntervalMs = 250
+let captureSerial = 0
+let lastHandCapture = 0
+let lastObjectCapture = 0
+let lastAppliedAt = 0
+let frameAgeMs = 0
+let detectorFrames = 0
+let detectorFps = 0
+let detectorStamp = performance.now()
 const raycaster = new THREE.Raycaster()
 const center = new THREE.Vector2(0, 0)
 const frustum = new THREE.Frustum()
@@ -86,14 +106,63 @@ document.addEventListener("keydown", (event) => {
   if (event.code === "KeyH") hideLocked()
   if (event.code === "KeyR") hidden.clear()
   if (event.code === "KeyM") motionOn = !motionOn
+  if (event.code === "Digit1") setMode("ideal")
+  if (event.code === "Digit2") setMode("realistic")
   if (event.code.startsWith("Arrow")) event.preventDefault()
 })
 document.addEventListener("keyup", (event) => keys.delete(event.code))
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
+  renderer.setPixelRatio(cappedPixelRatio())
   renderer.setSize(window.innerWidth, window.innerHeight, false)
 })
+
+document.querySelector("#mode-ideal").addEventListener("click", () => setMode("ideal"))
+document.querySelector("#mode-realistic").addEventListener("click", () => setMode("realistic"))
+document.querySelector("#delay-ms").addEventListener("input", readIntervals)
+document.querySelector("#hand-ms").addEventListener("input", readIntervals)
+document.querySelector("#object-ms").addEventListener("input", readIntervals)
+document.querySelector("#stage-file").addEventListener("change", async (event) => {
+  const file = event.target.files && event.target.files[0]
+  if (!file) return
+  const data = JSON.parse(await file.text())
+  applyStageTimings(data)
+})
+document.querySelector("#load-sample").addEventListener("click", async () => {
+  const response = await fetch("./stage-timings.sample.json")
+  applyStageTimings(await response.json())
+})
+
+function setMode(next) {
+  mode = next
+  captureSerial = 0
+  lastAppliedAt = 0
+  frameAgeMs = 0
+  statusEl.textContent = next === "ideal"
+    ? "Ideal mode. Observations are applied on the render frame."
+    : "Realistic mode. Hand and object results wait out the inference delay."
+}
+
+function readIntervals() {
+  inferenceDelayMs = readNumber("#delay-ms", inferenceDelayMs)
+  handIntervalMs = readNumber("#hand-ms", handIntervalMs)
+  objectIntervalMs = readNumber("#object-ms", objectIntervalMs)
+}
+
+function readNumber(selector, fallback) {
+  const value = Number(document.querySelector(selector).value)
+  return Number.isFinite(value) && value >= 0 ? value : fallback
+}
+
+function applyStageTimings(data) {
+  if (Number.isFinite(data.handMs)) document.querySelector("#hand-ms").value = String(data.handMs)
+  if (Number.isFinite(data.objectMs)) document.querySelector("#object-ms").value = String(data.objectMs)
+  if (Number.isFinite(data.delayMs)) document.querySelector("#delay-ms").value = String(data.delayMs)
+  readIntervals()
+  stageNoteEl.textContent = data.note ||
+    "Loaded timings into the realistic intervals. This page does not run MediaPipe."
+}
 
 function hideLocked() {
   if (policy.lockedId != null) hidden.add(policy.lockedId)
@@ -149,15 +218,7 @@ function screenCenterId(visibleMeshes) {
   return best
 }
 
-function tick(now) {
-  const dt = Math.min(0.05, (now - lastFrame) / 1000)
-  lastFrame = now
-  camera.rotation.y = yaw
-  camera.rotation.x = pitch
-  movePlayer(dt)
-  nudgeObjects()
-  animateObjects(now)
-
+function sceneObservation() {
   camera.updateMatrixWorld()
   projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
   frustum.setFromProjectionMatrix(projView)
@@ -168,44 +229,107 @@ function tick(now) {
   const visibleIds = visibleMeshes.map((mesh) => mesh.userData.id)
   const centerId = screenCenterId(visibleMeshes)
   const replacementId = visibleIds.find((id) => id !== policy.lockedId) ?? null
-  const before = policy.lockedId
-  const candidate = hit ? hit.userData.id : centerId
-  if (before != null && candidate != null && candidate !== before) {
-    if (divergeAt === 0) divergeAt = now
-  } else if (!visibleIds.includes(before)) {
-    if (divergeAt === 0) divergeAt = now
-  } else {
-    divergeAt = 0
-  }
-  const decision = policy.observe({
+  return {
     visibleIds,
     fingerTargetId: hit ? hit.userData.id : null,
     handPresent: hit != null,
     replacementId: centerId != null && centerId !== policy.lockedId ? centerId : replacementId,
     centerId,
     closed: keys.has("KeyF"),
-  })
+    candidate: hit ? hit.userData.id : centerId,
+  }
+}
+
+function noteDivergence(observation, now) {
+  const before = policy.lockedId
+  const candidate = observation.candidate
+  if (before != null && candidate != null && candidate !== before) {
+    if (divergeAt === 0) divergeAt = now
+  } else if (before != null && !observation.visibleIds.includes(before)) {
+    if (divergeAt === 0) divergeAt = now
+  } else {
+    divergeAt = 0
+  }
+}
+
+function applyObservation(observation, now) {
+  const before = policy.lockedId
+  const decision = policy.observe(observation)
   if (decision.changed && decision.lockedId !== before) {
-    lastSwitchMs = divergeAt === 0 ? dt * 1000 : now - divergeAt
+    lastSwitchMs = divergeAt === 0 ? 0 : now - divergeAt
     divergeAt = 0
   }
   const lockedMesh = targets.find((mesh) => mesh.userData.id === decision.lockedId)
   lockEl.textContent = lockedMesh
     ? `Lock ${lockedMesh.userData.label}  track ${lockedMesh.userData.id}`
     : "Lock none"
+  const hiddenLabel = hidden.size ? ` hidden ${[...hidden].join(",")}` : ""
+  const modeLabel = mode === "ideal" ? "Ideal" : "Realistic"
+  statusEl.textContent = decision.lockedId == null
+    ? `${modeLabel}. No lock.${hiddenLabel} H hides. R restores. No command is sent.`
+    : `${modeLabel}. Tracking ${decision.lockedId}.${hiddenLabel} H hides. R restores. No command is sent.`
+  return decision
+}
+
+function capture(now) {
+  captureSerial += 1
+  gate.noteCameraTick(captureSerial)
+  gate.submit({
+    tick: captureSerial,
+    readyAt: now + inferenceDelayMs,
+    capturedAt: now,
+    observation: sceneObservation(),
+  })
+}
+
+function tick(now) {
+  const dt = Math.min(0.05, (now - lastFrame) / 1000)
+  lastFrame = now
+  camera.rotation.y = yaw
+  camera.rotation.x = pitch
+  movePlayer(dt)
+  nudgeObjects()
+  animateObjects(now)
+
+  const live = sceneObservation()
+  noteDivergence(live, now)
+  if (mode === "ideal") {
+    applyObservation(live, now)
+    frameAgeMs = 0
+    detectorFrames += 1
+  } else {
+    if (lastHandCapture === 0 || now - lastHandCapture >= handIntervalMs) {
+      lastHandCapture = now
+      capture(now)
+    }
+    if (lastObjectCapture === 0 || now - lastObjectCapture >= objectIntervalMs) {
+      lastObjectCapture = now
+      capture(now)
+    }
+    const accepted = gate.collect(now)
+    for (const result of accepted) {
+      applyObservation(result.observation, now)
+      lastAppliedAt = result.capturedAt
+      detectorFrames += 1
+    }
+    frameAgeMs = lastAppliedAt === 0 ? 0 : Math.max(0, now - lastAppliedAt)
+  }
+
   switchEl.textContent = `Last switch ${lastSwitchMs.toFixed(0)} ms`
+  ageEl.textContent = `Frame age ${frameAgeMs.toFixed(0)} ms`
   frames += 1
   if (now - fpsStamp >= 500) {
     const fps = (frames * 1000) / (now - fpsStamp)
-    const frameMs = (now - fpsStamp) / frames
-    fpsEl.textContent = `FPS ${fps.toFixed(0)}   frame ${frameMs.toFixed(1)} ms`
+    fpsEl.textContent = `Render FPS ${fps.toFixed(0)}`
     frames = 0
     fpsStamp = now
   }
-  const hiddenLabel = hidden.size ? ` hidden ${[...hidden].join(",")}` : ""
-  statusEl.textContent = decision.lockedId == null
-    ? `No lock.${hiddenLabel} F holds a closed hand.`
-    : `Tracking ${decision.lockedId}.${hiddenLabel} F holds a closed hand. No command is sent.`
+  if (now - detectorStamp >= 500) {
+    detectorFps = (detectorFrames * 1000) / (now - detectorStamp)
+    detectEl.textContent = `Detector FPS ${detectorFps.toFixed(1)}`
+    detectorFrames = 0
+    detectorStamp = now
+  }
   renderer.render(scene, camera)
   requestAnimationFrame(tick)
 }

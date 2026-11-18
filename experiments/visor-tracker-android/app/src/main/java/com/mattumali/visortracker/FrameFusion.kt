@@ -3,16 +3,16 @@ package com.mattumali.visortracker
 /**
  * Publishes detector results in capture order.
  * A result for an older sequence cannot replace a newer lock or a newer frame.
- * Called on the inference worker only.
+ * Hand and object workers may both call [offer]. An older sequence is dropped.
  */
 class FrameFusion {
     private var publishedSequence = Long.MIN_VALUE
-    var dropped: Int = 0
+    @Volatile var dropped: Int = 0
         private set
-    var lastAgeMs: Long = -1L
+    @Volatile var lastAgeMs: Long = -1L
         private set
 
-    fun offer(frame: FrameDetections, nowMs: Long): FrameDetections? {
+    fun offer(frame: FrameDetections, nowMs: Long): FrameDetections? = synchronized(this) {
         if (frame.sequence < publishedSequence) {
             dropped += 1
             return null
@@ -23,10 +23,10 @@ class FrameFusion {
         } else {
             -1L
         }
-        return frame
+        frame
     }
 
-    fun reset() {
+    fun reset() = synchronized(this) {
         publishedSequence = Long.MIN_VALUE
         dropped = 0
         lastAgeMs = -1L

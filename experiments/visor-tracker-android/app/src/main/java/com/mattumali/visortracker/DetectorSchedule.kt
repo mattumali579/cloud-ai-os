@@ -16,8 +16,9 @@ data class ModelPass(val objects: Boolean, val hands: Boolean)
  * Hands and objects do not share one cadence.
  * After a lock, object detection stays on [InferenceCadence] (4 Hz). Hands can
  * run on the frames in between so a finger update does not wait for EfficientDet.
- * Both still run on one inference worker: MediaPipe IMAGE mode is not thread-safe
- * on one detector, and the YUV converter reuses one bitmap.
+ * EfficientDet stays on the inference worker. The hand landmarker stays on its
+ * own thread. One detector instance is never called from two threads, and the
+ * shared YUV bitmap is not passed to both models.
  */
 object SplitSchedule {
     const val HAND_MS = 66L

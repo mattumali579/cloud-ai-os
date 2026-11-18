@@ -14,8 +14,10 @@ import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 
 data class FrameDetections(
     val width: Int,
@@ -29,19 +31,26 @@ data class FrameDetections(
  * Runs inference without rendering another camera preview. The native Visor video remains
  * independent, while the inexpensive transparent overlay draws the returned boxes.
  *
- * Object detection stays on the CPU delegate. The hand landmarker tries the GPU delegate
- * once; if that create or the first detect does not return, later frames use the CPU
- * landmarker. Do not call [detect] concurrently. MediaPipe IMAGE mode is not safe to
- * share across threads, so hands and objects stay on one worker. LIVE_STREAM and VIDEO
- * are not enabled: this build has no emulator probe that survived a repeated detect in
- * those modes. A hands-only pass reuses the last object boxes so a finger can move
- * while EfficientDet is skipped. numHands stays 2.
+ * Object detection stays on the CPU delegate and on the thread that calls [detect].
+ * The hand landmarker is owned by one executor. When [overlapModels] is true the two
+ * models run at the same time on those two threads, on separate bitmaps. A hand result
+ * can be published from that executor before EfficientDet returns.
+ *
+ * The hand landmarker tries the GPU delegate once when [attemptGpu] is true. If that
+ * create or the first detect does not return, later frames use the CPU landmarker.
+ * A second GPU attempt is not started. LIVE_STREAM and VIDEO are not enabled: this
+ * tree has no repeated-detect probe that survived those modes, and the same mode is
+ * not tried again. A hands-only pass reuses the last object boxes.
  */
 class VisionPipeline(
     context: Context,
     private val includeFaces: Boolean = false,
     private val preset: DetectionPreset = DetectionPreset.FAST,
     private val includeHands: Boolean = false,
+    private val handLongSide: Int = HAND_FRAME,
+    private val numHands: Int = HAND_COUNT,
+    private val attemptGpu: Boolean = true,
+    val overlapModels: Boolean = true,
 ) : AutoCloseable {
     private val tracks = TrackIds()
     private val objects: ObjectDetector
@@ -58,6 +67,11 @@ class VisionPipeline(
     var lastObjectMs: Long = 0
         private set
     var lastHandMs: Long = 0
+        private set
+    var lastBitmapMs: Long = 0
+        private set
+    /** Model time only. Bitmap scaling is [lastBitmapMs]. Overlap makes this closer to the slower model. */
+    var lastWallMs: Long = 0
         private set
 
     /** Winner after init and, if needed, the first real hand detect. */
@@ -84,7 +98,7 @@ class VisionPipeline(
                 .setScoreThreshold(preset.scoreThreshold)
                 .build()
         )
-        handRuntime = if (includeHands) HandRuntime(app) else null
+        handRuntime = if (includeHands) HandRuntime(app, numHands, attemptGpu) else null
         faces = if (includeFaces) FaceDetector.createFromOptions(
             app,
             FaceDetector.FaceDetectorOptions.builder()
@@ -100,16 +114,24 @@ class VisionPipeline(
     var lastOptionalFault: String? = null
         private set
 
+    /** Drops one remembered object so a hands-only pass cannot paint it again. */
+    fun forgetObject(trackId: Int) {
+        if (trackId <= 0) return
+        recentObjects = recentObjects.filter { it.trackId != trackId }
+    }
+
     fun detect(
         input: Bitmap,
         runObjects: Boolean = true,
         runHands: Boolean = includeHands,
+        onHands: ((List<BoxObservation>) -> Unit)? = null,
     ): FrameDetections {
         if (input.isRecycled) throw IllegalStateException("recycled frame")
+        val bitmapStarted = android.os.SystemClock.elapsedRealtime()
         val (width, height) = YuvSnapshot.outputSize(input.width, input.height, preset.maxFrameWidth)
         val doHands = runHands && handRuntime != null
         val (handWidth, handHeight) = if (doHands) {
-            YuvSnapshot.outputSize(input.width, input.height, HAND_FRAME)
+            YuvSnapshot.outputSize(input.width, input.height, handLongSide)
         } else {
             width to height
         }
@@ -120,15 +142,27 @@ class VisionPipeline(
         } else {
             input
         }
+        // Never hand the same bitmap to both models. The hand executor copies again
+        // before it returns, so the object thread can read its own pixels.
         val handBitmap = when {
             !doHands -> null
-            objectBitmap != null && handWidth == objectBitmap.width && handHeight == objectBitmap.height -> objectBitmap
+            input.width == handWidth && input.height == handHeight && objectBitmap !== input -> input
+            objectBitmap != null && handWidth == objectBitmap.width && handHeight == objectBitmap.height ->
+                objectBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    ?: throw IllegalStateException("hand frame could not be copied")
             input.width == handWidth && input.height == handHeight -> input
             else -> Bitmap.createScaledBitmap(input, handWidth, handHeight, true)
         }
+        lastBitmapMs = android.os.SystemClock.elapsedRealtime() - bitmapStarted
 
+        var handFuture: Future<HandPass>? = null
         try {
             val observed = mutableListOf<BoxObservation>()
+            val wallStarted = android.os.SystemClock.elapsedRealtime()
+            val runtime = handRuntime
+            if (doHands && overlapModels && runtime != null) {
+                handFuture = runtime.begin(handBitmap ?: input, width, height, onHands)
+            }
             if (runObjects) {
                 val source = objectBitmap ?: input
                 val image = BitmapImageBuilder(source).build()
@@ -149,21 +183,28 @@ class VisionPipeline(
                     image.close()
                 }
             } else {
+                lastObjectMs = 0
                 observed += recentObjects.map { it.copy(points = it.points.toList()) }
             }
 
             var optionalFailed = false
             var scannedOptional = false
-            if (doHands) {
+            if (doHands && runtime != null) {
                 scannedOptional = true
-                val handStarted = android.os.SystemClock.elapsedRealtime()
-                recentHands = scanHands(handBitmap ?: input, width, height) {
+                if (handFuture == null) {
+                    handFuture = runtime.begin(handBitmap ?: input, width, height, onHands)
+                }
+                val handPass = awaitHands(runtime, handFuture, {
+                    runtime.begin(handBitmap ?: input, width, height, onHands)
+                }) {
                     optionalFailed = true
                     lastOptionalFault = it
                 }
-                lastHandMs = android.os.SystemClock.elapsedRealtime() - handStarted
+                recentHands = handPass.boxes
+                lastHandMs = handPass.modelMs
                 handInferences += 1
             }
+            lastWallMs = android.os.SystemClock.elapsedRealtime() - wallStarted
             if (runObjects && includeFaces && frameNumber % 4 == 0) {
                 scannedOptional = true
                 val source = objectBitmap ?: input
@@ -192,6 +233,8 @@ class VisionPipeline(
             val tracked = tracks.update(observed).filter { !it.held }
             return FrameDetections(width, height, tracked.map { it.copy(points = it.points.toList()) })
         } catch (error: Exception) {
+            handRuntime?.invalidateInFlight()
+            handFuture?.cancel(true)
             Log.e(TAG, "MediaPipe detection failed", error)
             throw error
         } finally {
@@ -207,31 +250,48 @@ class VisionPipeline(
         }
     }
 
-    private fun scanHands(
-        bitmap: Bitmap,
-        objectWidth: Int,
-        objectHeight: Int,
+    private data class HandPass(val boxes: List<BoxObservation>, val modelMs: Long)
+
+    private fun awaitHands(
+        runtime: HandRuntime,
+        started: Future<HandPass>,
+        retry: () -> Future<HandPass>,
         onFault: (String) -> Unit,
-    ): List<BoxObservation> {
-        val runtime = handRuntime ?: return emptyList()
-        var marked = try {
-            runtime.detect(bitmap)
+    ): HandPass {
+        val first = awaitOnce(runtime, started, onFault, allowFallback = true)
+        if (first != null) return first
+        if (!runtime.consumeRetry()) return HandPass(emptyList(), 0L)
+        return awaitOnce(runtime, retry(), onFault, allowFallback = false)
+            ?: HandPass(emptyList(), 0L)
+    }
+
+    private fun awaitOnce(
+        runtime: HandRuntime,
+        future: Future<HandPass>,
+        onFault: (String) -> Unit,
+        allowFallback: Boolean,
+    ): HandPass? {
+        return try {
+            future.get(runtime.nextTimeout(), TimeUnit.MILLISECONDS)
+        } catch (timeout: TimeoutException) {
+            runtime.invalidateInFlight()
+            future.cancel(true)
+            if (allowFallback) runtime.fallbackToCpu() else onFault("hands: timed out")
+            Log.w(TAG, "hand detect did not return", timeout)
+            null
         } catch (error: Exception) {
-            onFault("hands: " + (error.message ?: error.javaClass.simpleName))
-            Log.e(TAG, "hands failed", error)
-            return emptyList()
-        }
-        if (marked == null && runtime.consumeRetry()) {
-            marked = try {
-                runtime.detect(bitmap)
-            } catch (error: Exception) {
-                onFault("hands: " + (error.message ?: error.javaClass.simpleName))
-                Log.e(TAG, "hands failed", error)
-                return emptyList()
+            val cause = (error as? ExecutionException)?.cause ?: error
+            runtime.invalidateInFlight()
+            future.cancel(true)
+            if (allowFallback && runtime.delegateName == "GPU") {
+                Log.w(TAG, "GPU hand detect failed", cause)
+                runtime.fallbackToCpu()
+            } else {
+                onFault("hands: " + (cause.message ?: cause.javaClass.simpleName))
+                Log.e(TAG, "hands failed", cause)
             }
+            null
         }
-        if (marked == null) return emptyList()
-        return handsToBoxes(marked, objectWidth, objectHeight)
     }
 
     private fun handsToBoxes(
@@ -277,7 +337,11 @@ class VisionPipeline(
         objects.close()
     }
 
-    private class HandRuntime(private val app: Context) : AutoCloseable {
+    private inner class HandRuntime(
+        private val app: Context,
+        private val numHands: Int,
+        attemptGpu: Boolean,
+    ) : AutoCloseable {
         var delegateName: String = "CPU"
             private set
         var attempt: String = "CPU"
@@ -285,87 +349,88 @@ class VisionPipeline(
         var fallbacks: Int = 0
             private set
         var abandonBitmap: Boolean = false
+        @Volatile var lastModelMs: Long = 0L
         private var retryCpu = false
         private var marker: HandLandmarker? = null
-        private var executor = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "visor-hand").apply { isDaemon = true }
-        }
-        private var handOnExecutor = false
+        private var executor = newExecutor()
         private var gpuProbed = false
+        private val ticket = AtomicInteger(0)
 
         init {
-            attempt = "GPU"
-            val created = try {
-                executor.submit<HandLandmarker?> {
-                    try {
-                        create(Delegate.GPU)
-                    } catch (error: Exception) {
-                        Log.w(TAG, "GPU hand landmarker did not initialize", error)
-                        null
-                    }
-                }.get(CREATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            } catch (error: Exception) {
-                Log.w(TAG, "GPU hand landmarker did not return", error)
-                null
-            }
-            if (created != null) {
-                marker = created
-                delegateName = "GPU"
-                handOnExecutor = true
-            } else {
-                abandonExecutor()
-                marker = create(Delegate.CPU)
+            if (!attemptGpu) {
+                attempt = "CPU"
                 delegateName = "CPU"
-                handOnExecutor = false
+                marker = createOnExecutor(Delegate.CPU)
                 gpuProbed = true
-                fallbacks = 1
+            } else {
+                attempt = "GPU"
+                val created = createOnExecutor(Delegate.GPU)
+                if (created != null) {
+                    marker = created
+                    delegateName = "GPU"
+                } else {
+                    // The GPU create may still be inside native code on the old thread.
+                    // Leave that delegate behind and build the CPU landmarker on a new thread.
+                    replaceExecutor()
+                    marker = createOnExecutor(Delegate.CPU)
+                    delegateName = "CPU"
+                    gpuProbed = true
+                    fallbacks = 1
+                    Log.i(TAG, "hand delegate fell back to CPU")
+                }
             }
         }
 
-        fun detect(bitmap: Bitmap): HandLandmarkerResult? {
-            val current = marker ?: return null
-            if (!handOnExecutor) {
-                val image = BitmapImageBuilder(bitmap).build()
-                return try {
-                    current.detect(image)
-                } finally {
-                    image.close()
-                }
-            }
-            val timeout = if (!gpuProbed) PROBE_TIMEOUT_MS else DETECT_TIMEOUT_MS
-            val owned = if (!gpuProbed) {
-                bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
-            } else {
-                bitmap
-            }
-            val future = executor.submit<HandLandmarkerResult> {
-                val image = BitmapImageBuilder(owned).build()
-                try {
-                    current.detect(image)
-                } finally {
-                    image.close()
-                }
+        fun nextTimeout(): Long = if (!gpuProbed) PROBE_TIMEOUT_MS else DETECT_TIMEOUT_MS
+
+        fun invalidateInFlight() {
+            ticket.incrementAndGet()
+        }
+
+        fun begin(
+            bitmap: Bitmap,
+            frameWidth: Int,
+            frameHeight: Int,
+            onHands: ((List<BoxObservation>) -> Unit)?,
+        ): Future<HandPass> {
+            val mine = ticket.incrementAndGet()
+            val owned = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                ?: throw IllegalStateException("hand frame could not be copied")
+            val current = marker
+            if (current == null) {
+                if (!owned.isRecycled) owned.recycle()
+                return java.util.concurrent.CompletableFuture.completedFuture(HandPass(emptyList(), 0L))
             }
             return try {
-                val value = future.get(timeout, TimeUnit.MILLISECONDS)
-                gpuProbed = true
-                if (owned !== bitmap && !owned.isRecycled) owned.recycle()
-                value
-            } catch (error: TimeoutException) {
-                future.cancel(true)
-                if (owned !== bitmap) abandonBitmap = true
-                fallbackToCpu()
-                null
-            } catch (error: Exception) {
-                if (owned !== bitmap && !owned.isRecycled) owned.recycle()
-                val cause = (error as? ExecutionException)?.cause ?: error
-                if (delegateName == "GPU") {
-                    Log.w(TAG, "GPU hand detect failed", cause)
-                    fallbackToCpu()
-                    null
-                } else {
-                    throw cause
+                executor.submit<HandPass> {
+                    if (ticket.get() != mine) {
+                        if (!owned.isRecycled) owned.recycle()
+                        return@submit HandPass(emptyList(), 0L)
+                    }
+                    val started = android.os.SystemClock.elapsedRealtime()
+                    val image = BitmapImageBuilder(owned).build()
+                    try {
+                        val marked = current.detect(image)
+                        val elapsed = android.os.SystemClock.elapsedRealtime() - started
+                        val boxes = handsToBoxes(marked, frameWidth, frameHeight)
+                        if (ticket.get() == mine) {
+                            lastModelMs = elapsed
+                            gpuProbed = true
+                            try {
+                                onHands?.invoke(boxes)
+                            } catch (error: Exception) {
+                                Log.w(TAG, "hand publish failed", error)
+                            }
+                        }
+                        HandPass(boxes, elapsed)
+                    } finally {
+                        image.close()
+                        if (!owned.isRecycled) owned.recycle()
+                    }
                 }
+            } catch (error: Exception) {
+                if (!owned.isRecycled) owned.recycle()
+                throw error
             }
         }
 
@@ -375,25 +440,45 @@ class VisionPipeline(
             return marker != null
         }
 
-        private fun fallbackToCpu() {
+        fun fallbackToCpu() {
             if (delegateName == "CPU") return
+            invalidateInFlight()
             delegateName = "CPU"
-            handOnExecutor = false
             gpuProbed = true
             fallbacks += 1
-            abandonExecutor()
-            marker = try {
-                create(Delegate.CPU)
-            } catch (error: Exception) {
-                Log.e(TAG, "CPU hand landmarker failed", error)
-                null
-            }
+            replaceExecutor()
+            marker = createOnExecutor(Delegate.CPU)
             retryCpu = marker != null
             Log.i(TAG, "hand delegate fell back to CPU")
         }
 
-        private fun abandonExecutor() {
-            executor.shutdown()
+        private fun replaceExecutor() {
+            val previous = executor
+            executor = newExecutor()
+            previous.shutdown()
+        }
+
+        private fun createOnExecutor(delegate: Delegate): HandLandmarker? {
+            val future = try {
+                executor.submit<HandLandmarker?> {
+                    try {
+                        create(delegate)
+                    } catch (error: Exception) {
+                        Log.w(TAG, "hand landmarker did not initialize", error)
+                        null
+                    }
+                }
+            } catch (error: Exception) {
+                Log.w(TAG, "hand executor rejected create", error)
+                return null
+            }
+            return try {
+                future.get(CREATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } catch (error: Exception) {
+                future.cancel(true)
+                Log.w(TAG, "hand landmarker did not return", error)
+                null
+            }
         }
 
         private fun create(delegate: Delegate): HandLandmarker =
@@ -407,7 +492,7 @@ class VisionPipeline(
                             .build()
                     )
                     .setRunningMode(RunningMode.IMAGE)
-                    .setNumHands(HAND_COUNT)
+                    .setNumHands(numHands)
                     .setMinHandDetectionConfidence(IndexPoint.MIN_SCORE)
                     .setMinHandPresenceConfidence(IndexPoint.MIN_SCORE)
                     .setMinTrackingConfidence(IndexPoint.MIN_SCORE)
@@ -415,6 +500,7 @@ class VisionPipeline(
             )
 
         override fun close() {
+            invalidateInFlight()
             val closing = marker
             marker = null
             executor.shutdown()
@@ -428,12 +514,19 @@ class VisionPipeline(
                 closer.shutdownNow()
             }
         }
+
+        private fun newExecutor() = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "visor-hand").apply { isDaemon = true }
+        }
     }
 
     companion object {
         private const val TAG = "VisorTracker"
         internal const val HAND_FRAME = 640
-        /** Two hands. One hand was not switched in without a same-image proof that the extended index remains. */
+        /**
+         * Production default. A same-image probe may record a faster count, and the
+         * constant changes only when that probe still finds the extended index.
+         */
         internal const val HAND_COUNT = 2
         private const val CREATE_TIMEOUT_MS = 3_000L
         private const val PROBE_TIMEOUT_MS = 2_500L

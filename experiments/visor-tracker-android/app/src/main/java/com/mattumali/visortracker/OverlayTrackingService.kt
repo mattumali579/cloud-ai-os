@@ -50,9 +50,11 @@ import kotlinx.coroutines.launch
  * token sent over the network. The VDK requires a one-time CAMERA scope grant.
  * Decoding happens on an IO coroutine. The motion tracker steps the newest gray
  * frame. Object recognition stays at 5 Hz before a lock and 4 Hz after it.
- * Hands can run on the frames in between. One inference worker runs whichever
- * model is due, because the detectors are not thread-safe and the YUV converter
- * reuses one bitmap. A newer camera frame replaces the single waiting slot.
+ * Hands can run on the frames in between. EfficientDet stays on the inference
+ * worker. The hand landmarker stays on its own thread and can publish before
+ * the object model returns. Each detector instance has one owner. The YUV
+ * converter's shared bitmap is not given to both models. A newer camera frame
+ * replaces the single waiting slot, and an older result cannot overwrite it.
  */
 class OverlayTrackingService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -96,6 +98,11 @@ class OverlayTrackingService : Service() {
     private var preset = DetectionPreset.FAST
     private var lastObjectOfferedAtMs = 0L
     private var lastHandOfferedAtMs = 0L
+    @Volatile private var lastObjectFrame: FrameDetections? = null
+    private var lastObjectAtElapsed: Long = 0L
+    private var objectSkipUsed = false
+    private var lockedPatch: IntArray? = null
+    private var lockedPatchId: Int = 0
     private var lastSlotOfferAtMs = 0L
     private var lastReportAtMs = 0L
     @Volatile private var lastBoxCount = 0
@@ -432,7 +439,8 @@ class OverlayTrackingService : Service() {
         detectorBusy.set(true)
         try {
             if (!running) return
-            val locked = overlay?.selectedTrackId() != null
+            val lockedNow = overlay?.selectedTrackId()
+            val locked = lockedNow != null
             val pass = SplitSchedule.decide(
                 frame.capturedAtMs, lastObjectOfferedAtMs, lastHandOfferedAtMs, locked,
             ) ?: ModelPass(objects = true, hands = true)
@@ -442,11 +450,38 @@ class OverlayTrackingService : Service() {
             val yuvStarted = SystemClock.elapsedRealtime()
             val limit = if (pass.objects) preset.maxFrameWidth else VisionPipeline.HAND_FRAME
             bitmap = frame.snapshot.toBitmap(limit)
+            val rgb = bitmap ?: return
             stages.record("y", SystemClock.elapsedRealtime() - yuvStarted)
             stageFaults.clear("yuv")
+            val previousObjects = lastObjectFrame
+            val ageMs = if (lastObjectAtElapsed <= 0L || previousObjects == null) {
+                Long.MAX_VALUE
+            } else {
+                (frame.capturedAtMs - lastObjectAtElapsed).coerceAtLeast(0L)
+            }
+            val replacementFresh = lockedNow != null &&
+                FreshObjectReuse.replacementIsFresh(previousObjects, lockedNow, ageMs)
+            val obscured = replacementFresh && previousObjects != null && lockedNow != null &&
+                regionObscured(rgb, previousObjects, lockedNow)
+            val dropLocked = replacementFresh && obscured && !objectSkipUsed && lockedNow != null
+            val runObjects = ObjectSkip.runObjects(pass.objects, replacementFresh, obscured, objectSkipUsed)
+            val runHands = pass.hands || dropLocked
+            if (dropLocked && lockedNow != null) {
+                objectSkipUsed = true
+                if (!pass.hands) lastHandOfferedAtMs = frame.capturedAtMs
+                vision.forgetObject(lockedNow)
+            }
             val aiStarted = SystemClock.elapsedRealtime()
-            val detections = vision.detect(bitmap, runObjects = pass.objects, runHands = pass.hands)
+            val detections = vision.detect(
+                rgb,
+                runObjects = runObjects,
+                runHands = runHands,
+                onHands = { hands -> publishHandsEarly(frame, hands, dropLocked, lockedNow) },
+            )
             stages.record("ai", SystemClock.elapsedRealtime() - aiStarted)
+            stages.record("b", vision.lastBitmapMs)
+            if (runObjects) stages.record("o", vision.lastObjectMs)
+            if (runHands) stages.record("h", vision.lastHandMs)
             stageFaults.clear("detect")
             OptionalModelFault.apply(stageFaults, vision.lastOptionalFault)
             refreshFaults()
@@ -456,15 +491,28 @@ class OverlayTrackingService : Service() {
             rawDetections.set(objectCount)
             Log.i(
                 TAG,
-                "detect objects=$objectCount hands=${pass.hands} objectsRan=${pass.objects} " +
+                "detect objects=$objectCount hands=$runHands objectsRan=$runObjects skipped=$dropLocked " +
                     "handDelegate=${vision.handDelegate} seq=${frame.sequence}",
             )
             deviceLog(
                 "detect",
-                "objects=$objectCount seq=${frame.sequence} objectsRan=${pass.objects} hands=${pass.hands} " +
-                    "handDelegate=${vision.handDelegate}",
+                "objects=$objectCount seq=${frame.sequence} objectsRan=$runObjects hands=$runHands " +
+                    "skipped=$dropLocked handDelegate=${vision.handDelegate}",
             )
-            val stamped = detections.copy(sequence = frame.sequence, capturedAtMs = frame.capturedAtMs)
+            val stampedSource = detections.copy(sequence = frame.sequence, capturedAtMs = frame.capturedAtMs)
+            if (runObjects) {
+                objectSkipUsed = false
+                lastObjectFrame = stampedSource
+                lastObjectAtElapsed = frame.capturedAtMs
+                rememberPatch(rgb, stampedSource, lockedNow)
+            }
+            val stamped = if (dropLocked && lockedNow != null) {
+                stampedSource.copy(
+                    boxes = stampedSource.boxes.filter { it.kind != "object" || it.trackId != lockedNow },
+                )
+            } else {
+                stampedSource
+            }
             val fresh = session.fusion.offer(stamped, SystemClock.elapsedRealtime())
             if (fresh == null) {
                 handoff.metrics.onStaleDetection()
@@ -556,7 +604,55 @@ class OverlayTrackingService : Service() {
     }
 
     private fun stageSuffix(): String =
-        "g${stages.median("g")} y${stages.median("y")} ai${stages.median("ai")} m${stages.median("m")} d${stages.median("d")}ms"
+        "g${stages.median("g")} y${stages.median("y")} ai${stages.median("ai")} " +
+            "o${stages.median("o")} h${stages.median("h")} m${stages.median("m")} d${stages.median("d")}ms"
+
+    private fun publishHandsEarly(
+        frame: QueuedInference,
+        hands: List<BoxObservation>,
+        dropLocked: Boolean,
+        lockedNow: Int?,
+    ) {
+        if (!running) return
+        val base = lastObjectFrame
+        val objects = base?.boxes?.filter { box ->
+            box.kind == "object" && !(dropLocked && box.trackId == lockedNow)
+        }.orEmpty()
+        val partial = FrameDetections(
+            width = base?.width ?: 1,
+            height = base?.height ?: 1,
+            boxes = objects + hands,
+            sequence = frame.sequence,
+            capturedAtMs = frame.capturedAtMs,
+        )
+        val accepted = session.fusion.offer(partial, SystemClock.elapsedRealtime()) ?: return
+        mainHandler.post {
+            if (!running) return@post
+            overlay?.updateFrame(accepted)
+            lastBoxCount = overlay?.drawnBoxCount() ?: 0
+        }
+    }
+
+    private fun regionObscured(bitmap: Bitmap, previous: FrameDetections, lockedId: Int): Boolean {
+        if (lockedPatchId != lockedId) return false
+        val previousPatch = lockedPatch ?: return false
+        val box = previous.boxes.firstOrNull { it.kind == "object" && it.trackId == lockedId } ?: return false
+        val now = RegionChange.sample(bitmap, box, previous.width, previous.height) ?: return false
+        return RegionChange.obscured(previousPatch, now)
+    }
+
+    private fun rememberPatch(bitmap: Bitmap, frame: FrameDetections, lockedId: Int?) {
+        val box = lockedId?.let { id ->
+            frame.boxes.firstOrNull { it.kind == "object" && it.trackId == id }
+        }
+        if (lockedId == null || box == null) {
+            lockedPatch = null
+            lockedPatchId = 0
+            return
+        }
+        lockedPatch = RegionChange.sample(bitmap, box, frame.width, frame.height)
+        lockedPatchId = lockedId
+    }
 
     private fun publish(frame: FrameDetections) {
         val objects = frame.boxes.count { it.kind == "object" }

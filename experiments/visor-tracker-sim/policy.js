@@ -123,3 +123,60 @@ export function createLockPolicy(spec = SPEC) {
     },
   }
 }
+
+/**
+ * Camera ticks and detector results are separate.
+ * A result whose tick is older than the newest camera tick is dropped, even
+ * if it becomes ready later. This is not MediaPipe and it does not share an
+ * executable with the Kotlin tracker.
+ */
+export function createResultGate() {
+  let newestTick = 0
+  let appliedTick = 0
+  let dropped = 0
+  const waiting = []
+
+  function noteCameraTick(tick) {
+    if (tick > newestTick) newestTick = tick
+  }
+
+  function submit(result) {
+    waiting.push(result)
+  }
+
+  function collect(now) {
+    const due = []
+    const later = []
+    for (const result of waiting) {
+      if (result.readyAt <= now) due.push(result)
+      else later.push(result)
+    }
+    waiting.length = 0
+    for (const result of later) waiting.push(result)
+    const newestDue = due.reduce((max, result) => Math.max(max, result.tick), 0)
+    const accepted = []
+    for (const result of due.sort((a, b) => a.tick - b.tick)) {
+      // Ready results older than the newest ready tick, or older than a tick
+      // already applied, do not overwrite that newer tick.
+      if (result.tick < newestDue || result.tick < appliedTick) {
+        dropped += 1
+        continue
+      }
+      accepted.push(result)
+      appliedTick = result.tick
+    }
+    return accepted
+  }
+
+  return {
+    noteCameraTick,
+    submit,
+    collect,
+    get dropped() {
+      return dropped
+    },
+    get newestTick() {
+      return newestTick
+    },
+  }
+}

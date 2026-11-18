@@ -244,7 +244,7 @@ class DetectorOverlaySimulationTest {
      * AimLock select one person, keep that id while the picture shifts, then
      * take the remaining person after the first one is covered.
      */
-    @Test(timeout = 240_000)
+    @Test(timeout = 300_000)
     fun realHandPointsAtOneObjectThenTheOtherIsAcquired() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -269,7 +269,11 @@ class DetectorOverlaySimulationTest {
                 cx * cx + cy * cy
             }
             report.appendLine("frame ${first.width}x${first.height} photo ${base.width}x${base.height}")
-            report.appendLine("firstDetectMs=$firstMs objectMs=${pipeline.lastObjectMs} handMs=${pipeline.lastHandMs}")
+            report.appendLine(
+                "firstDetectMs=$firstMs bitmapMs=${pipeline.lastBitmapMs} objectMs=${pipeline.lastObjectMs} " +
+                    "handMs=${pipeline.lastHandMs} wallMs=${pipeline.lastWallMs} overlap=${pipeline.overlapModels}",
+            )
+            report.appendLine("yuvMs=not-measured-this-replay-has-no-camera")
             report.appendLine(
                 "handDelegate=${pipeline.handDelegate} attempted=${pipeline.handDelegateAttempt} " +
                     "fallbacks=${pipeline.handFallbacks} objectDelegate=${pipeline.objectDelegate}",
@@ -324,47 +328,95 @@ class DetectorOverlaySimulationTest {
             var switchPasses = 0
             var knownCandidateFrames = 0
             var reusedKnownFrame = false
+            var objectSkipped = false
             try {
-                switchPasses = 1
-                val detectStarted = android.os.SystemClock.elapsedRealtime()
-                val frame = pipeline.detect(covered)
-                val switchDetectMs = android.os.SystemClock.elapsedRealtime() - detectStarted
-                val oldVisible = frame.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
-                val otherVisible = frame.boxes.any { it.kind == "object" && it.trackId > 0 && it.trackId != pointed.trackId }
-                if (!oldVisible && otherVisible) knownCandidateFrames++
-                val known = KnownReplacement.alreadyVisible(moved, frame, pointed.trackId)
-                reusedKnownFrame = known
-                val decision = if (known) aim.observeKnownReplacement(frame) else aim.observe(frame)
-                val visible = frame.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
-                report.appendLine(
-                    "occluded lock=${decision.lockedId} visible=$visible knownFrames=$knownCandidateFrames known=$known",
-                )
-                report.appendLine(
-                    "switchFirstDetectMs=$switchDetectMs objectMs=${pipeline.lastObjectMs} handMs=${pipeline.lastHandMs}",
-                )
-                if (acceptedSwitch(decision, frame, pointed.trackId)) {
-                    replacement = decision.lockedId
-                    switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
-                } else {
-                    repeat(7) {
-                        if (replacement != null) return@repeat
-                        switchPasses++
-                        val again = pipeline.detect(covered)
-                        val oldAgain = again.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
-                        val otherAgain = again.boxes.any {
-                            it.kind == "object" && it.trackId > 0 && it.trackId != pointed.trackId
-                        }
-                        if (!oldAgain && otherAgain) knownCandidateFrames++
-                        val next = aim.observe(again)
-                        val shown = again.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
-                        report.appendLine("occluded lock=${next.lockedId} visible=$shown knownFrames=$knownCandidateFrames")
-                        if (acceptedSwitch(next, again, pointed.trackId)) {
-                            replacement = next.lockedId
-                            switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
-                            return@repeat
+                val fresh = FreshObjectReuse.replacementIsFresh(moved, pointed.trackId, ageMs = 0L)
+                val beforePatch = RegionChange.sample(base, pointed, first.width, first.height)
+                val afterPatch = RegionChange.sample(covered, pointed, first.width, first.height)
+                val obscured = beforePatch != null && afterPatch != null &&
+                    RegionChange.obscured(beforePatch, afterPatch)
+                report.appendLine("replacementFresh=$fresh regionObscured=$obscured")
+                if (fresh && obscured) {
+                    switchPasses = 1
+                    val detectStarted = android.os.SystemClock.elapsedRealtime()
+                    val hands = pipeline.detect(covered, runObjects = false, runHands = true)
+                    val skipWall = android.os.SystemClock.elapsedRealtime() - detectStarted
+                    val aligned = moved.boxes.mapNotNull { box ->
+                        if (box.kind != "object" || box.held || box.trackId == pointed.trackId) return@mapNotNull null
+                        first.boxes.firstOrNull { it.kind == "object" && it.trackId == box.trackId } ?: box
+                    }
+                    val frame = FrameDetections(
+                        width = first.width,
+                        height = first.height,
+                        boxes = aligned + hands.boxes.filter { it.kind == "hand" },
+                    )
+                    if (aligned.isNotEmpty()) knownCandidateFrames++
+                    val known = KnownReplacement.alreadyVisible(moved, frame, pointed.trackId)
+                    reusedKnownFrame = known
+                    val decision = if (known) aim.observeKnownReplacement(frame) else aim.observe(frame)
+                    val visible = frame.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
+                    report.appendLine(
+                        "objectSkipped=true skipWallMs=$skipWall bitmapMs=${pipeline.lastBitmapMs} " +
+                            "objectMs=0 handMs=${pipeline.lastHandMs} wallMs=${pipeline.lastWallMs}",
+                    )
+                    report.appendLine(
+                        "occluded lock=${decision.lockedId} visible=$visible knownFrames=$knownCandidateFrames known=$known",
+                    )
+                    if (acceptedSwitch(decision, frame, pointed.trackId)) {
+                        objectSkipped = true
+                        replacement = decision.lockedId
+                        switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
+                        report.appendLine(
+                            "switchFirstDetectMs=$skipWall objectMs=0 handMs=${pipeline.lastHandMs}",
+                        )
+                    } else {
+                        report.appendLine("objectSkipRejected=true fallback=full-detect")
+                    }
+                }
+                if (replacement == null) {
+                    switchPasses = if (switchPasses == 0) 1 else switchPasses + 1
+                    val detectStarted = android.os.SystemClock.elapsedRealtime()
+                    val frame = pipeline.detect(covered)
+                    val switchDetectMs = android.os.SystemClock.elapsedRealtime() - detectStarted
+                    val oldVisible = frame.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
+                    val otherVisible = frame.boxes.any { it.kind == "object" && it.trackId > 0 && it.trackId != pointed.trackId }
+                    if (!oldVisible && otherVisible) knownCandidateFrames++
+                    val known = KnownReplacement.alreadyVisible(moved, frame, pointed.trackId)
+                    reusedKnownFrame = known
+                    val decision = if (known) aim.observeKnownReplacement(frame) else aim.observe(frame)
+                    val visible = frame.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
+                    report.appendLine(
+                        "occluded lock=${decision.lockedId} visible=$visible knownFrames=$knownCandidateFrames known=$known",
+                    )
+                    report.appendLine(
+                        "switchFirstDetectMs=$switchDetectMs bitmapMs=${pipeline.lastBitmapMs} " +
+                            "objectMs=${pipeline.lastObjectMs} handMs=${pipeline.lastHandMs} wallMs=${pipeline.lastWallMs}",
+                    )
+                    if (acceptedSwitch(decision, frame, pointed.trackId)) {
+                        replacement = decision.lockedId
+                        switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
+                    } else {
+                        repeat(7) {
+                            if (replacement != null) return@repeat
+                            switchPasses++
+                            val again = pipeline.detect(covered)
+                            val oldAgain = again.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
+                            val otherAgain = again.boxes.any {
+                                it.kind == "object" && it.trackId > 0 && it.trackId != pointed.trackId
+                            }
+                            if (!oldAgain && otherAgain) knownCandidateFrames++
+                            val next = aim.observe(again)
+                            val shown = again.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
+                            report.appendLine("occluded lock=${next.lockedId} visible=$shown knownFrames=$knownCandidateFrames")
+                            if (acceptedSwitch(next, again, pointed.trackId)) {
+                                replacement = next.lockedId
+                                switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
+                                return@repeat
+                            }
                         }
                     }
                 }
+                report.appendLine("objectSkipped=$objectSkipped")
             } finally {
                 covered.recycle()
             }
@@ -405,8 +457,6 @@ class DetectorOverlaySimulationTest {
             assertTrue("locked box was not painted white\n$report", white > 10)
             assertTrue("pointing ray was not painted\n$report", cyan > 10)
 
-            recordHandSizeProbe(base, pipeline, report)
-            save()
             val started = android.os.SystemClock.elapsedRealtime()
             var invalidFrames = 0
             var recovered = 0
@@ -428,6 +478,8 @@ class DetectorOverlaySimulationTest {
             val rateCanvas = Canvas(rateBitmap)
             val beforeObjects = pipeline.objectInferences
             val beforeHands = pipeline.handInferences
+            val stageMedians = StageTimings()
+            val replayLock = AimLock()
             while (android.os.SystemClock.elapsedRealtime() - started < 60_000) {
                 if (steps % 5 == 4) {
                     val junk = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
@@ -445,18 +497,29 @@ class DetectorOverlaySimulationTest {
                     val detectStarted = android.os.SystemClock.elapsedRealtime()
                     val result = pipeline.detect(sample)
                     detectMs += android.os.SystemClock.elapsedRealtime() - detectStarted
+                    stageMedians.record("b", pipeline.lastBitmapMs)
+                    stageMedians.record("o", pipeline.lastObjectMs)
+                    stageMedians.record("h", pipeline.lastHandMs)
+                    stageMedians.record("w", pipeline.lastWallMs)
                     if (result.boxes.any { it.kind == "object" }) {
                         objectFrames++
                         if (invalidFrames > recovered) recovered = invalidFrames
                     }
+                    val motionStarted = android.os.SystemClock.elapsedRealtime()
                     val movedByMotion = stepReplayMotion(motion, result, steps, motionReady)
+                    stageMedians.record("m", android.os.SystemClock.elapsedRealtime() - motionStarted)
                     motionReady = true
                     motionSteps++
                     if (movedByMotion) motionMoved++
+                    val lockStarted = android.os.SystemClock.elapsedRealtime()
+                    replayLock.observe(result)
+                    stageMedians.record("l", android.os.SystemClock.elapsedRealtime() - lockStarted)
                     rateView.updateFrame(
                         result.copy(sequence = steps.toLong(), capturedAtMs = steps.toLong()),
                     )
+                    val drawStarted = android.os.SystemClock.elapsedRealtime()
                     rateView.draw(rateCanvas)
+                    stageMedians.record("draw", android.os.SystemClock.elapsedRealtime() - drawStarted)
                     drawCount++
                 } finally {
                     sample.recycle()
@@ -481,7 +544,21 @@ class DetectorOverlaySimulationTest {
             report.appendLine("drawFps=${"%.2f".format(java.util.Locale.US, drawCount * 1000f / elapsed)}")
             report.appendLine("redrawIsNotInference=true")
             report.appendLine("detectMs=$detectMs")
-            report.appendLine("runningMode=IMAGE numHands=${VisionPipeline.HAND_COUNT} handLongSide=${VisionPipeline.HAND_FRAME}")
+            report.appendLine(
+                "medianBitmapMs=${stageMedians.median("b")} medianObjectMs=${stageMedians.median("o")} " +
+                    "medianHandMs=${stageMedians.median("h")} medianWallMs=${stageMedians.median("w")} " +
+                    "medianMotionMs=${stageMedians.median("m")} medianLockMs=${stageMedians.median("l")} " +
+                    "medianDrawMs=${stageMedians.median("draw")}",
+            )
+            report.appendLine(
+                "stageNote=bitmap is the scale step. yuv is not in this replay. wall is model time and is lower than object+hand when the models overlap.",
+            )
+            report.appendLine(
+                "runningMode=IMAGE numHands=${VisionPipeline.HAND_COUNT} handLongSide=${VisionPipeline.HAND_FRAME} " +
+                    "overlap=${pipeline.overlapModels}",
+            )
+            report.appendLine("videoMode=not-retried no surviving repeated LIVE_STREAM or VIDEO probe; IMAGE stays")
+            report.appendLine("gpuNote=one GPU attempt on the production pipeline. Probes below stay on CPU.")
             report.appendLine("objectFrames=$objectFrames invalidFrames=$invalidFrames recovered=$recovered")
             report.appendLine("droppedFrames=$invalidFrames")
             val runtime = Runtime.getRuntime()
@@ -489,6 +566,13 @@ class DetectorOverlaySimulationTest {
             report.appendLine("heapUsedMb=$usedMb")
             report.appendLine("thermalSoak=not-run needs-phone")
             report.appendLine("frameAgeNote=lastObjectMs and lastHandMs are emulator detect latency, not phone frame age")
+            save()
+            try {
+                recordHandProbes(context, base, pointed.trackId, report)
+                recordSequentialProbe(context, base, report)
+            } catch (error: Exception) {
+                report.appendLine("probeError=${error.javaClass.simpleName}")
+            }
             save()
             assertTrue("sustained run was shorter than 60s\n$report", elapsed >= 60_000)
             assertTrue("object detector stopped\n$report", objectCalls >= 2 && objectFrames >= 2)
@@ -504,31 +588,86 @@ class DetectorOverlaySimulationTest {
         decision.lockedId != null && decision.lockedId != previousId &&
             frame.boxes.any { it.kind == "object" && it.trackId == decision.lockedId }
 
-    private fun recordHandSizeProbe(base: Bitmap, pipeline: VisionPipeline, report: StringBuilder) {
-        val longSide = maxOf(base.width, base.height).coerceAtLeast(1)
-        val scale = 320f / longSide.toFloat()
-        val width = (base.width * scale).toInt().coerceAtLeast(1)
-        val height = (base.height * scale).toInt().coerceAtLeast(1)
-        val small = Bitmap.createScaledBitmap(base, width, height, true)
-        try {
-            val started = android.os.SystemClock.elapsedRealtime()
-            val probed = pipeline.detect(small, runObjects = false, runHands = true)
-            val elapsed = android.os.SystemClock.elapsedRealtime() - started
-            val ray = IndexPoint.ray(probed)
-            report.appendLine(
-                "hand320Ms=$elapsed hand320Ray=${ray != null} hand320Frame=${probed.width}x${probed.height} hand320MsModel=${pipeline.lastHandMs}",
+    private fun recordHandProbes(
+        context: android.content.Context,
+        base: Bitmap,
+        productionTarget: Int,
+        report: StringBuilder,
+    ) {
+        val configs = listOf(
+            2 to 640,
+            1 to 640,
+            2 to 384,
+            2 to 320,
+        )
+        for ((hands, side) in configs) {
+            val probe = VisionPipeline(
+                context,
+                includeFaces = false,
+                preset = DetectionPreset.FAST,
+                includeHands = true,
+                handLongSide = side,
+                numHands = hands,
+                attemptGpu = false,
+                overlapModels = true,
             )
-        } catch (error: Exception) {
-            report.appendLine("hand320Error=${error.javaClass.simpleName}")
-        } finally {
-            if (!small.isRecycled) small.recycle()
+            try {
+                val frame = probe.detect(base)
+                val ray = IndexPoint.ray(frame)
+                val target = if (ray == null) null else IndexPoint.alongRay(ray, frame.boxes, null)?.trackId
+                val center = frame.boxes.filter { it.kind == "object" && it.trackId > 0 }.minByOrNull { box ->
+                    val cx = (box.left + box.right) / (2f * frame.width) - 0.5f
+                    val cy = (box.top + box.bottom) / (2f * frame.height) - 0.5f
+                    cx * cx + cy * cy
+                }?.trackId
+                report.appendLine(
+                    "probe hands=$hands side=$side handMs=${probe.lastHandMs} wallMs=${probe.lastWallMs} " +
+                        "bitmapMs=${probe.lastBitmapMs} ray=${ray != null} joints=${ray?.joints?.size ?: 0} " +
+                        "target=$target center=$center samePerson=${target == productionTarget} " +
+                        "delegate=${probe.handDelegate}",
+                )
+            } catch (error: Exception) {
+                report.appendLine("probe hands=$hands side=$side error=${error.javaClass.simpleName}")
+            } finally {
+                probe.close()
+            }
         }
         report.appendLine(
             "productionHandLongSide=${VisionPipeline.HAND_FRAME} numHands=${VisionPipeline.HAND_COUNT} runningMode=IMAGE",
         )
         report.appendLine(
-            "handSizeNote=320 is one extra detect in this job. The lock proof stays on the ${VisionPipeline.HAND_FRAME}px long side.",
+            "handSizeNote=probes are one CPU detect each. Production stays at ${VisionPipeline.HAND_FRAME}px and " +
+                "${VisionPipeline.HAND_COUNT} hands unless a probe is faster and target stays person #$productionTarget.",
         )
+    }
+
+    private fun recordSequentialProbe(context: android.content.Context, base: Bitmap, report: StringBuilder) {
+        val sequential = VisionPipeline(
+            context,
+            includeFaces = false,
+            preset = DetectionPreset.FAST,
+            includeHands = true,
+            attemptGpu = false,
+            overlapModels = false,
+        )
+        try {
+            sequential.detect(base)
+            val started = android.os.SystemClock.elapsedRealtime()
+            sequential.detect(base)
+            val wall = android.os.SystemClock.elapsedRealtime() - started
+            report.appendLine(
+                "sequentialProbeWallMs=$wall sequentialObjectMs=${sequential.lastObjectMs} " +
+                    "sequentialHandMs=${sequential.lastHandMs} sequentialModelWallMs=${sequential.lastWallMs}",
+            )
+            report.appendLine(
+                "overlapNote=production detect overlaps the hand thread with EfficientDet. " +
+                    "The sequential probe waits for the hand before the object model. Kept overlap so a hand publish does not wait.",
+            )
+        } catch (error: Exception) {
+            report.appendLine("sequentialProbeError=${error.javaClass.simpleName}")
+        } finally {
+            sequential.close()
+        }
     }
 
     private fun stepReplayMotion(

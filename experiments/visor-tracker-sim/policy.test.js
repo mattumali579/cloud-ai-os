@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import test from "node:test"
-import { createLockPolicy, SPEC } from "./policy.js"
+import { createLockPolicy, createResultGate, SPEC } from "./policy.js"
 
 const fileSpec = JSON.parse(fs.readFileSync(new URL("./spec.json", import.meta.url), "utf8"))
 
@@ -92,4 +92,49 @@ test("one closed frame does not release or send a command", () => {
   assert.equal(once.lockedId, "A")
   assert.equal(once.released, false)
   assert.equal(once.sendsExternalCommand, false)
+})
+
+test("a late result does not overwrite a newer camera tick", () => {
+  const gate = createResultGate()
+  gate.noteCameraTick(1)
+  gate.submit({ tick: 1, readyAt: 100, observation: { id: "old" } })
+  gate.noteCameraTick(2)
+  gate.submit({ tick: 2, readyAt: 150, observation: { id: "new" } })
+  assert.equal(gate.collect(50).length, 0)
+  const applied = gate.collect(200)
+  assert.equal(applied.length, 1)
+  assert.equal(applied[0].tick, 2)
+  assert.equal(applied[0].observation.id, "new")
+  assert.equal(gate.dropped, 1)
+  assert.equal(gate.collect(200).length, 0)
+})
+
+test("a delayed hide does not replace a newer camera tick", () => {
+  const gate = createResultGate()
+  const policy = createLockPolicy()
+  const both = {
+    visibleIds: ["A", "B"],
+    fingerTargetId: "A",
+    handPresent: true,
+    replacementId: "B",
+  }
+  policy.observe(both)
+  assert.equal(policy.observe(both).lockedId, "A")
+  gate.noteCameraTick(5)
+  gate.submit({
+    tick: 4,
+    readyAt: 10,
+    observation: {
+      visibleIds: ["B"],
+      fingerTargetId: null,
+      handPresent: false,
+      replacementId: "B",
+    },
+  })
+  gate.submit({ tick: 5, readyAt: 10, observation: both })
+  const applied = gate.collect(10)
+  assert.equal(applied.length, 1)
+  assert.equal(applied[0].tick, 5)
+  assert.equal(policy.observe(applied[0].observation).lockedId, "A")
+  assert.equal(gate.dropped, 1)
 })

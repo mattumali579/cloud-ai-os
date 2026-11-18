@@ -16,6 +16,8 @@
       background: rgba(12, 14, 18, 0.82); padding: 10px 12px; border-radius: 8px;
       min-width: 240px;
     }
+    button, input { font: inherit; margin: 0 6px 8px 0; }
+    label { display: block; margin-bottom: 6px; }
     #panel {
       position: fixed; right: 12px; top: 64px; z-index: 2; width: 280px;
       background: rgba(12, 14, 18, 0.88); padding: 12px 14px; border-radius: 8px;
@@ -35,13 +37,28 @@
   <div id="reticle"></div>
   <canvas id="view"></canvas>
   <div id="hud">
-    <div id="fps">FPS —</div>
+    <div id="fps">Render FPS —</div>
+    <div id="detect">Detector FPS —</div>
+    <div id="age">Frame age —</div>
     <div id="lock">Lock —</div>
     <div id="switch">Last switch —</div>
   </div>
   <aside id="panel">
     <h1>Simulator controls</h1>
-    <p>Click the view, then look with the mouse. WASD moves. The center ray is a simulated finger, not the glasses ray.</p>
+    <p>
+      <button id="mode-ideal" type="button">Ideal</button>
+      <button id="mode-realistic" type="button">Realistic</button>
+    </p>
+    <p>Ideal applies the ray on the render frame. Realistic keeps the render loop separate from hand and object updates, delays each result, and drops a result older than the newest camera tick. This page does not run MediaPipe.</p>
+    <label>Inference delay ms <input id="delay-ms" type="number" value="80" min="0" max="2000"></label>
+    <label>Hand interval ms <input id="hand-ms" type="number" value="66" min="0" max="2000"></label>
+    <label>Object interval ms <input id="object-ms" type="number" value="250" min="0" max="2000"></label>
+    <p>
+      <button id="load-sample" type="button">Load sample timings</button>
+      <input id="stage-file" type="file" accept="application/json,.json">
+    </p>
+    <p id="stage-note">No Android stage file loaded.</p>
+    <p>Click the view, then look with the mouse. WASD moves. Keys 1 and 2 select the mode. The center ray is a simulated finger, not the glasses ray.</p>
     <p><code>H</code> hide the locked object. <code>R</code> restore it. <code>M</code> start or stop object motion. Arrow keys slide the objects.</p>
     <p>If the locked object is hidden or leaves the view, the next lock is the visible object closest to the screen center. That is this page's rule. It is not the Kotlin finger ray.</p>
     <p>Known replacement: 2 ticks when another object is already visible. Nothing visible: hold 3 ticks. A finger lock stays when the ray hits nothing. Kotlin and this page do not share an executable.</p>
