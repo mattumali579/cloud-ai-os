@@ -4,6 +4,12 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.27: reuse a known replacement, and keep the ray 2D
+
+Version code 27. Same package `com.mattumali.visortracker.stable` and the same signing certificate.
+
+An extended index still builds a 2D ray on the camera image. That ray is not measured depth. When the locked object leaves and another object was already in the previous detection, AimLock finishes its two observations on that one detection instead of waiting for a second hand-and-object pass. If nothing else is visible, the lock still holds for 3 frames. A closed fist or a fully curled index does not switch the lock. The same gesture has to stay for 4 frames before the lock releases, and that release does not send a command. Motion still applies the measured shift on the same frame. There is no neural-network training. The phone, Visor Live View, and the glasses were not measured for this version. The numbers are in [docs/visor-checkpoints/performance.md](../../docs/visor-checkpoints/performance.md).
+
 ## Version 0.25: point with the index finger
 
 Version code 25. Same package `com.mattumali.visortracker.stable` and the same signing certificate as 0.23 and 0.24.

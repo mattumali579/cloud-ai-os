@@ -105,8 +105,12 @@ class MainActivity : ComponentActivity() {
         root.addView(accurate)
         root.addView(TextView(this).apply {
             text = "One object. An extended index finger locks the object on that 2D ray. " +
+                "The ray is on the camera image and cannot measure depth. " +
                 "The lock stays after the hand drops, and follows the object until it leaves. " +
-                "With no hand, the center of the picture still locks. This is not 3D aim. " +
+                "A closed fist or a fully curled index does not switch it. Holding that gesture " +
+                "releases the lock and does not send a command. If the locked object leaves and " +
+                "another object was already visible, the next detection can take it without a " +
+                "second model pass. With no hand, the center of the picture still locks. " +
                 "Motion does not swap the lock every frame. Fast mode stays " +
                 "EfficientDet-Lite0. An unsure name is shown as object."
             textSize = 14f

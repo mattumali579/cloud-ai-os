@@ -1,6 +1,32 @@
 package com.mattumali.visortracker
 
-data class AimDecision(val lockedId: Int?, val changed: Boolean)
+data class AimDecision(
+    val lockedId: Int?,
+    val changed: Boolean,
+    /** True only for a stable closed-hand release. This does not send a command. */
+    val released: Boolean = false,
+)
+
+/**
+ * True when [lockedId] is already missing and some other object in [current]
+ * was also present in [previous]. The second AimLock observation can reuse
+ * [current]. It does not need another hand and object detect.
+ */
+object KnownReplacement {
+    fun alreadyVisible(previous: FrameDetections?, current: FrameDetections, lockedId: Int): Boolean {
+        if (previous == null) return false
+        val prior = objectIds(previous)
+        val now = objectIds(current)
+        if (lockedId in now) return false
+        return prior.any { it != lockedId && it in now }
+    }
+
+    private fun objectIds(frame: FrameDetections): Set<Int> = frame.boxes.mapNotNull { box ->
+        if (box.held || box.kind != "object" || box.trackId <= 0) return@mapNotNull null
+        if (box.right <= box.left || box.bottom <= box.top) return@mapNotNull null
+        box.trackId
+    }.toSet()
+}
 
 /**
  * Locks the object under the middle of the picture.
@@ -26,12 +52,17 @@ class AimLock(
     private val knownReplacementFrames: Int = 2,
     private val minHandScore: Float = IndexPoint.MIN_SCORE,
     private val rayHysteresis: Float = IndexPoint.RAY_HYSTERESIS,
+    private val releaseFrames: Int = GestureGate.DEFAULT_RELEASE_FRAMES,
 ) {
     var lockedId: Int? = null
         private set
     /** True after the index finger, not the screen center, confirmed this lock. */
     var fingerLocked: Boolean = false
         private set
+    /** A release never calls another app. This stays false. */
+    var sentExternalCommand: Boolean = false
+        private set
+    private val gestures = GestureGate(releaseFrames)
     private var pendingId: Int? = null
     private var pendingCount = 0
     private var lostFrames = 0
@@ -39,12 +70,43 @@ class AimLock(
     fun reset() {
         lockedId = null
         fingerLocked = false
+        sentExternalCommand = false
+        gestures.reset()
         pendingId = null
         pendingCount = 0
         lostFrames = 0
     }
 
-    fun observe(frame: FrameDetections): AimDecision {
+    fun observe(frame: FrameDetections): AimDecision = observeOnce(frame, countGesture = true)
+
+    /**
+     * Applies the known-replacement count to this one detection.
+     * Call this only when [KnownReplacement.alreadyVisible] is true.
+     * The extra observations reuse [frame]. They do not run a detector.
+     * An empty frame still uses the occlusion hold, one observation at a time.
+     */
+    fun observeKnownReplacement(frame: FrameDetections): AimDecision {
+        var decision = observeOnce(frame, countGesture = true)
+        var guard = 0
+        while (guard < 8 && pendingId != null && decision.lockedId != null && !decision.changed && !decision.released) {
+            decision = observeOnce(frame, countGesture = false)
+            guard++
+        }
+        return decision
+    }
+
+    private fun observeOnce(frame: FrameDetections, countGesture: Boolean): AimDecision {
+        if (countGesture) {
+            val gesture = gestures.observe(frame, locked = lockedId != null)
+            if (gesture.sendsExternalCommand) sentExternalCommand = true
+            if (gesture.release) return releaseLock()
+            if (gesture.gesture == HandGesture.CLOSED && lockedId != null) {
+                pendingId = null
+                pendingCount = 0
+                lostFrames = 0
+                return AimDecision(lockedId, changed = false)
+            }
+        }
         val objects = frame.boxes.filter { box ->
             !box.held && box.kind == "object" && box.trackId > 0 &&
                 box.right > box.left && box.bottom > box.top
@@ -109,6 +171,16 @@ class AimLock(
         pendingCount = 0
         lostFrames = 0
         return AimDecision(aimed, changed = true)
+    }
+
+    private fun releaseLock(): AimDecision {
+        val changed = lockedId != null
+        lockedId = null
+        fingerLocked = false
+        pendingId = null
+        pendingCount = 0
+        lostFrames = 0
+        return AimDecision(null, changed = changed, released = true)
     }
 }
 

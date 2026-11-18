@@ -12,6 +12,7 @@ data class TuneConfig(
     val lostFrames: Int = 3,
     val knownReplacementFrames: Int = 2,
     val objectEveryLocked: Int = 1,
+    val releaseFrames: Int = GestureGate.DEFAULT_RELEASE_FRAMES,
 )
 
 data class TuneOutcome(
@@ -60,6 +61,7 @@ object TrackerTuner {
             knownReplacementFrames = config.knownReplacementFrames,
             minHandScore = config.minHandScore,
             rayHysteresis = config.rayHysteresis,
+            releaseFrames = config.releaseFrames,
         )
         var locked = false
         case.frames.forEachIndexed { index, frame ->
@@ -84,6 +86,8 @@ object TrackerTuner {
         "lostFrames=1" to { it.copy(lostFrames = 1) },
         "rayHysteresis=1.01" to { it.copy(rayHysteresis = 1.01f) },
         "objectEveryLocked=3" to { it.copy(objectEveryLocked = 3) },
+        "releaseFrames=1" to { it.copy(releaseFrames = 1) },
+        "releaseFrames=8" to { it.copy(releaseFrames = 8) },
     )
 
     data class TuneCase(
@@ -138,6 +142,28 @@ object TrackerTuner {
                 holdAfter = true,
             ),
             TuneCase(
+                "one closed hand does not release",
+                listOf(picture, picture, frame(pointed, center, syntheticFist())),
+                2,
+                decidedBy = 2,
+                readyAt = 1,
+                holdAfter = true,
+            ),
+            TuneCase(
+                "stable closed hand releases and does not switch",
+                listOf(
+                    picture,
+                    picture,
+                    frame(pointed, center, syntheticFist()),
+                    frame(pointed, center, syntheticFist()),
+                    frame(pointed, center, syntheticFist()),
+                    frame(pointed, center, syntheticFist()),
+                ),
+                null,
+                decidedBy = 5,
+                forbidSwitchBefore = 5,
+            ),
+            TuneCase(
                 "hysteresis keeps the current ray hit",
                 listOf(
                     frame(farther, syntheticHand(90f, 50f)),
@@ -183,6 +209,24 @@ object TrackerTuner {
         return BoxObservation(
             "hand", "hand", 0.92f,
             tipX - 80f, tipY - 10f, tipX, tipY + 30f,
+            points = points, trackId = 50,
+        )
+    }
+
+    /** Curled index and the other fingertips near the palm. Not a pointing ray. */
+    private fun syntheticFist(): BoxObservation {
+        val points = MutableList(21) { 80f to 100f }
+        points[IndexPoint.WRIST] = 70f to 100f
+        points[IndexPoint.INDEX_MCP] = 90f to 100f
+        points[IndexPoint.INDEX_PIP] = 84f to 108f
+        points[IndexPoint.INDEX_DIP] = 80f to 106f
+        points[IndexPoint.INDEX_TIP] = 78f to 104f
+        points[12] = 86f to 110f
+        points[16] = 74f to 110f
+        points[20] = 68f to 108f
+        return BoxObservation(
+            "hand", "hand", 0.92f,
+            60f, 90f, 100f, 120f,
             points = points, trackId = 50,
         )
     }

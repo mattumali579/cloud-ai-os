@@ -137,6 +137,39 @@ object IndexPoint {
         return tMin
     }
 
+    /**
+     * Index folded back toward the palm. [extended] already rejects this.
+     * A single curled frame is not a command.
+     */
+    fun curledIndex(hand: BoxObservation): Boolean {
+        val points = hand.points
+        if (points.size < 21) return false
+        val palm = distance(points[INDEX_MCP], points[WRIST])
+        if (palm < 4f) return false
+        return distance(points[INDEX_TIP], points[INDEX_MCP]) < palm * 0.85f
+    }
+
+    /** All four fingertips stay near the palm. */
+    fun fist(hand: BoxObservation): Boolean {
+        val points = hand.points
+        if (points.size < 21) return false
+        val wrist = points[WRIST]
+        val palm = distance(points[INDEX_MCP], wrist)
+        if (palm < 4f) return false
+        val tips = intArrayOf(INDEX_TIP, 12, 16, 20)
+        return tips.all { distance(points[it], wrist) <= palm * 1.35f }
+    }
+
+    /**
+     * Closed fist or a fully curled index. An extended index is never this.
+     * [GestureGate] may release a lock only after the same gesture repeats.
+     */
+    fun releaseGesture(hand: BoxObservation, frameWidth: Int, frameHeight: Int): Boolean {
+        if (hand.points.size < 21 || hand.score < MIN_SCORE) return false
+        if (extended(hand, frameWidth, frameHeight) != null) return false
+        return curledIndex(hand) || fist(hand)
+    }
+
     private fun pointable(box: BoxObservation): Boolean =
         !box.held && box.kind == "object" && box.trackId > 0 && box.right > box.left && box.bottom > box.top
 

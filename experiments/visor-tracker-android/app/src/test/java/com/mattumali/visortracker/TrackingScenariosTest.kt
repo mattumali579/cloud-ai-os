@@ -176,6 +176,9 @@ class TrackingScenariosTest {
         assertTrue(result.rejected.any { it.startsWith("lostFrames=1") })
         assertTrue(result.rejected.any { it.startsWith("rayHysteresis=1.01") })
         assertTrue(result.rejected.any { it.startsWith("objectEveryLocked=3") })
+        assertEquals(GestureGate.DEFAULT_RELEASE_FRAMES, result.chosen.releaseFrames)
+        assertTrue(result.rejected.any { it.startsWith("releaseFrames=1") })
+        assertTrue(result.rejected.any { it.startsWith("releaseFrames=8") })
         assertEquals(TrackerTuner.score(TuneConfig()), result.score)
     }
 

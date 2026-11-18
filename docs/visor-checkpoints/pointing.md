@@ -1,6 +1,6 @@
 # Finger pointing and target reacquisition
 
-Version 0.25.0, versionCode 25, is the measurement below. Version 0.26.0 keeps this ray and records the speed changes in [performance.md](performance.md). Package remains `com.mattumali.visortracker.stable`.
+Version 0.25.0, versionCode 25, is the measurement below. Version 0.26.0 keeps this ray and records the speed changes in [performance.md](performance.md). Version 0.27.0 still uses this 2D camera ray. It is not measured depth. The switch timing for 0.27.0 is in [performance.md](performance.md). Package remains `com.mattumali.visortracker.stable`.
 
 ## What changed
 

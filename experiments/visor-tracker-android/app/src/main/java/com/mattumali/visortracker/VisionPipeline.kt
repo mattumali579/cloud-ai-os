@@ -31,8 +31,11 @@ data class FrameDetections(
  *
  * Object detection stays on the CPU delegate. The hand landmarker tries the GPU delegate
  * once; if that create or the first detect does not return, later frames use the CPU
- * landmarker. Do not call [detect] concurrently. A hands-only pass reuses the last object
- * boxes so a finger can move while EfficientDet is skipped.
+ * landmarker. Do not call [detect] concurrently. MediaPipe IMAGE mode is not safe to
+ * share across threads, so hands and objects stay on one worker. LIVE_STREAM and VIDEO
+ * are not enabled: this build has no emulator probe that survived a repeated detect in
+ * those modes. A hands-only pass reuses the last object boxes so a finger can move
+ * while EfficientDet is skipped. numHands stays 2.
  */
 class VisionPipeline(
     context: Context,
@@ -404,7 +407,7 @@ class VisionPipeline(
                             .build()
                     )
                     .setRunningMode(RunningMode.IMAGE)
-                    .setNumHands(2)
+                    .setNumHands(HAND_COUNT)
                     .setMinHandDetectionConfidence(IndexPoint.MIN_SCORE)
                     .setMinHandPresenceConfidence(IndexPoint.MIN_SCORE)
                     .setMinTrackingConfidence(IndexPoint.MIN_SCORE)
@@ -430,6 +433,8 @@ class VisionPipeline(
     companion object {
         private const val TAG = "VisorTracker"
         internal const val HAND_FRAME = 640
+        /** Two hands. One hand was not switched in without a same-image proof that the extended index remains. */
+        internal const val HAND_COUNT = 2
         private const val CREATE_TIMEOUT_MS = 3_000L
         private const val PROBE_TIMEOUT_MS = 2_500L
         private const val DETECT_TIMEOUT_MS = 8_000L

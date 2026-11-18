@@ -50,6 +50,23 @@ class IndexPointTest {
     }
 }
 
+internal fun closedFist(): BoxObservation {
+    val points = MutableList(21) { 80f to 100f }
+    points[IndexPoint.WRIST] = 70f to 100f
+    points[IndexPoint.INDEX_MCP] = 90f to 100f
+    points[IndexPoint.INDEX_PIP] = 84f to 108f
+    points[IndexPoint.INDEX_DIP] = 80f to 106f
+    points[IndexPoint.INDEX_TIP] = 78f to 104f
+    points[12] = 86f to 110f
+    points[16] = 74f to 110f
+    points[20] = 68f to 108f
+    return BoxObservation(
+        "hand", "hand", 0.92f,
+        60f, 90f, 100f, 120f,
+        points = points, trackId = 51,
+    )
+}
+
 internal fun pointingHand(tipX: Float, tipY: Float): BoxObservation {
     val points = MutableList(21) { 0f to tipY }
     points[IndexPoint.WRIST] = tipX - 80f to tipY

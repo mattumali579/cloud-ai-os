@@ -43,6 +43,7 @@ object DistanceScale {
 class RelativeDistanceEstimator {
     @Volatile private var selectedId: Int? = null
     private val aim = AimLock()
+    private var previousFrame: FrameDetections? = null
     private var originalHeightFraction = 0f
     private var originalFeet = 0f
     private var smoothedFeet: Float? = null
@@ -57,7 +58,17 @@ class RelativeDistanceEstimator {
     fun observe(frame: FrameDetections): String? {
         val before = selectedId
         val hadFeet = originalHeightFraction > 0f && before != null
-        val decision = aim.observe(frame)
+        val fast = before != null && KnownReplacement.alreadyVisible(previousFrame, frame, before)
+        previousFrame = frame
+        val decision = if (fast) aim.observeKnownReplacement(frame) else aim.observe(frame)
+        if (decision.released) {
+            selectedId = null
+            originalHeightFraction = 0f
+            originalFeet = 0f
+            smoothedFeet = null
+            appliedSequence = -1L
+            return "Lock released. No command was sent."
+        }
         val id = decision.lockedId ?: return null
         if (id == selectedId) return null
         if (selectedId != id) {
@@ -183,6 +194,7 @@ class RelativeDistanceEstimator {
 
     fun clear() {
         aim.reset()
+        previousFrame = null
         selectedId = null
         originalHeightFraction = 0f
         originalFeet = 0f

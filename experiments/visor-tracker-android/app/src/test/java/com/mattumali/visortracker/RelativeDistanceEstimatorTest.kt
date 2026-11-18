@@ -203,4 +203,27 @@ class RelativeDistanceEstimatorTest {
         assertEquals("distance unavailable", estimator.shortStatus(emptyList()))
         assertTrue(estimator.banner(listOf(box(height = 120f))).contains("6.0"))
     }
+
+    @Test fun knownReplacementSwitchesOnTheDetectionThatShowsIt() {
+        val estimator = RelativeDistanceEstimator()
+        val locked = at(4, 150f)
+        val other = at(2, 260f)
+        assertNull(estimator.observe(frame(locked, other)))
+        assertTrue(estimator.observe(frame(locked, other))!!.contains("Locked #4"))
+        val switched = estimator.observe(frame(other))
+        assertEquals(2, estimator.selectedTrackId())
+        assertTrue(switched!!.contains("Locked #2"))
+    }
+
+    @Test fun anUnseenReplacementStillWaitsAFrame() {
+        val estimator = RelativeDistanceEstimator()
+        val locked = at(4, 150f)
+        val other = at(2, 260f)
+        assertNull(estimator.observe(frame(locked)))
+        assertNotNull(estimator.observe(frame(locked)))
+        assertNull(estimator.observe(frame(other)))
+        assertEquals(4, estimator.selectedTrackId())
+        assertNotNull(estimator.observe(frame(other)))
+        assertEquals(2, estimator.selectedTrackId())
+    }
 }

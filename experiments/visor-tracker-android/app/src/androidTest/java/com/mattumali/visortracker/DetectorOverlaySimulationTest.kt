@@ -323,30 +323,58 @@ class DetectorOverlaySimulationTest {
             var switchMs = 0L
             var switchPasses = 0
             var knownCandidateFrames = 0
+            var reusedKnownFrame = false
             try {
-                repeat(8) {
-                    if (replacement != null) return@repeat
-                    switchPasses++
-                    val frame = pipeline.detect(covered)
-                    val oldVisible = frame.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
-                    val otherVisible = frame.boxes.any { it.kind == "object" && it.trackId > 0 && it.trackId != pointed.trackId }
-                    if (!oldVisible && otherVisible) knownCandidateFrames++
-                    val decision = aim.observe(frame)
-                    val visible = frame.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
-                    report.appendLine("occluded lock=${decision.lockedId} visible=$visible knownFrames=$knownCandidateFrames")
-                    if (decision.lockedId != null && decision.lockedId != pointed.trackId &&
-                        frame.boxes.any { it.kind == "object" && it.trackId == decision.lockedId }
-                    ) {
-                        replacement = decision.lockedId
-                        switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
-                        return@repeat
+                switchPasses = 1
+                val detectStarted = android.os.SystemClock.elapsedRealtime()
+                val frame = pipeline.detect(covered)
+                val switchDetectMs = android.os.SystemClock.elapsedRealtime() - detectStarted
+                val oldVisible = frame.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
+                val otherVisible = frame.boxes.any { it.kind == "object" && it.trackId > 0 && it.trackId != pointed.trackId }
+                if (!oldVisible && otherVisible) knownCandidateFrames++
+                val known = KnownReplacement.alreadyVisible(moved, frame, pointed.trackId)
+                reusedKnownFrame = known
+                val decision = if (known) aim.observeKnownReplacement(frame) else aim.observe(frame)
+                val visible = frame.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
+                report.appendLine(
+                    "occluded lock=${decision.lockedId} visible=$visible knownFrames=$knownCandidateFrames known=$known",
+                )
+                report.appendLine(
+                    "switchFirstDetectMs=$switchDetectMs objectMs=${pipeline.lastObjectMs} handMs=${pipeline.lastHandMs}",
+                )
+                if (acceptedSwitch(decision, frame, pointed.trackId)) {
+                    replacement = decision.lockedId
+                    switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
+                } else {
+                    repeat(7) {
+                        if (replacement != null) return@repeat
+                        switchPasses++
+                        val again = pipeline.detect(covered)
+                        val oldAgain = again.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
+                        val otherAgain = again.boxes.any {
+                            it.kind == "object" && it.trackId > 0 && it.trackId != pointed.trackId
+                        }
+                        if (!oldAgain && otherAgain) knownCandidateFrames++
+                        val next = aim.observe(again)
+                        val shown = again.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
+                        report.appendLine("occluded lock=${next.lockedId} visible=$shown knownFrames=$knownCandidateFrames")
+                        if (acceptedSwitch(next, again, pointed.trackId)) {
+                            replacement = next.lockedId
+                            switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
+                            return@repeat
+                        }
                     }
                 }
             } finally {
                 covered.recycle()
             }
             report.appendLine("lockB=$replacement switchToBMs=$switchMs")
-            report.appendLine("switchDetectPasses=$switchPasses knownCandidateFrames=$knownCandidateFrames")
+            report.appendLine(
+                "switchDetectPasses=$switchPasses knownCandidateFrames=$knownCandidateFrames reusedKnownFrame=$reusedKnownFrame",
+            )
+            report.appendLine(
+                "switchNote=when the replacement was already visible, the second AimLock observation reuses that detection and does not run another hand+object detect",
+            )
             save()
             assertTrue("covering the pointed object did not acquire the other one\n$report", replacement != null)
 
@@ -377,11 +405,27 @@ class DetectorOverlaySimulationTest {
             assertTrue("locked box was not painted white\n$report", white > 10)
             assertTrue("pointing ray was not painted\n$report", cyan > 10)
 
+            recordHandSizeProbe(base, pipeline, report)
+            save()
             val started = android.os.SystemClock.elapsedRealtime()
             var invalidFrames = 0
             var recovered = 0
             var objectFrames = 0
             var steps = 0
+            var detectMs = 0L
+            var motionSteps = 0
+            var motionMoved = 0
+            var drawCount = 0
+            val motion = MotionTracker()
+            var motionReady = false
+            val rateView = TrackingOverlayView(context)
+            rateView.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(160, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(90, android.view.View.MeasureSpec.EXACTLY),
+            )
+            rateView.layout(0, 0, 160, 90)
+            val rateBitmap = Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888)
+            val rateCanvas = Canvas(rateBitmap)
             val beforeObjects = pipeline.objectInferences
             val beforeHands = pipeline.handInferences
             while (android.os.SystemClock.elapsedRealtime() - started < 60_000) {
@@ -398,22 +442,46 @@ class DetectorOverlaySimulationTest {
                 val dx = (steps % 6) * 16
                 val sample = shift(base, dx)
                 try {
+                    val detectStarted = android.os.SystemClock.elapsedRealtime()
                     val result = pipeline.detect(sample)
+                    detectMs += android.os.SystemClock.elapsedRealtime() - detectStarted
                     if (result.boxes.any { it.kind == "object" }) {
                         objectFrames++
                         if (invalidFrames > recovered) recovered = invalidFrames
                     }
+                    val movedByMotion = stepReplayMotion(motion, result, steps, motionReady)
+                    motionReady = true
+                    motionSteps++
+                    if (movedByMotion) motionMoved++
+                    rateView.updateFrame(
+                        result.copy(sequence = steps.toLong(), capturedAtMs = steps.toLong()),
+                    )
+                    rateView.draw(rateCanvas)
+                    drawCount++
                 } finally {
                     sample.recycle()
                 }
             }
+            rateBitmap.recycle()
             val elapsed = android.os.SystemClock.elapsedRealtime() - started
             val objectCalls = pipeline.objectInferences - beforeObjects
             val handCalls = pipeline.handInferences - beforeHands
             report.appendLine("elapsedMs=$elapsed")
             report.appendLine("objectInferences=$objectCalls handInferences=$handCalls")
+            report.appendLine("cameraFps=not-measured")
+            report.appendLine("cameraNote=this replay calls detect() on still images. It is not a camera and not a phone.")
             report.appendLine("objectFps=${"%.2f".format(java.util.Locale.US, objectCalls * 1000f / elapsed)}")
             report.appendLine("handFps=${"%.2f".format(java.util.Locale.US, handCalls * 1000f / elapsed)}")
+            val detectSeconds = (detectMs.coerceAtLeast(1L)) / 1000f
+            report.appendLine("objectFpsDetectOnly=${"%.2f".format(java.util.Locale.US, objectCalls / detectSeconds)}")
+            report.appendLine("handFpsDetectOnly=${"%.2f".format(java.util.Locale.US, handCalls / detectSeconds)}")
+            report.appendLine("motionSteps=$motionSteps motionMoved=$motionMoved")
+            report.appendLine("motionFps=${"%.2f".format(java.util.Locale.US, motionSteps * 1000f / elapsed)}")
+            report.appendLine("drawCount=$drawCount")
+            report.appendLine("drawFps=${"%.2f".format(java.util.Locale.US, drawCount * 1000f / elapsed)}")
+            report.appendLine("redrawIsNotInference=true")
+            report.appendLine("detectMs=$detectMs")
+            report.appendLine("runningMode=IMAGE numHands=${VisionPipeline.HAND_COUNT} handLongSide=${VisionPipeline.HAND_FRAME}")
             report.appendLine("objectFrames=$objectFrames invalidFrames=$invalidFrames recovered=$recovered")
             report.appendLine("droppedFrames=$invalidFrames")
             val runtime = Runtime.getRuntime()
@@ -430,6 +498,68 @@ class DetectorOverlaySimulationTest {
             save()
             pipeline.close()
         }
+    }
+
+    private fun acceptedSwitch(decision: AimDecision, frame: FrameDetections, previousId: Int): Boolean =
+        decision.lockedId != null && decision.lockedId != previousId &&
+            frame.boxes.any { it.kind == "object" && it.trackId == decision.lockedId }
+
+    private fun recordHandSizeProbe(base: Bitmap, pipeline: VisionPipeline, report: StringBuilder) {
+        val longSide = maxOf(base.width, base.height).coerceAtLeast(1)
+        val scale = 320f / longSide.toFloat()
+        val width = (base.width * scale).toInt().coerceAtLeast(1)
+        val height = (base.height * scale).toInt().coerceAtLeast(1)
+        val small = Bitmap.createScaledBitmap(base, width, height, true)
+        try {
+            val started = android.os.SystemClock.elapsedRealtime()
+            val probed = pipeline.detect(small, runObjects = false, runHands = true)
+            val elapsed = android.os.SystemClock.elapsedRealtime() - started
+            val ray = IndexPoint.ray(probed)
+            report.appendLine(
+                "hand320Ms=$elapsed hand320Ray=${ray != null} hand320Frame=${probed.width}x${probed.height} hand320MsModel=${pipeline.lastHandMs}",
+            )
+        } catch (error: Exception) {
+            report.appendLine("hand320Error=${error.javaClass.simpleName}")
+        } finally {
+            if (!small.isRecycled) small.recycle()
+        }
+        report.appendLine(
+            "productionHandLongSide=${VisionPipeline.HAND_FRAME} numHands=${VisionPipeline.HAND_COUNT} runningMode=IMAGE",
+        )
+        report.appendLine(
+            "handSizeNote=320 is one extra detect in this job. The lock proof stays on the ${VisionPipeline.HAND_FRAME}px long side.",
+        )
+    }
+
+    private fun stepReplayMotion(
+        motion: MotionTracker,
+        result: FrameDetections,
+        steps: Int,
+        ready: Boolean,
+    ): Boolean {
+        val gray = replayGray(steps)
+        if (!ready) {
+            motion.reset(result, gray)
+            return false
+        }
+        val before = result.boxes.firstOrNull { it.kind == "object" }?.left
+        val stepped = motion.step(gray, steps.toLong()).frame
+        val after = stepped?.boxes?.firstOrNull { it.kind == "object" }?.left
+        return before != null && after != null && kotlin.math.abs(after - before) > 0.5f
+    }
+
+    private fun replayGray(step: Int): GrayFrame {
+        val width = 64
+        val height = 36
+        val bytes = ByteArray(width * height)
+        val shift = step % 5
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val stripe = ((x + shift) / 4 + y / 4) % 2
+                bytes[y * width + x] = (if (stripe == 0) 30 else 220).toByte()
+            }
+        }
+        return GrayFrame(width, height, bytes, sequence = step.toLong(), capturedAtMs = step.toLong())
     }
 
     private fun cover(source: Bitmap, box: BoxObservation, frameWidth: Int, frameHeight: Int): Bitmap {

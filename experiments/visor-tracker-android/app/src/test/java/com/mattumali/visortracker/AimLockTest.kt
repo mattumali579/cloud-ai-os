@@ -2,6 +2,7 @@ package com.mattumali.visortracker
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,6 +30,43 @@ class AimLockTest {
         assertFalse(backOne.changed)
         val back = aim.observe(frame(box(1, 40f), box(2, 0f)))
         assertEquals(1, back.lockedId)
+    }
+
+    @Test fun knownReplacementConfirmsOnTheSameDetection() {
+        val aim = AimLock()
+        val both = frame(box(1, 40f), box(2, 0f))
+        aim.observe(both)
+        assertEquals(1, aim.observe(both).lockedId)
+        val gone = frame(box(2, 0f))
+        assertTrue(KnownReplacement.alreadyVisible(both, gone, 1))
+        val started = System.nanoTime()
+        val switched = aim.observeKnownReplacement(gone)
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        assertEquals(2, switched.lockedId)
+        assertTrue(switched.changed)
+        assertFalse(switched.released)
+        assertTrue(elapsedMs < 50)
+        assertFalse(aim.sentExternalCommand)
+    }
+
+    @Test fun oneObservationStillWaitsWhenTheCallerDoesNotReuseTheFrame() {
+        val aim = AimLock()
+        val both = frame(box(1, 40f), box(2, 0f))
+        aim.observe(both)
+        aim.observe(both)
+        val once = aim.observe(frame(box(2, 0f)))
+        assertEquals(1, once.lockedId)
+        assertFalse(once.changed)
+    }
+
+    @Test fun knownReplacementDoesNotSkipTheEmptyOcclusionHold() {
+        val aim = AimLock()
+        val held = frame(box(1, 40f))
+        aim.observe(held)
+        aim.observe(held)
+        assertEquals(1, aim.observeKnownReplacement(frame()).lockedId)
+        assertEquals(1, aim.observeKnownReplacement(frame()).lockedId)
+        assertNull(aim.observeKnownReplacement(frame()).lockedId)
     }
 
     @Test fun oneFrameDoesNotSwitch() {
