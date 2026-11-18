@@ -205,6 +205,13 @@ class OverlayTrackingService : Service() {
                     includeFaces = includeHandsFaces,
                     preset = preset,
                     includeHands = true,
+                    // v0.28 phone stability hotfix: the original build starts
+                    // the GPU hand delegate and two native model calls at once.
+                    // Keep finger locking, object detection and the newer lock
+                    // logic, but use CPU and serialized inference until real
+                    // Android 16/Visor camera-stream testing proves overlap safe.
+                    attemptGpu = false,
+                    overlapModels = false,
                 )
                 mainHandler.post {
                     if (!running) {
