@@ -29,6 +29,7 @@ import com.macedonga.visor.kit.protocol.LiveQuality
 import com.macedonga.visor.kit.protocol.Scope
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -277,6 +278,7 @@ class OverlayTrackingService : Service() {
                                     val objectCount = detections.boxes.count { it.kind == "object" }
                                     rawDetections.set(objectCount)
                                     Log.i(TAG, "detect objects=$objectCount seq=$sequence gray=${anchor != null}")
+                                    deviceLog("detect", "objects=$objectCount seq=$sequence gray=${anchor != null}")
                                     val stamped = detections.copy(sequence = sequence, capturedAtMs = now)
                                     // The posted lock update used to run after motion read
                                     // selectedTrackId(), so this frame still drew the old box.
@@ -298,7 +300,9 @@ class OverlayTrackingService : Service() {
                                             }
                                         },
                                     )
-                                    if (anchor != null && MainThreadLockWait.queueDetection(lockResult.get())) {
+                                    val motionQueued = anchor != null &&
+                                        MainThreadLockWait.queueDetection(lockResult.get())
+                                    if (motionQueued) {
                                         val baseline = DetectionBaseline(stamped, anchor)
                                         if (pendingDetection.getAndSet(
                                                 PendingDetection(baseline, lockId)
@@ -307,6 +311,15 @@ class OverlayTrackingService : Service() {
                                             handoff.metrics.onStaleDetection()
                                         }
                                         scheduleMotion()
+                                    } else if (DetectionPublish.drawWithoutMotion(
+                                            objectCount, anchor != null, motionQueued,
+                                        )
+                                    ) {
+                                        // 0.22 and 0.23 drew this frame even when the lock
+                                        // update had not landed. Dropping it left video
+                                        // running and the overlay blank.
+                                        deviceLog("publish", "direct objects=$objectCount seq=$sequence")
+                                        publish(stamped)
                                     }
                                 } catch (error: Exception) {
                                     stageFail("detect", "Decode/detection failed: " + (error.message ?: "unknown"))
@@ -411,9 +424,11 @@ class OverlayTrackingService : Service() {
             }
         }
         var interrupted = false
+        var timedOut = false
         if (posted) {
             try {
-                done.await()
+                val finished = done.await(LOCK_WAIT_MS, TimeUnit.MILLISECONDS)
+                timedOut = !finished
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 interrupted = true
@@ -424,6 +439,7 @@ class OverlayTrackingService : Service() {
             interrupted = interrupted,
             updateRan = updateRan.get(),
             idAfterUpdate = idAfter.get(),
+            timedOut = timedOut && !updateRan.get(),
         )
     }
 
@@ -481,6 +497,7 @@ class OverlayTrackingService : Service() {
     private fun publish(frame: FrameDetections) {
         val objects = frame.boxes.count { it.kind == "object" }
         Log.i(TAG, "publish boxes=$objects seq=${frame.sequence}")
+        deviceLog("publish", "boxes=$objects seq=${frame.sequence}")
         mainHandler.post {
             if (!running) return@post
             val note = overlay?.updateFrame(frame)
@@ -545,7 +562,11 @@ class OverlayTrackingService : Service() {
     private fun stageFail(stage: String, message: String) {
         stageFaults.fail(stage, message)
         refreshFaults()
-        report(message)
+        report(message, failure = true)
+    }
+
+    private fun deviceLog(stage: String, detail: String) {
+        TrackerLog.record(filesDir, System.currentTimeMillis(), stage, detail)
     }
 
     private fun refreshFaults() {
@@ -556,6 +577,7 @@ class OverlayTrackingService : Service() {
     private fun report(message: String, failure: Boolean = false) {
         if (failure) lastFailure = message
         lastProgress = message
+        deviceLog(if (failure) "fail" else "status", message)
         renderStatus()
     }
 
@@ -702,6 +724,7 @@ class OverlayTrackingService : Service() {
         private const val TAG = "VisorTracker"
         private const val REPORT_MS = 4000L
         private const val DIAGNOSTIC_MS = 1000L
+        private const val LOCK_WAIT_MS = 32L
         @Volatile var active: Boolean = false
             private set
         @Volatile var lastStatus: String = "Overlay not started"
@@ -743,10 +766,12 @@ internal object MainThreadLockWait {
         interrupted: Boolean,
         updateRan: Boolean,
         idAfterUpdate: Int?,
+        timedOut: Boolean = false,
     ): Result {
         // Interrupted after the update still has the stored id. Interrupted
-        // before it, or a rejected post, must not fall back to an older id.
-        val stoppedBeforeStore = interrupted && !updateRan
+        // before it, a timeout before it, or a rejected post, must not fall
+        // back to an older id. The caller then draws this detection directly.
+        val stoppedBeforeStore = (interrupted || timedOut) && !updateRan
         val applied = posted && updateRan && !stoppedBeforeStore
         return if (applied) {
             Result(applied = true, lockId = idAfterUpdate)
@@ -757,6 +782,15 @@ internal object MainThreadLockWait {
 
     /** False means this detection must not be queued onto the motion thread. */
     fun queueDetection(result: Result): Boolean = result.applied
+}
+
+/**
+ * Version 0.22 and 0.23 painted a finished detection when motion was not queued.
+ * A gray anchor with a lock wait that did not apply used to drop that frame.
+ */
+internal object DetectionPublish {
+    fun drawWithoutMotion(objectCount: Int, hasGrayAnchor: Boolean, motionQueued: Boolean): Boolean =
+        objectCount > 0 && hasGrayAnchor && !motionQueued
 }
 
 /**

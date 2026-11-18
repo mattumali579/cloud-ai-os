@@ -56,6 +56,22 @@ class OverlayFrameSelectionTest {
         assertEquals(2, fixed.lockId)
     }
 
+    @Test fun aTimedOutLockWaitDrawsTheNewDetectionWithoutMotion() {
+        val fixed = MainThreadLockWait.finish(
+            posted = true,
+            interrupted = false,
+            updateRan = false,
+            idAfterUpdate = 1,
+            timedOut = true,
+        )
+        assertEquals(false, fixed.applied)
+        assertEquals(null, fixed.lockId)
+        assertEquals(false, MainThreadLockWait.queueDetection(fixed))
+        assertEquals(true, DetectionPublish.drawWithoutMotion(1, hasGrayAnchor = true, motionQueued = false))
+        assertEquals(false, DetectionPublish.drawWithoutMotion(0, hasGrayAnchor = true, motionQueued = false))
+        assertEquals(false, DetectionPublish.drawWithoutMotion(1, hasGrayAnchor = true, motionQueued = true))
+    }
+
     @Test fun aRejectedPostDoesNotKeepThePreviousLock() {
         val fixed = MainThreadLockWait.finish(
             posted = false,

@@ -128,6 +128,7 @@ class YuvSnapshot private constructor(
             vOffsetX: Int,
             vOffsetY: Int,
             rgb: IntArray,
+            paddingMisses: IntArray? = null,
         ): Pair<Int, Int> {
             require(
                 yRowStride > 0 && yPixelStride > 0 &&
@@ -139,6 +140,7 @@ class YuvSnapshot private constructor(
             require(rgb.size.toLong() >= width.toLong() * height) {
                 "RGB buffer ${rgb.size} is smaller than ${width}x${height}"
             }
+            var misses = 0
             for (row in 0 until height) {
                 val srcY = (row.toLong() * frameHeight / height).toInt()
                 val yBase = (srcY.toLong() + yOffsetY) * yRowStride
@@ -147,15 +149,37 @@ class YuvSnapshot private constructor(
                 val rowOut = row * width
                 for (column in 0 until width) {
                     val srcX = (column.toLong() * frameWidth / width).toInt()
-                    val yIndex = planeIndex(yBase, srcX.toLong() + yOffsetX, yPixelStride, yLength, "Y")
-                    val uIndex = planeIndex(uBase, srcX.toLong() / 2 + uOffsetX, uPixelStride, uLength, "U")
-                    val vIndex = planeIndex(vBase, srcX.toLong() / 2 + vOffsetX, vPixelStride, vLength, "V")
-                    val yy = y[yIndex].toInt() and 255
-                    val uu = u[uIndex].toInt() and 255
-                    val vv = v[vIndex].toInt() and 255
+                    val yIndex = locatedSample(
+                        yBase, srcX.toLong() + yOffsetX, yPixelStride, yLength, yRowStride,
+                        srcY.toLong() * frameWidth + srcX,
+                    )
+                    val uIndex = locatedSample(
+                        uBase, srcX.toLong() / 2 + uOffsetX, uPixelStride, uLength, uRowStride,
+                        srcY.toLong() / 2 * (frameWidth / 2) + srcX / 2,
+                    )
+                    val vIndex = locatedSample(
+                        vBase, srcX.toLong() / 2 + vOffsetX, vPixelStride, vLength, vRowStride,
+                        srcY.toLong() / 2 * (frameWidth / 2) + srcX / 2,
+                    )
+                    if (yIndex < 0 || uIndex < 0 || vIndex < 0) misses++
+                    val yy = if (yIndex < 0) 16 else y[yIndex].toInt() and 255
+                    val uu = if (uIndex < 0) 128 else u[uIndex].toInt() and 255
+                    val vv = if (vIndex < 0) 128 else v[vIndex].toInt() and 255
                     rgb[rowOut + column] = yuvToArgb(yy, uu, vv)
                 }
             }
+            // Version 0.22 filled every miss with black and still ran the detector.
+            // A later change threw on the first miss, so one short MediaCodec row
+            // dropped the whole frame. A packed buffer whose row stride does not
+            // fit the last row still decodes. A buffer that misses half or more
+            // of its samples is a broken frame and still fails.
+            val samples = width * height
+            if (samples > 0 && misses * 2 >= samples) {
+                throw IllegalArgumentException(
+                    "YUV samples outside the plane: $misses of $samples"
+                )
+            }
+            if (paddingMisses != null && paddingMisses.isNotEmpty()) paddingMisses[0] = misses
             return width to height
         }
 
@@ -172,6 +196,25 @@ class YuvSnapshot private constructor(
                 )
             }
             return index.toInt()
+        }
+
+        /**
+         * Strided MediaCodec index, or the packed pixel when the row stride
+         * describes this buffer but the last row has no padding. -1 when neither
+         * location is inside the copied plane.
+         */
+        fun locatedSample(
+            rowBase: Long,
+            sample: Long,
+            pixelStride: Int,
+            length: Int,
+            rowStride: Int,
+            packed: Long,
+        ): Int {
+            val strided = rowBase + sample * pixelStride
+            if (strided >= 0L && strided < length) return strided.toInt()
+            if (rowStride in 1..length && packed >= 0L && packed < length) return packed.toInt()
+            return -1
         }
 
         fun yuvToArgb(y: Int, u: Int, v: Int): Int {

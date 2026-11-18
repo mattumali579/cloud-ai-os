@@ -23,7 +23,7 @@ Version code 22. The phone showed video at about 29 fps and zero detector passes
 
 ## Version 0.21: draw a real detection and keep it through a short miss
 
-Version code 21. Fast mode accepts EfficientDet-Lite0 scores from 0.35, and a weak name is drawn as `object` instead of being deleted. An empty motion result cannot erase a box for 2 seconds. The corner reads `det`, `pub`, and `drw`: detector objects, published boxes, and boxes in onDraw. `adb logcat -s VisorTracker:I` prints `detect` and `publish`.
+Version code 21. Fast mode accepts EfficientDet-Lite0 scores from 0.35, and a weak name is drawn as `object` instead of being deleted. An empty motion result cannot erase a box for 2 seconds. The corner reads `det`, `pub`, and `drw`: detector objects, published boxes, and boxes in onDraw. The same `detect` and `publish` lines are stored on the phone. EXPORT DIAGNOSTICS on the Tracker screen shares that file. It does not need USB or wireless ADB, and it remains after Live View switches Wi-Fi.
 
 ## Version 0.19: one Update this app button
 

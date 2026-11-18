@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import androidx.core.content.FileProvider
+import java.io.File
 import android.text.InputType
 import android.widget.EditText
 import android.widget.Button
@@ -185,6 +187,10 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { startOverlay() }
         })
         root.addView(Button(this).apply {
+            text = "EXPORT DIAGNOSTICS"
+            setOnClickListener { exportDiagnostics() }
+        })
+        root.addView(Button(this).apply {
             text = "STOP OVERLAY"
             setOnClickListener {
                 startService(Intent(this@MainActivity, OverlayTrackingService::class.java)
@@ -209,6 +215,8 @@ class MainActivity : ComponentActivity() {
                 "Its second line is the first failed hop: OVERLAY BLOCKED, " +
                 "NO CAMERA FRAMES, or 0 OBJECTS DETECTED. " +
                 "The same line is in the ongoing notification. " +
+                "EXPORT DIAGNOSTICS writes that history on this phone. " +
+                "It stays there when Live View switches Wi-Fi. USB debugging is not required. " +
                 "Turn the mark off with the checkbox above when you no longer need it. " +
                 "The notification shows decoded video FPS, detector FPS, motion-tracker FPS, " +
                 "changed-box FPS, draw FPS, tracker interval and box age as p50/p95/p99 milliseconds, " +
@@ -297,6 +305,28 @@ class MainActivity : ComponentActivity() {
                 }
             },
         )
+    }
+
+    private fun exportDiagnostics() {
+        val text = TrackerLog.read(filesDir)
+        if (text.isBlank()) {
+            status.text = "No diagnostics yet. Start the overlay, open Live View, then export."
+            return
+        }
+        val tail = text.takeLast(1200)
+        status.text = tail
+        val file = File(filesDir, TrackerLog.FILE_NAME)
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+            val share = Intent(Intent.ACTION_SEND)
+                .setType("text/plain")
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .putExtra(Intent.EXTRA_SUBJECT, "Visor Tracker diagnostics")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(share, "Export Visor Tracker diagnostics"))
+        } catch (error: Exception) {
+            status.text = tail + "\nExport sheet failed: " + (error.message ?: "unknown")
+        }
     }
 
     private fun startOverlay() {

@@ -107,6 +107,27 @@ class YuvSnapshotTest {
         }
     }
 
+    @Test fun aPackedBufferWithALongerRowStrideStillDecodes() {
+        val width = 4
+        val height = 2
+        val y = ByteArray(width * height) { 235.toByte() }
+        val uv = ByteArray((width / 2) * (height / 2)) { 128.toByte() }
+        val misses = IntArray(1)
+        val rgb = IntArray(width * height)
+        val (outW, outH) = YuvSnapshot.writeArgb(
+            width, height, width,
+            y, y.size, width + 4, 1, 0, 0,
+            uv, uv.size, width / 2, 1, 0, 0,
+            uv, uv.size, width / 2, 1, 0, 0,
+            rgb,
+            misses,
+        )
+        assertEquals(width, outW)
+        assertEquals(height, outH)
+        assertEquals(0, misses[0])
+        assertEquals(0xffffffff.toInt(), rgb[width + 1])
+    }
+
     @Test fun aShortLumaPlaneOrOverflowingStrideIsNotPaintedBlack() {
         val y = ByteArray(4) { 235.toByte() }
         val uv = ByteArray(4) { 128.toByte() }
