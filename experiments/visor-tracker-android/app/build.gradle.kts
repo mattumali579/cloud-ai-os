@@ -12,8 +12,8 @@ android {
         applicationId = "com.mattumali.visortracker.stable"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "0.28.0"
+        versionCode = 29
+        versionName = "0.28.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
