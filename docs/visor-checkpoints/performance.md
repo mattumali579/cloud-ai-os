@@ -29,16 +29,29 @@ The 4,062 ms was wall time of several sequential `detect()` calls. Each call ran
 
 ## Delegate
 
-The object detector stays on CPU. A GPU object detect is not attempted here, because a GPU delegate that never returns is how the phone previously showed video and zero finished passes.
+The object detector stays on CPU. A GPU object detect was not attempted. A GPU delegate that never returns is how the phone previously showed video and zero finished passes.
 
-The hand landmarker tries GPU. If create does not return within 3 seconds, or the first detect does not return within 2.5 seconds, the pipeline keeps the CPU landmarker and continues. The winner is `handDelegate` in `pointing-stage.txt` after the emulator run. This machine did not run the emulator, so the winner is not claimed here.
+The hand landmarker tries GPU. On the emulator run for commit `c6f0937`, create did not keep the GPU landmarker (`handDelegate=CPU`, `attempted=GPU`, `fallbacks=1`). The CPU landmarker ran the real detects. Phone battery and thermal throttling were not measured, and this is not a phone GPU result.
 
 ## Tuner
 
-`TrackerTuner` starts from the 0.25 replacement (4 observations) and the synthetic labeled cases. It accepted `knownReplacementFrames=2` because that score was higher. It rejected a hand score of 0.99, a 1-frame dwell, a 1-frame occlusion hold, ray hysteresis 1.01, and an object cadence of every 3rd locked pass. Those scores were not higher. Production uses the accepted replacement of 2 and the rejected knobs stay at the previous defaults: hand score 0.40, hysteresis 1.35, dwell 2, occlusion hold 3.
+`TrackerTuner` starts from the 0.25 replacement (4 observations) and the synthetic labeled cases. It accepted `knownReplacementFrames=2` because that score was higher. It rejected a hand score of 0.99, a 1-frame dwell, a 1-frame occlusion hold, ray hysteresis 1.01, and an object cadence of every 3rd locked pass. Those scores were not higher. Production uses the accepted replacement of 2 and the rejected knobs stay at the previous defaults: hand score 0.40, hysteresis 1.35, dwell 2, occlusion hold 3. The proving test is `tunerAcceptsTheFasterReplacementAndRejectsWorseKnobs`.
 
 The correct track id in `files/failure-examples/failure-example.txt` is written only by `FailureLog.labelLatest` or the debug action `LABEL_FRAME`. The model's selected id is not copied into the correct id. Camera images are not written.
 
-## Emulator after
+## After, emulator, people.jpg, x86_64, commit c6f0937
 
-The people.jpg instrumentation test still runs both models on each `detect()` call and records `handDelegate`, `switchToBMs`, `switchDetectPasses`, `knownCandidateFrames`, fps, invalid frames, and heap. Those lines are the emulator after numbers. They are filled from the CI artifact for this commit, not from a phone.
+Instrumentation `OK (4 tests)` in 135.0 s. Artifact `visor-detector-simulation` id `14411907081` on run `44269359332`.
+
+Pointing replay (`pointing-stage.txt`):
+
+- Hand delegate CPU after the GPU attempt failed. Object delegate CPU.
+- One hand, score 0.931. Ray target person #1. Center target person #2. Lock stayed on #1 after the 36 px shift.
+- After the cover, the other person was acquired in 2 detect passes, 2,528 ms wall time. `knownCandidateFrames=2`.
+- That 2,528 ms is two full emulator `detect()` calls. It is not the 33 ms unit-test interval, and it is not a phone measurement. The old 4,062 ms was about four of those calls.
+- Overlay: 17,526 white pixels on the locked box, 3,506 cyan ray pixels.
+- 60,014 ms combined replay: 387 object inferences and 387 hand inferences, 6.45 fps each. 387 frames contained an object. 77 invalid frames were injected and all 77 recovered.
+- First call 1,878 ms (objects 1,008 ms, hand 711 ms). The Java heap reading at the end of the test was 2 MB. That figure does not include native MediaPipe memory.
+- Objects-only 60,004 ms replay: 1,036 inferences, 1,036 painted frames, 207 invalid frames, all recovered.
+
+Release APK artifact `visor-tracker-apk` id `14412196286`: `com.mattumali.visortracker.stable`, versionCode 26, versionName 0.26.0, signer SHA-256 `afb36d6baa0eb0b14e038ea7b141bc92662350bdfdf9be30151bb7d759a02308`. Publish stayed skipped. No release tag was created.
