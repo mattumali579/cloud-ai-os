@@ -335,7 +335,15 @@ class DetectorOverlaySimulationTest {
                 val afterPatch = RegionChange.sample(covered, pointed, first.width, first.height)
                 val obscured = beforePatch != null && afterPatch != null &&
                     RegionChange.obscured(beforePatch, afterPatch)
-                report.appendLine("replacementFresh=$fresh regionObscured=$obscured")
+                val changedSamples = if (beforePatch == null || afterPatch == null) {
+                    -1
+                } else {
+                    val count = minOf(beforePatch.size, afterPatch.size)
+                    (0 until count).count { RegionChange.channelDelta(beforePatch[it], afterPatch[it]) > RegionChange.CHANNEL_DELTA }
+                }
+                report.appendLine(
+                    "replacementFresh=$fresh regionObscured=$obscured changedSamples=$changedSamples/${beforePatch?.size ?: 0}",
+                )
                 if (fresh && obscured) {
                     switchPasses = 1
                     val detectStarted = android.os.SystemClock.elapsedRealtime()

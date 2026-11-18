@@ -10,7 +10,14 @@ import kotlin.math.max
  */
 object RegionChange {
     const val GRID = 8
-    const val CHANNEL_DELTA = 64
+
+    /**
+     * 64 missed the people.jpg cover: the locked person is already dark, so a
+     * flat dark-gray rectangle moved only about 30 percent of the 8x8 samples
+     * by more than 64. A step of 40 still ignores one-channel camera noise,
+     * and that same cover moves about 78 percent of the samples past it.
+     */
+    const val CHANNEL_DELTA = 40
     const val CHANGED_PERCENT = 75
 
     fun obscured(before: IntArray, after: IntArray): Boolean {

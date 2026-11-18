@@ -48,4 +48,17 @@ class RegionChangeTest {
         assertFalse(RegionChange.obscured(before, noisy))
         assertFalse(RegionChange.obscured(IntArray(0), IntArray(0)))
     }
+
+    @Test fun aFortyLevelStepIsNotObscuredAndThePeopleCoverIs() {
+        val before = IntArray(64) { 0xff202020.toInt() }
+        val step = IntArray(64) { 0xff484848.toInt() }
+        assertEquals(40, RegionChange.channelDelta(before[0], step[0]))
+        assertFalse(RegionChange.obscured(before, step))
+        val cover = before.copyOf()
+        for (index in 0 until 50) cover[index] = 0xff525252.toInt()
+        assertTrue(RegionChange.obscured(before, cover))
+        val few = before.copyOf()
+        for (index in 0 until 19) few[index] = 0xff525252.toInt()
+        assertFalse(RegionChange.obscured(before, few))
+    }
 }
