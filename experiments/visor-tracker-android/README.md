@@ -8,7 +8,9 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 Version code 27. Same package `com.mattumali.visortracker.stable` and the same signing certificate.
 
-An extended index still builds a 2D ray on the camera image. That ray is not measured depth. When the locked object leaves and another object was already in the previous detection, AimLock finishes its two observations on that one detection instead of waiting for a second hand-and-object pass. If nothing else is visible, the lock still holds for 3 frames. A closed fist or a fully curled index does not switch the lock. The same gesture has to stay for 4 frames before the lock releases, and that release does not send a command. Motion still applies the measured shift on the same frame. There is no neural-network training. The phone, Visor Live View, and the glasses were not measured for this version. The numbers are in [docs/visor-checkpoints/performance.md](../../docs/visor-checkpoints/performance.md).
+An extended index still builds a 2D ray on the camera image. That ray is not measured depth. When the locked object leaves and another object was already in the previous detection, AimLock finishes its two observations on that one detection instead of waiting for a second hand-and-object pass. If nothing else is visible, the lock still holds for 3 frames. A closed fist or a fully curled index does not switch the lock. The same gesture has to stay for 4 frames before the lock releases, and that release does not send a command. Motion still applies the measured shift on the same frame. There is no neural-network training. The phone, Visor Live View, and the glasses were not measured for this version.
+
+On the emulator people.jpg run for commit `414330f` (not a phone), the known-person switch was 1,016 ms in one detect pass. The object model on that pass took 866 ms, so it did not get under 500 ms. The 60 s detect-only rate was 6.41 fps, against 6.45 fps in 0.26.0. The numbers are in [docs/visor-checkpoints/performance.md](../../docs/visor-checkpoints/performance.md).
 
 ## Version 0.25: point with the index finger
 
