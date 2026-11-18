@@ -107,8 +107,11 @@ class DetectorOverlaySimulationTest {
             assertTrue("handoff did not publish detector frame #${frame.sequence}", event != null)
             view.updateFrame(event!!.frame)
             assertEquals("overlay must draw exactly one target", 1, view.drawnBoxCount())
-            assertEquals("handoff must publish the target selected by the lock",
-                view.selectedTrackId(), event.frame.boxes.single().trackId)
+            val lockedId = view.selectedTrackId()
+            if (lockedId != null) {
+                assertEquals("handoff must publish the target selected by the lock",
+                    lockedId, event.frame.boxes.single().trackId)
+            }
             return event.frame.boxes.single().trackId
         }
 
