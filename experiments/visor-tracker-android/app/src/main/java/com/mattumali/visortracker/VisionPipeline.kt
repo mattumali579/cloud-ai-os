@@ -503,15 +503,29 @@ class VisionPipeline(
             invalidateInFlight()
             val closing = marker
             marker = null
-            executor.shutdown()
-            if (closing == null) return
-            val closer = Executors.newSingleThreadExecutor()
-            try {
-                closer.submit { closing.close() }.get(CLOSE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            if (closing == null) {
+                executor.shutdown()
+                return
+            }
+            // MediaPipe detect() is native and cannot reliably be interrupted.
+            // Closing it from a second thread while detect() is still running
+            // can terminate the Android process. Queue close AFTER any pending
+            // detect on the same executor instead.
+            val pendingClose = try {
+                executor.submit { closing.close() }
             } catch (error: Exception) {
-                Log.w(TAG, "hand landmarker close did not return", error)
-            } finally {
-                closer.shutdownNow()
+                Log.w(TAG, "hand landmarker close could not be queued", error)
+                null
+            }
+            executor.shutdown()
+            if (pendingClose != null) {
+                try {
+                    pendingClose.get(CLOSE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                } catch (error: Exception) {
+                    // Never force-stop the native detection thread. The queued
+                    // close will run after it if the detector recovers.
+                    Log.w(TAG, "hand landmarker close deferred", error)
+                }
             }
         }
 
