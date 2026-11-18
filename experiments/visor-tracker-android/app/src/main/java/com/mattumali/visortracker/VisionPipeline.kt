@@ -81,6 +81,7 @@ class VisionPipeline(
         private set
 
     fun detect(input: Bitmap): FrameDetections {
+        if (input.isRecycled) throw IllegalStateException("recycled frame")
         // Same geometry as the YUV snapshot. A zero-size frame fails here instead
         // of becoming a one-pixel bitmap the detector treats as "no objects".
         val (width, height) = YuvSnapshot.outputSize(input.width, input.height, preset.maxFrameWidth)
@@ -90,8 +91,12 @@ class VisionPipeline(
 
         try {
             val image = BitmapImageBuilder(resized).build()
+            try {
             val observed = mutableListOf<BoxObservation>()
-            objects.detect(image).detections().forEach { detection ->
+            // Close the native image after every call. Leaving it open crashed
+            // the second EfficientDet pass on the emulator.
+            val detected = objects.detect(image)
+            detected.detections().forEach { detection ->
                 val categories = detection.categories().map { category ->
                     CategoryScore(category.categoryName().orEmpty(), category.score())
                 }
@@ -149,11 +154,14 @@ class VisionPipeline(
             // drawn and the lock can see a different object. The overlay paints one.
             val tracked = tracks.update(observed).filter { !it.held }
             return FrameDetections(width, height, tracked.map { it.copy(points = it.points.toList()) })
+            } finally {
+                image.close()
+            }
         } catch (error: Exception) {
             Log.e(TAG, "MediaPipe detection failed", error)
             throw error
         } finally {
-            if (resized !== input) resized.recycle()
+            if (resized !== input && !resized.isRecycled) resized.recycle()
         }
     }
 
