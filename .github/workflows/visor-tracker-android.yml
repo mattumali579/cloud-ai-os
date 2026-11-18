@@ -81,8 +81,8 @@ jobs:
           test -f "$xml"
           grep -q 'failures="0"' "$xml"
           grep -q 'errors="0"' "$xml"
-      - name: Verify the stable signing certificate on tagged releases
-        if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
+      - name: Verify the stable signing certificate
+        if: steps.stable_signing.outputs.file != ''
         working-directory: experiments/visor-tracker-android
         run: |
           set -euo pipefail
@@ -90,7 +90,10 @@ jobs:
           digest=$("${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --print-certs "$apk" \
             | sed -n 's/.*SHA-256 digest: *//p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
           test "$digest" = "afb36d6baa0eb0b14e038ea7b141bc92662350bdfdf9be30151bb7d759a02308"
+          actual="$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -1)"
+          test "$actual" -gt 23
           echo "Stable signer SHA-256 matches the installed Tracker certificate"
+          echo "versionCode $actual can replace published v23 without a new package id"
       - uses: actions/upload-artifact@v4
         with:
           name: visor-tracker-apk
