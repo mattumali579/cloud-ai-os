@@ -15,8 +15,16 @@ timeout 300s adb shell am instrument -w -r \
   | tee "$log"
 code=${PIPESTATUS[0]}
 set -e
-grep -q "OK (2 tests)" "$log"
-test "$code" -eq 0
+
+# Keep device-side crash details even when the instrumentation process exits
+# without a useful stack trace. The job uploads this directory on failure.
+adb logcat -d -v threadtime > "${RUNNER_TEMP}/detector-sim/logcat.txt"
+if [[ "$code" -ne 0 ]] || ! grep -q "OK (2 tests)" "$log"; then
+  echo "Instrumentation did not report OK (2 tests); collecting crash context."
+  grep -E -i "FATAL EXCEPTION|AndroidRuntime|Fatal signal|tombstoned|crash_dump|Process:|Caused by:|OutOfMemoryError|SIGABRT|SIGSEGV|MediaPipe|TFLite" \
+    "${RUNNER_TEMP}/detector-sim/logcat.txt" | tail -250 || true
+  exit 1
+fi
 
 adb exec-out run-as com.mattumali.visortracker.stable cat files/detector-stage.txt \
   > "${RUNNER_TEMP}/detector-sim/detector-stage.txt"
