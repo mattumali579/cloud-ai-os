@@ -16,6 +16,7 @@ class BoxHoldTest {
         val next = box.copy(trackId = 9, left = 50f)
         val kept = BoxHold.keep(listOf(box), listOf(next), ageMs = 100)
         assertEquals(9, kept.single().trackId)
+        assertTrue(kept.none { it.trackId == 3 })
     }
 
     @Test fun holdExpires() {

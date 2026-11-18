@@ -1,6 +1,7 @@
 package com.mattumali.visortracker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,5 +20,18 @@ class StageFaultsTest {
         faults.clear("gray")
         assertTrue(faults.summary().contains("detect"))
         assertTrue(!faults.summary().contains("gray"))
+    }
+
+    @Test fun anOptionalModelFailureDoesNotDiscardObjectBoxes() {
+        var fault: String? = null
+        val objects = listOf(BoxObservation("object", "chair", 0.8f, 1f, 1f, 20f, 30f))
+        val kept = VisionPipeline.runOptional("hands", { fault = it }) { objects }
+        assertNull(fault)
+        assertEquals(objects, kept)
+        val dropped = VisionPipeline.runOptional("hands", { fault = it }) {
+            error("model hung")
+        }
+        assertTrue(dropped.isEmpty())
+        assertEquals("hands: model hung", fault)
     }
 }

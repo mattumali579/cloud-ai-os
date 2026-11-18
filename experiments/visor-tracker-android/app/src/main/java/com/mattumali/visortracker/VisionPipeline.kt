@@ -11,8 +11,6 @@ import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facedetector.FaceDetector
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector
-import kotlin.math.max
-import kotlin.math.min
 
 data class FrameDetections(
     val width: Int,
@@ -78,10 +76,14 @@ class VisionPipeline(
         ) else null
     }
 
+    /** Set when hands or faces fail. Object boxes from that frame are still returned. */
+    var lastOptionalFault: String? = null
+        private set
+
     fun detect(input: Bitmap): FrameDetections {
-        // Reducing input pixels cuts resize/conversion overhead before MediaPipe.
-        val width = min(preset.maxFrameWidth, input.width)
-        val height = max(1, (input.height.toDouble() * width / input.width).toInt())
+        // Same geometry as the YUV snapshot. A zero-size frame fails here instead
+        // of becoming a one-pixel bitmap the detector treats as "no objects".
+        val (width, height) = YuvSnapshot.outputSize(input.width, input.height, preset.maxFrameWidth)
         val resized = if (input.width != width || input.height != height) {
             Bitmap.createScaledBitmap(input, width, height, true)
         } else input
@@ -93,31 +95,51 @@ class VisionPipeline(
                 val categories = detection.categories().map { category ->
                     CategoryScore(category.categoryName().orEmpty(), category.score())
                 }
-                val label = LabelPolicy.resolve(categories) ?: return@forEach
-                val score = categories.maxOfOrNull { it.score } ?: return@forEach
-                observed += detection.boundingBox().box("object", label, score)
+                val chosen = LabelPolicy.selection(categories) ?: return@forEach
+                observed += detection.boundingBox().box("object", chosen.name, chosen.score)
             }
 
             // Expensive models are staggered: object detection stays the priority.
-            // Cache other classes between their scans so boxes don't flicker off.
+            // A hand or face failure must not throw away the objects already found.
+            var optionalFailed = false
+            var scannedOptional = false
             if (includeHandsFaces && frameNumber % 2 == 0) {
-                recentHands = hands?.detect(image)?.landmarks()?.mapNotNull { hand ->
-                    if (hand.isEmpty()) null else {
-                        val coords = hand.map { it.x() * width to it.y() * height }
-                        BoxObservation(
-                            kind = "hand", label = "hand", score = 1f,
-                            left = coords.minOf { it.first }, top = coords.minOf { it.second },
-                            right = coords.maxOf { it.first }, bottom = coords.maxOf { it.second },
-                            points = coords
-                        )
-                    }
-                } ?: emptyList()
+                scannedOptional = true
+                var failed = false
+                recentHands = runOptional("hands", {
+                    failed = true
+                    lastOptionalFault = it
+                }) {
+                    hands?.detect(image)?.landmarks()?.mapNotNull { hand ->
+                        if (hand.isEmpty()) null else {
+                            val coords = hand.map { it.x() * width to it.y() * height }
+                            BoxObservation(
+                                kind = "hand", label = "hand", score = 1f,
+                                left = coords.minOf { it.first }, top = coords.minOf { it.second },
+                                right = coords.maxOf { it.first }, bottom = coords.maxOf { it.second },
+                                points = coords
+                            )
+                        }
+                    } ?: emptyList()
+                }
+                optionalFailed = failed
             }
             if (includeHandsFaces && frameNumber % 4 == 0) {
-                recentFaces = faces?.detect(image)?.detections()?.map { detection ->
-                    detection.boundingBox().box("face", "face", detection.categories().firstOrNull()?.score() ?: 0f)
-                } ?: emptyList()
+                scannedOptional = true
+                var failed = false
+                recentFaces = runOptional("faces", {
+                    failed = true
+                    lastOptionalFault = it
+                }) {
+                    faces?.detect(image)?.detections()?.map { detection ->
+                        detection.boundingBox().box(
+                            "face", "face", detection.categories().firstOrNull()?.score() ?: 0f,
+                        )
+                    } ?: emptyList()
+                }
+                optionalFailed = optionalFailed || failed
             }
+            if (scannedOptional && !optionalFailed) lastOptionalFault = null
             frameNumber++
             observed += recentHands
             observed += recentFaces
@@ -146,5 +168,22 @@ class VisionPipeline(
 
     companion object {
         private const val TAG = "VisorTracker"
+
+        /**
+         * Hands and faces are optional. Their failure is reported and the object
+         * boxes already found stay in the frame.
+         */
+        internal fun runOptional(
+            stage: String,
+            onFault: (String) -> Unit,
+            block: () -> List<BoxObservation>,
+        ): List<BoxObservation> =
+            try {
+                block()
+            } catch (error: Exception) {
+                onFault(stage + ": " + (error.message ?: error.javaClass.simpleName))
+                Log.e(TAG, "$stage failed", error)
+                emptyList()
+            }
     }
 }

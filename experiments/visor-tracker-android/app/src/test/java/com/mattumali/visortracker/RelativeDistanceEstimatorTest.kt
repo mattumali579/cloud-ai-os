@@ -46,6 +46,34 @@ class RelativeDistanceEstimatorTest {
         assertEquals(6f, estimator.estimate(300, target)!!, 0.01f)
     }
 
+    @Test fun severalCandidatesLockThePointedObjectAndANewPointReplacesIt() {
+        val estimator = RelativeDistanceEstimator()
+        val pointed = at(4, 150f)
+        val left = at(1, 40f)
+        val right = at(2, 260f)
+        assertNull(estimator.observe(frame(left, right, pointed)))
+        val locked = estimator.observe(frame(left, right, pointed))
+        assertTrue(locked!!.contains("Locked #4"))
+        assertEquals(4, estimator.selectedTrackId())
+        assertTrue(estimator.calibrate(frame(left, right, pointed), 6f).contains("#4"))
+        val sameSizeNeighbor = at(8, 150f)
+        repeat(4) {
+            assertNull(estimator.observe(frame(sameSizeNeighbor, pointed, left)))
+        }
+        assertEquals(4, estimator.selectedTrackId())
+        assertEquals(6f, estimator.estimate(300, pointed)!!, 0.05f)
+        assertNull(estimator.estimate(300, sameSizeNeighbor))
+        val aside = at(4, 40f)
+        val next = at(8, 150f)
+        assertNull(estimator.observe(frame(aside, next, right)))
+        val switched = estimator.observe(frame(aside, next, right))
+        assertTrue(switched!!.contains("Distance cleared"))
+        assertEquals(8, estimator.selectedTrackId())
+        assertNull(estimator.estimate(300, pointed))
+        assertNull(estimator.estimate(300, aside))
+        assertNull(estimator.estimate(300, next))
+    }
+
     @Test fun holdingANewCenterTargetClearsTheOldDistance() {
         val estimator = RelativeDistanceEstimator()
         val first = at(4, 150f)

@@ -87,7 +87,15 @@ class TrackingOverlayView(context: Context) : View(context) {
 
     fun notificationDistance(): String = distanceEstimator.shortStatus(latest?.boxes.orEmpty())
 
-    fun drawnBoxCount(): Int = latest?.boxes?.size ?: 0
+    fun drawnBoxCount(): Int {
+        val frame = latest ?: return 0
+        val boxes = frame.boxes
+        if (boxes.isEmpty()) return 0
+        // Before the window is measured, keep the stored count. Once the view has
+        // a size, a box that cover-crops entirely off screen is not drawn.
+        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return boxes.size
+        return boxes.count { CoverGeometry.isVisible(frame.width, frame.height, width, height, it) }
+    }
 
     /**
      * Sees every detector object, including ones that are not the drawn box,
@@ -100,22 +108,31 @@ class TrackingOverlayView(context: Context) : View(context) {
     }
 
     fun updateFrame(frame: FrameDetections): String? {
-        if (frame.sequence < shownSequence) return null
         val previous = latest
-        shownSequence = frame.sequence
+        val lockedId = distanceEstimator.selectedTrackId()
         val incoming = if (frame.boxes.isEmpty()) {
             emptyList()
         } else {
-            nearby.select(frame.width, frame.height, frame.boxes, distanceEstimator.selectedTrackId())
+            nearby.select(frame.width, frame.height, frame.boxes, lockedId)
         }
-        val ageMs = if (receivedAt == 0L) Long.MAX_VALUE else SystemClock.elapsedRealtime() - receivedAt
+        val now = SystemClock.elapsedRealtime()
+        val accepted = OverlayDiagnostics.acceptFrame(
+            frameSequence = frame.sequence,
+            shownSequence = shownSequence,
+            incomingBoxes = incoming.size,
+            showingTrackId = previous?.boxes?.firstOrNull()?.trackId,
+            incomingTrackId = incoming.firstOrNull()?.trackId,
+            lockedId = lockedId,
+            captureIsRecent = OverlayDiagnostics.captureIsRecent(now, frame.capturedAtMs, BoxHold.HOLD_MS),
+        )
+        if (!accepted) return null
+        shownSequence = OverlayDiagnostics.nextShownSequence(shownSequence, frame.sequence, accepted = true)
+        val ageMs = if (receivedAt == 0L) Long.MAX_VALUE else now - receivedAt
         val kept = BoxHold.keep(previous?.boxes.orEmpty(), incoming, ageMs)
-        val display = frame.copy(boxes = kept)
+        val display = OverlayDiagnostics.frameToDraw(frame, previous, incoming.size, kept)
         latest = display
-        if (incoming.isNotEmpty()) receivedAt = SystemClock.elapsedRealtime()
-        frameAgeMs = if (display.capturedAtMs <= 0L) 0 else {
-            (receivedAt - display.capturedAtMs).toInt().coerceAtLeast(0)
-        }
+        if (incoming.isNotEmpty()) receivedAt = now
+        frameAgeMs = if (display.boxes.isEmpty()) 0 else OverlayDiagnostics.ageMs(now, display.capturedAtMs)
         val previousBoxes = previous?.boxes.orEmpty()
         val moved = BoxMotion.positionsChanged(previousBoxes, display.boxes)
         val cleared = display.boxes.isEmpty() && previousBoxes.isNotEmpty()
@@ -146,6 +163,11 @@ class TrackingOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w > 0 && h > 0 && latest?.boxes?.isNotEmpty() == true) invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         draws.incrementAndGet()
@@ -155,7 +177,15 @@ class TrackingOverlayView(context: Context) : View(context) {
         canvas.drawText(distanceEstimator.banner(frame.boxes), dp(12f), dp(34f), text)
         canvas.drawText(RelativeDistanceEstimator.LIMITATION, dp(12f), dp(48f), note)
         if (frame.boxes.isEmpty()) return
-        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
+        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) {
+            // A draw before layout used to return here and never run again.
+            if (width <= 0 || height <= 0) {
+                post {
+                    if (width > 0 && height > 0 && latest?.boxes?.isNotEmpty() == true) invalidate()
+                }
+            }
+            return
+        }
         for (observation in frame.boxes) {
             val current = CoverGeometry.project(frame.width, frame.height, width, height, observation)
                 .let { RectF(it.left, it.top, it.right, it.bottom) }

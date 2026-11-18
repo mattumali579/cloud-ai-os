@@ -31,19 +31,26 @@ object LabelPolicy {
         "book" to setOf("laptop", "cell phone"),
     )
 
-    fun resolve(categories: List<CategoryScore>): String? {
+    /**
+     * The name to draw and the finite score of the category that earned it.
+     * A blank or non-finite score cannot outrank a real category, and a score
+     * under [MIN_SCORE] is omitted. Returning null is the only drop.
+     */
+    fun selection(categories: List<CategoryScore>): CategoryScore? {
         val ranked = categories
             .asSequence()
             .filter { it.name.isNotBlank() && it.score.isFinite() && it.score >= MIN_SCORE }
             .sortedByDescending { it.score }
             .toList()
         val top = ranked.firstOrNull() ?: return null
-        if (top.score < (strictFloor[top.name] ?: 0.45f)) return UNCERTAIN
+        if (top.score < (strictFloor[top.name] ?: 0.45f)) return CategoryScore(UNCERTAIN, top.score)
         val rival = ranked.getOrNull(1)
         if (rival != null && top.score - rival.score < AMBIGUITY_MARGIN) {
             val partners = confusableWith[top.name]
-            if (partners != null && rival.name in partners) return UNCERTAIN
+            if (partners != null && rival.name in partners) return CategoryScore(UNCERTAIN, top.score)
         }
-        return top.name
+        return top
     }
+
+    fun resolve(categories: List<CategoryScore>): String? = selection(categories)?.name
 }

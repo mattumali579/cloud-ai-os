@@ -22,5 +22,6 @@ class DetectionPresetTest {
         assertTrue(DetectionPreset.FAST.maxResults in 5..8)
         assertTrue(DetectionPreset.ACCURATE.maxResults in 5..8)
         assertEquals("efficientdet_lite0.tflite", DetectionPreset.FAST.modelAsset)
+        assertTrue(DetectionPreset.FAST.scoreThreshold <= LabelPolicy.MIN_SCORE)
     }
 }

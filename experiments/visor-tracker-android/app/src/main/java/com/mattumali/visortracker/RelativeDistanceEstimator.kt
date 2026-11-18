@@ -81,7 +81,7 @@ class RelativeDistanceEstimator {
         if (frame.width <= 0 || frame.height <= 0) return "No camera image for calibration"
 
         val objects = frame.boxes.filter {
-            it.kind == "object" && it.trackId > 0 &&
+            !it.held && it.kind == "object" && it.trackId > 0 &&
                 it.right > it.left && it.bottom > it.top &&
                 it.score >= 0.3f
         }
@@ -92,11 +92,8 @@ class RelativeDistanceEstimator {
         if (selectedId != null && locked == null) {
             return "Locked object is not in view. Point at it, then calibrate."
         }
-        val centered = locked ?: objects.minByOrNull {
-            val cx = (it.left + it.right) * 0.5f / frame.width
-            val cy = (it.top + it.bottom) * 0.5f / frame.height
-            (cx - 0.5f) * (cx - 0.5f) + (cy - 0.5f) * (cy - 0.5f)
-        } ?: return "No detected object. Face the object and keep Live View running."
+        val centered = locked ?: pointedObject(frame.width, frame.height, objects)
+            ?: return "No detected object. Face the object and keep Live View running."
         if (locked == null) {
             val centerX = (centered.left + centered.right) * 0.5f / frame.width
             val centerY = (centered.top + centered.bottom) * 0.5f / frame.height

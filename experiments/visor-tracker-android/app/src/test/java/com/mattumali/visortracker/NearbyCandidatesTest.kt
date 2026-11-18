@@ -77,4 +77,26 @@ class NearbyCandidatesTest {
         assertEquals(1, shown.size)
         assertEquals(2, shown.single().trackId)
     }
+
+    @Test fun selectsTheObjectUnderThePointNotTheNearerCenter() {
+        val pointed = box(7, "table", 10f, 20f, 60f, 90f)
+        val beside = box(4, "cup", 55f, 42f, 70f, 58f)
+        val edge = box(1, "chair", 0f, 0f, 15f, 15f)
+        val shown = NearbyCandidates().select(100, 100, listOf(beside, edge, pointed), null)
+        assertEquals(listOf(7), shown.map { it.trackId })
+    }
+
+    @Test fun lockStaysWhileAnotherCenterIsCloser() {
+        val target = box(1, "book", 10f, 20f, 70f, 90f)
+        val intruder = box(2, "book", 30f, 30f, 80f, 80f)
+        val shown = NearbyCandidates().select(100, 100, listOf(intruder, target), lockedId = 1)
+        assertEquals(1, shown.single().trackId)
+    }
+
+    @Test fun aNewLockReplacesThePreviousObject() {
+        val old = box(1, "chair", 0f, 30f, 24f, 70f)
+        val next = box(2, "cup", 40f, 36f, 64f, 78f)
+        val shown = NearbyCandidates().select(100, 100, listOf(old, next), lockedId = 2)
+        assertEquals(listOf(2), shown.map { it.trackId })
+    }
 }

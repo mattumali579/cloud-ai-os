@@ -49,6 +49,8 @@ class TrackingHandoff(
     private var inLoss = false
     private var publishedSequence = Long.MIN_VALUE
     private var lastProcessedSequence = Long.MIN_VALUE
+    /** Track last given to the overlay. A new point must replace this id. */
+    private var shownTrackId: Int? = null
 
     fun offer(frame: GrayFrame): Int = synchronized(gate) {
         metrics.onDecoded()
@@ -74,6 +76,7 @@ class TrackingHandoff(
         inLoss = false
         publishedSequence = Long.MIN_VALUE
         lastProcessedSequence = Long.MIN_VALUE
+        shownTrackId = null
     }
 
     /**
@@ -110,9 +113,11 @@ class TrackingHandoff(
         val oldest = historyCopy.firstOrNull()?.sequence
         if (!FrameBudget.anchorStillInHistory(detection.gray.sequence, oldest)) {
             metrics.onStaleDetection()
-            // The anchor was discarded while inference ran. Dropping the result
-            // left the overlay blank, so the lock never had a box to confirm.
-            if (showing) return null
+            // A late result for the track already on screen must not jump it.
+            // A different track is a new point: keeping the old motion box
+            // would leave that lock up after the user moved on.
+            val sameTarget = focused.boxes.firstOrNull()?.trackId == shownTrackId
+            if (showing && sameTarget) return null
             return publishDetached(focused, historyCopy, detection.gray, nowMs, lockedId)
         }
         val scratch = MotionTracker()
@@ -209,6 +214,8 @@ class TrackingHandoff(
     ): HandoffEvent? {
         if (frame.sequence < publishedSequence) return null
         publishedSequence = frame.sequence
+        val visible = frame.boxes.firstOrNull { !it.held }
+        if (visible != null) shownTrackId = visible.trackId
         if (!lost) {
             val box = frame.boxes.firstOrNull { lockedId == null || it.trackId == lockedId }
                 ?: frame.boxes.firstOrNull()

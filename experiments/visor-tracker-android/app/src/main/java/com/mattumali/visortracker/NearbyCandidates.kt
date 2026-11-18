@@ -3,9 +3,9 @@ package com.mattumali.visortracker
 /**
  * Draws one object.
  *
- * The box nearest the center is drawn as soon as the detector returns it.
- * After a lock, that track is drawn while it is still in the frame. If the
- * locked id is missing, the center object is drawn instead of an empty overlay.
+ * Before a lock, the box under the center of the picture is drawn. After a
+ * lock, that track is drawn while it is still in the frame. If the locked id
+ * is missing, the pointed object is drawn instead of an empty overlay.
  * This is not a measured-distance ranking, and it does not make inference faster.
  */
 class NearbyCandidates(
@@ -19,14 +19,11 @@ class NearbyCandidates(
     ): List<BoxObservation> {
         if (frameWidth <= 0 || frameHeight <= 0 || limit <= 0) return emptyList()
         val objects = boxes.filter {
-            it.kind == "object" && it.trackId > 0 && it.right > it.left && it.bottom > it.top
+            !it.held && it.kind == "object" && it.trackId > 0 &&
+                it.right > it.left && it.bottom > it.top
         }
         val locked = if (lockedId == null) null else objects.firstOrNull { it.trackId == lockedId }
-        val chosen = locked ?: objects.minByOrNull { box ->
-            val cx = (box.left + box.right) * 0.5f / frameWidth - 0.5f
-            val cy = (box.top + box.bottom) * 0.5f / frameHeight - 0.5f
-            cx * cx + cy * cy
-        }
+        val chosen = locked ?: pointedObject(frameWidth, frameHeight, objects)
         return if (chosen == null) emptyList() else listOf(chosen).take(limit)
     }
 

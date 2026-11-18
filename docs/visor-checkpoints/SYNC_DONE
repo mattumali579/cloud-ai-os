@@ -1,0 +1,25 @@
+SYNC_DONE
+ff-only: succeeded
+old HEAD: 9406f82b9d1e230a320ea10cf602dd407678d577
+new HEAD: bcad12477e9a522b13f74090781a250a5f7aeaa6
+branch: feat/visor-overlay-phase1
+branch status: feat/visor-overlay-phase1...origin/feat/visor-overlay-phase1 (in sync with origin; not ahead, not behind)
+commits pulled: 8
+
+commit subjects:
+bcad124 Correct Visor Tracker release notes for one-box targeting
+40acc67 Prepare Visor Tracker 0.23 for the verified detector fixes
+76d39bf Allow centered pre-lock target in simulation
+c77343f Test Visor production A-B-A target handoff
+a99ab04 Enable KVM for the detector emulator boot
+ec7c123 Capture emulator logcat when detector simulation crashes
+310c58b Enable Visor emulator and detector CI jobs
+3cc4656 Disable long-running Visor emulator CI jobs at owner's request
+
+changed files:
+.github/workflows/visor-tracker-android.yml
+experiments/visor-tracker-android/app/build.gradle.kts
+experiments/visor-tracker-android/app/src/androidTest/java/com/mattumali/visortracker/DetectorOverlaySimulationTest.kt
+experiments/visor-tracker-android/scripts/run-detector-simulation.sh
+
+owned Kotlin sources touched: none

@@ -39,4 +39,65 @@ class AimLockTest {
         assertEquals(1, once.lockedId)
         assertFalse(once.changed)
     }
+
+    @Test fun selectsThePointedObjectAmongSeveralCandidates() {
+        val aim = AimLock()
+        val pointed = BoxObservation("object", "table", 0.9f, 10f, 20f, 60f, 90f, trackId = 7)
+        val beside = BoxObservation("object", "cup", 0.9f, 55f, 42f, 70f, 58f, trackId = 4)
+        val hand = BoxObservation("hand", "hand", 1f, 0f, 0f, 100f, 100f, trackId = 50)
+        val picture = frame(beside, box(1, 0f), hand, box(3, 78f), pointed)
+        assertFalse(aim.observe(picture).changed)
+        val locked = aim.observe(picture)
+        assertTrue(locked.changed)
+        assertEquals(7, locked.lockedId)
+    }
+
+    @Test fun keepsTheLockWhileThePointStaysOnThatObject() {
+        val aim = AimLock()
+        val target = BoxObservation("object", "book", 0.9f, 10f, 20f, 70f, 90f, trackId = 2)
+        val start = frame(box(1, 0f), target)
+        aim.observe(start)
+        assertEquals(2, aim.observe(start).lockedId)
+        val intruder = BoxObservation("object", "book", 0.9f, 30f, 30f, 80f, 80f, trackId = 8)
+        val held = frame(intruder, box(3, 78f), target)
+        repeat(6) { index ->
+            val decision = aim.observe(held)
+            assertEquals("frame $index", 2, decision.lockedId)
+            assertFalse(decision.changed)
+        }
+    }
+
+    @Test fun replacesTheLockWhenThePointMovesToADifferentObject() {
+        val aim = AimLock()
+        val first = BoxObservation("object", "book", 0.9f, 30f, 30f, 70f, 80f, trackId = 1)
+        val start = frame(box(3, 0f), first, box(4, 78f))
+        aim.observe(start)
+        assertEquals(1, aim.observe(start).lockedId)
+        val aside = first.copy(left = 0f, right = 24f)
+        val next = BoxObservation("object", "cup", 0.9f, 40f, 36f, 64f, 78f, trackId = 2)
+        val moved = frame(box(3, 0f), aside, box(4, 78f), next)
+        val hold = aim.observe(moved)
+        assertEquals(1, hold.lockedId)
+        assertFalse(hold.changed)
+        val replaced = aim.observe(moved)
+        assertTrue(replaced.changed)
+        assertEquals(2, replaced.lockedId)
+        val stayed = aim.observe(moved)
+        assertEquals(2, stayed.lockedId)
+        assertFalse(stayed.changed)
+    }
+
+    @Test fun aSmallerObjectUnderThePointReplacesTheLock() {
+        val aim = AimLock()
+        val table = BoxObservation("object", "table", 0.9f, 0f, 0f, 100f, 100f, trackId = 1)
+        aim.observe(frame(table))
+        assertEquals(1, aim.observe(frame(table)).lockedId)
+        val cup = BoxObservation("object", "cup", 0.9f, 42f, 42f, 58f, 58f, trackId = 2)
+        val picture = frame(table, cup)
+        assertEquals(1, aim.observe(picture).lockedId)
+        val replaced = aim.observe(picture)
+        assertTrue(replaced.changed)
+        assertEquals(2, replaced.lockedId)
+        assertEquals(2, aim.observe(picture).lockedId)
+    }
 }

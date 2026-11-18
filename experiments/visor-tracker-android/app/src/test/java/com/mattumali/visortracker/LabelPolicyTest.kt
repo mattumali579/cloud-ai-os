@@ -1,6 +1,7 @@
 package com.mattumali.visortracker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -8,6 +9,26 @@ class LabelPolicyTest {
     @Test fun scoresUnderTheFloorAreOmitted() {
         assertEquals("object", LabelPolicy.resolve(listOf(CategoryScore("cup", 0.25f))))
         assertNull(LabelPolicy.resolve(listOf(CategoryScore("laptop", 0.20f))))
+    }
+
+    @Test fun aScoreTheFastDetectorReturnsIsNotDropped() {
+        val shown = LabelPolicy.selection(listOf(
+            CategoryScore("", Float.NaN),
+            CategoryScore("chair", DetectionPreset.FAST.scoreThreshold),
+        ))
+        assertNotNull(shown)
+        assertEquals("object", shown!!.name)
+        assertEquals(DetectionPreset.FAST.scoreThreshold, shown.score, 0.001f)
+        assertNotNull(LabelPolicy.resolve(listOf(CategoryScore("person", 0.26f))))
+    }
+
+    @Test fun aBlankOrNanScoreCannotReplaceTheRealCategoryScore() {
+        val shown = LabelPolicy.selection(listOf(
+            CategoryScore("", 0.99f),
+            CategoryScore("chair", 0.66f),
+        ))
+        assertEquals("chair", shown?.name)
+        assertEquals(0.66f, shown!!.score, 0.001f)
     }
 
     @Test fun confidentPhoneStaysPhone() {

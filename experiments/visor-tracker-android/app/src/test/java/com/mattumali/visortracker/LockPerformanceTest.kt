@@ -224,6 +224,69 @@ class LockPerformanceTest {
         assertEquals(7, event!!.frame.boxes.single().trackId)
     }
 
+    @Test fun oneFrameOnADifferentObjectDoesNotReplaceTheShownLock() {
+        val handoff = armed()
+        val frame = gray(0, sequence = 600, 40_000)
+        handoff.offer(frame)
+        val old = BoxObservation("object", "chair", 0.9f, 0f, 30f, 20f, 50f, trackId = 3)
+        val pointed = BoxObservation("object", "cup", 0.9f, 40f, 30f, 60f, 50f, trackId = 8)
+        val event = handoff.pump(
+            nowMs = 40_008,
+            detection = DetectionBaseline(
+                FrameDetections(100, 80, listOf(old, pointed), sequence = 600, capturedAtMs = 40_000),
+                frame,
+            ),
+            lockedId = 3,
+        )
+        assertNotNull(event)
+        assertEquals(listOf(3), event!!.frame.boxes.map { it.trackId })
+    }
+
+    @Test fun aNewLockIdReplacesTheShownTrack() {
+        val handoff = armed()
+        val frame = gray(0, sequence = 610, 41_000)
+        handoff.offer(frame)
+        val old = BoxObservation("object", "chair", 0.9f, 0f, 30f, 20f, 50f, trackId = 3)
+        val pointed = BoxObservation("object", "cup", 0.9f, 40f, 30f, 60f, 50f, trackId = 8)
+        val event = handoff.pump(
+            nowMs = 41_008,
+            detection = DetectionBaseline(
+                FrameDetections(100, 80, listOf(old, pointed), sequence = 610, capturedAtMs = 41_000),
+                frame,
+            ),
+            lockedId = 8,
+        )
+        assertNotNull(event)
+        assertEquals(listOf(8), event!!.frame.boxes.map { it.trackId })
+    }
+
+    @Test fun stalePointOnANewObjectReplacesTheOldLock() {
+        val handoff = armed()
+        repeat(10) { index ->
+            val capture = 30_000L + index * 33L
+            handoff.offer(gray(0, sequence = 400 + index.toLong(), capture))
+            val event = handoff.pump(capture + 4, detection = null, lockedId = 3)
+            assertNotNull(event)
+            assertEquals(3, event!!.frame.boxes.single().trackId)
+        }
+        handoff.offer(gray(0, sequence = 500, 31_000))
+        val next = BoxObservation("object", "cup", 0.95f, 40f, 30f, 60f, 50f, trackId = 8)
+        val event = handoff.pump(
+            nowMs = 31_010,
+            detection = DetectionBaseline(
+                FrameDetections(100, 80, listOf(next), sequence = 1, capturedAtMs = 1_000),
+                gray(0, sequence = 1, 1_000),
+            ),
+            lockedId = 8,
+        )
+        assertNotNull(event)
+        assertEquals(listOf(8), event!!.frame.boxes.map { it.trackId })
+        assertTrue(handoff.metrics.snapshotAndReset().staleDetections >= 1)
+        handoff.offer(gray(0, sequence = 501, 31_033))
+        val follow = handoff.pump(31_040, detection = null, lockedId = 8)
+        if (follow != null) assertEquals(listOf(8), follow.frame.boxes.map { it.trackId })
+    }
+
     @Test fun idChangeIsCountedSeparatelyFromAStableLock() {
         val metrics = LockMetrics()
         metrics.onPublished(100, 110, 40f, 100, lockedId = 3, publishedId = 3)

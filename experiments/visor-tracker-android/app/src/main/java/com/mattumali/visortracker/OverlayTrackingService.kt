@@ -27,6 +27,7 @@ import com.macedonga.visor.kit.Visor
 import com.macedonga.visor.kit.protocol.LiveConfig
 import com.macedonga.visor.kit.protocol.LiveQuality
 import com.macedonga.visor.kit.protocol.Scope
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -55,7 +56,12 @@ class OverlayTrackingService : Service() {
     private val motionWorker = Executors.newSingleThreadExecutor()
     private val motionBusy = AtomicBoolean(false)
     private val handoff = TrackingHandoff()
-    private val pendingDetection = AtomicReference<DetectionBaseline?>(null)
+    private data class PendingDetection(
+        val baseline: DetectionBaseline,
+        /** Lock id after this detection was applied. Motion must not re-read an older one. */
+        val lockId: Int?,
+    )
+    private val pendingDetection = AtomicReference<PendingDetection?>(null)
     private val frameSequence = AtomicLong(0)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val processing = AtomicBoolean(false)
@@ -84,7 +90,7 @@ class OverlayTrackingService : Service() {
     private var preset = DetectionPreset.FAST
     private var lastOfferedAtMs = 0L
     private var lastReportAtMs = 0L
-    private var lastBoxCount = 0
+    @Volatile private var lastBoxCount = 0
     private var streamBeginMs = 0L
     private var overlayAttached = false
     private var overlayError: String? = null
@@ -257,9 +263,14 @@ class OverlayTrackingService : Service() {
                                     stages.record("y", SystemClock.elapsedRealtime() - yuvStarted)
                                     stageFaults.clear("yuv")
                                     val aiStarted = SystemClock.elapsedRealtime()
-                                    val detections = pipeline?.detect(bitmap) ?: return@execute
+                                    val vision = pipeline ?: return@execute
+                                    val detections = vision.detect(bitmap)
                                     stages.record("ai", SystemClock.elapsedRealtime() - aiStarted)
                                     stageFaults.clear("detect")
+                                    // Object boxes already returned. A hand or face failure
+                                    // stays on the pipeline until this copies it into the
+                                    // notification. A later clean scan clears it.
+                                    OptionalModelFault.apply(stageFaults, vision.lastOptionalFault)
                                     refreshFaults()
                                     inferenceFrames.incrementAndGet()
                                     totalInferences.incrementAndGet()
@@ -267,15 +278,32 @@ class OverlayTrackingService : Service() {
                                     rawDetections.set(objectCount)
                                     Log.i(TAG, "detect objects=$objectCount seq=$sequence gray=${anchor != null}")
                                     val stamped = detections.copy(sequence = sequence, capturedAtMs = now)
-                                    mainHandler.post {
-                                        if (!running) return@post
-                                        val note = overlay?.observeCandidates(stamped)
-                                        if (!note.isNullOrBlank()) report(note)
-                                        if (anchor == null) overlay?.updateFrame(stamped)
-                                    }
-                                    if (anchor != null) {
+                                    // The posted lock update used to run after motion read
+                                    // selectedTrackId(), so this frame still drew the old box.
+                                    // Apply finishes before the id is read. An interrupted
+                                    // wait does not keep the id from before this frame.
+                                    val lockResult = AtomicReference(
+                                        MainThreadLockWait.Result(applied = false, lockId = null),
+                                    )
+                                    val lockId = OverlayFrameSelection.lockIdForFrame(
+                                        applyLock = { lockResult.set(applyDetectionLock(stamped)) },
+                                        readLock = { lockResult.get().lockId },
+                                        deferDraw = { _ ->
+                                            if (anchor == null) {
+                                                mainHandler.post {
+                                                    if (!running) return@post
+                                                    overlay?.updateFrame(stamped)
+                                                    lastBoxCount = overlay?.drawnBoxCount() ?: 0
+                                                }
+                                            }
+                                        },
+                                    )
+                                    if (anchor != null && MainThreadLockWait.queueDetection(lockResult.get())) {
                                         val baseline = DetectionBaseline(stamped, anchor)
-                                        if (pendingDetection.getAndSet(baseline) != null) {
+                                        if (pendingDetection.getAndSet(
+                                                PendingDetection(baseline, lockId)
+                                            ) != null
+                                        ) {
                                             handoff.metrics.onStaleDetection()
                                         }
                                         scheduleMotion()
@@ -345,6 +373,60 @@ class OverlayTrackingService : Service() {
         }
     }
 
+    /**
+     * Applies [frame] to the overlay lock and returns only after that id is visible.
+     * Posting the update and continuing would let motion read the previous id.
+     * A rejected post, or an interrupt before the update stores the id, is not applied.
+     * Motion then does not pump this detection with the id from the previous frame.
+     */
+    private fun applyDetectionLock(frame: FrameDetections): MainThreadLockWait.Result {
+        val updateRan = AtomicBoolean(false)
+        val idAfter = AtomicReference<Int?>(null)
+        val apply = Runnable {
+            try {
+                if (running) {
+                    val note = overlay?.observeCandidates(frame)
+                    if (!note.isNullOrBlank()) report(note)
+                }
+            } finally {
+                idAfter.set(overlay?.selectedTrackId())
+                updateRan.set(true)
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            apply.run()
+            return MainThreadLockWait.finish(
+                posted = true,
+                interrupted = false,
+                updateRan = updateRan.get(),
+                idAfterUpdate = idAfter.get(),
+            )
+        }
+        val done = CountDownLatch(1)
+        val posted = mainHandler.post {
+            try {
+                apply.run()
+            } finally {
+                done.countDown()
+            }
+        }
+        var interrupted = false
+        if (posted) {
+            try {
+                done.await()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                interrupted = true
+            }
+        }
+        return MainThreadLockWait.finish(
+            posted = posted,
+            interrupted = interrupted,
+            updateRan = updateRan.get(),
+            idAfterUpdate = idAfter.get(),
+        )
+    }
+
     private fun scheduleMotion() {
         if (!motionBusy.compareAndSet(false, true)) return
         motionWorker.execute {
@@ -352,14 +434,25 @@ class OverlayTrackingService : Service() {
                 while (running) {
                     val started = SystemClock.elapsedRealtime()
                     val pending = pendingDetection.getAndSet(null)
-                    if (pending != null) recordDetectionAge(pending)
+                    if (pending != null) recordDetectionAge(pending.baseline)
                     val event = handoff.pump(
                         SystemClock.elapsedRealtime(),
-                        pending,
-                        overlay?.selectedTrackId(),
+                        pending?.baseline,
+                        // A null lock on a queued detection is "nothing locked yet".
+                        // Falling through to a live read would pick up a different frame's id.
+                        if (pending != null) pending.lockId else overlay?.selectedTrackId(),
                     )
                     stages.record("m", SystemClock.elapsedRealtime() - started)
-                    if (event != null) publish(event.frame)
+                    if (event != null) {
+                        publish(event.frame)
+                    } else if (pending != null &&
+                        OverlayDiagnostics.hasPaintableObject(pending.baseline.detections.boxes)
+                    ) {
+                        // The handoff drops a detection when it still believes a box
+                        // is showing. If the overlay is blank, or it is painting a
+                        // different track than the lock, updateFrame still draws it.
+                        publish(pending.baseline.detections)
+                    }
                     val more = handoff.hasPending() || pendingDetection.get() != null
                     if (!more) break
                 }
@@ -386,11 +479,12 @@ class OverlayTrackingService : Service() {
         "g${stages.median("g")} y${stages.median("y")} ai${stages.median("ai")} m${stages.median("m")} d${stages.median("d")}ms"
 
     private fun publish(frame: FrameDetections) {
-        lastBoxCount = frame.boxes.count { it.kind == "object" }
-        Log.i(TAG, "publish boxes=$lastBoxCount seq=${frame.sequence}")
+        val objects = frame.boxes.count { it.kind == "object" }
+        Log.i(TAG, "publish boxes=$objects seq=${frame.sequence}")
         mainHandler.post {
             if (!running) return@post
             val note = overlay?.updateFrame(frame)
+            lastBoxCount = overlay?.drawnBoxCount() ?: 0
             if (!note.isNullOrBlank()) report(note)
         }
     }
@@ -472,11 +566,11 @@ class OverlayTrackingService : Service() {
         }
         val snapshot = currentSnapshot()
         val diagnosis = OverlayDiagnostics.diagnose(snapshot)
-        val extra = listOf(lastMetrics, lastProgress)
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-            .joinToString(" | ")
+        val extra = OptionalModelFault.notificationExtra(
+            lastMetrics,
+            lastProgress,
+            stageFaults.summary(),
+        )
         val line = OverlayDiagnostics.notificationLine(snapshot, diagnosis, extra)
         lastStatus = line
         overlay?.setProbe(OverlayDiagnostics.probeLines(snapshot, diagnosis))
@@ -612,5 +706,87 @@ class OverlayTrackingService : Service() {
             private set
         @Volatile var lastStatus: String = "Overlay not started"
             private set
+    }
+}
+
+/**
+ * Lock id the detection frame publishes.
+ *
+ * The overlay applies a new lock on the main thread. A read that runs before
+ * that update is visible still returns the previous target, and motion then
+ * draws the previous box. [applyLock] has to make the new id visible before
+ * [readLock]. [deferDraw] only queues pixels; it is not what reveals the id.
+ */
+internal object OverlayFrameSelection {
+    fun lockIdForFrame(
+        applyLock: () -> Unit,
+        readLock: () -> Int?,
+        deferDraw: (lockId: Int?) -> Unit,
+    ): Int? {
+        applyLock()
+        val lockId = readLock()
+        deferDraw(lockId)
+        return lockId
+    }
+}
+
+/**
+ * Outcome of waiting until the main thread has stored this frame's lock id.
+ * The previous id is not an input. A wait that ends before the update runs
+ * is not applied, so motion cannot publish that previous box for this detection.
+ */
+internal object MainThreadLockWait {
+    data class Result(val applied: Boolean, val lockId: Int?)
+
+    fun finish(
+        posted: Boolean,
+        interrupted: Boolean,
+        updateRan: Boolean,
+        idAfterUpdate: Int?,
+    ): Result {
+        // Interrupted after the update still has the stored id. Interrupted
+        // before it, or a rejected post, must not fall back to an older id.
+        val stoppedBeforeStore = interrupted && !updateRan
+        val applied = posted && updateRan && !stoppedBeforeStore
+        return if (applied) {
+            Result(applied = true, lockId = idAfterUpdate)
+        } else {
+            Result(applied = false, lockId = null)
+        }
+    }
+
+    /** False means this detection must not be queued onto the motion thread. */
+    fun queueDetection(result: Result): Boolean = result.applied
+}
+
+/**
+ * Hand and face failures stay on [VisionPipeline.lastOptionalFault] so object
+ * boxes can still return. The notification reads stage faults, so the service
+ * has to copy that string across. A blank value clears both optional stages.
+ */
+internal object OptionalModelFault {
+    fun apply(faults: StageFaults, lastOptionalFault: String?) {
+        val text = lastOptionalFault?.trim().orEmpty()
+        faults.clear("hands")
+        faults.clear("faces")
+        if (text.isEmpty()) return
+        val stage = when {
+            text.startsWith("faces:") -> "faces"
+            text.startsWith("hands:") -> "hands"
+            else -> "hands"
+        }
+        val message = text.removePrefix("$stage:").trim().ifEmpty { text }
+        faults.fail(stage, message)
+    }
+
+    fun notificationExtra(metrics: String, progress: String, stageSummary: String): String {
+        val optional = stageSummary.split(';')
+            .map { it.trim() }
+            .filter { line -> line.startsWith("hands:") || line.startsWith("faces:") }
+        return (listOf(metrics, progress) + optional)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString(" | ")
     }
 }
