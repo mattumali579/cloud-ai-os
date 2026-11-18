@@ -2,8 +2,13 @@ name: Visor Tracker Android
 
 on:
   push:
+    branches:
+      - "**"
     tags:
       - "visor-tracker-v*"
+    paths:
+      - "experiments/visor-tracker-android/**"
+      - ".github/workflows/visor-tracker-android.yml"
   pull_request:
     paths:
       - "experiments/visor-tracker-android/**"
@@ -70,7 +75,12 @@ jobs:
           VISOR_SIGNING_STORE_PASSWORD: ${{ secrets.VISOR_TRACKER_STORE_PASSWORD }}
           VISOR_SIGNING_KEY_ALIAS: ${{ secrets.VISOR_TRACKER_KEY_ALIAS }}
           VISOR_SIGNING_KEY_PASSWORD: ${{ secrets.VISOR_TRACKER_KEY_PASSWORD }}
-        run: gradle --no-daemon assembleRelease testDebugUnitTest
+        run: |
+          gradle --no-daemon assembleRelease testDebugUnitTest
+          xml="app/build/test-results/testDebugUnitTest/TEST-com.mattumali.visortracker.PipelineReplayTest.xml"
+          test -f "$xml"
+          grep -q 'failures="0"' "$xml"
+          grep -q 'errors="0"' "$xml"
       - name: Verify the stable signing certificate on tagged releases
         if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
         working-directory: experiments/visor-tracker-android
