@@ -7,7 +7,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -39,8 +38,8 @@ class DetectorOverlaySimulationTest {
             appendLine("model returns ${objects.size} object(s) on ${result.width}x${result.height}")
             appendLine("selected ID ${objects.firstOrNull()?.trackId}")
         }
-        assertTrue("detector did not finish within 60s\n$stage", elapsed < 60_000)
-        assertTrue("EfficientDet-Lite0 returned no object on people.jpg\n$stage", objects.isNotEmpty())
+        assertTrue("detector did not finish within 60s\\n$stage", elapsed < 60_000)
+        assertTrue("EfficientDet-Lite0 returned no object on people.jpg\\n$stage", objects.isNotEmpty())
         assertTrue(result.width > 0 && result.height > 0)
 
         val view = TrackingOverlayView(context)
@@ -55,16 +54,16 @@ class DetectorOverlaySimulationTest {
         val painted = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         view.draw(Canvas(painted))
         val green = countGreen(painted)
-        val full = stage + "published 1\nonDraw greenPixels=$green\n"
+        val full = stage + "published 1\\nonDraw greenPixels=$green\\n"
         File(context.filesDir, "detector-stage.txt").writeText(full)
         File(context.filesDir, "overlay-sim.png").outputStream().use {
             painted.compress(Bitmap.CompressFormat.PNG, 100, it)
         }
-        assertTrue("onDraw did not paint a box\n$full", green > 30)
+        assertTrue("onDraw did not paint a box\\n$full", green > 30)
     }
 
-    @Test fun oneBoxSwitchesFromAtoBOnlyAfterTwoDetectorFrames() {
-        val aim = AimLock()
+    @Test
+    fun productionSelectionSwitchesAtoBAndBackOnlyAfterTwoDetectorFrames() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val view = TrackingOverlayView(context)
         view.measure(
@@ -72,29 +71,66 @@ class DetectorOverlaySimulationTest {
             android.view.View.MeasureSpec.makeMeasureSpec(200, android.view.View.MeasureSpec.EXACTLY),
         )
         view.layout(0, 0, 200, 200)
-        val first = frame(box(1, 40f), box(2, 0f))
-        assertFalse(aim.observe(first).changed)
-        val locked = aim.observe(first)
-        assertEquals(1, locked.lockedId)
-        view.updateFrame(first.copy(boxes = listOf(first.boxes.first { it.trackId == 1 }), sequence = 2))
-        assertEquals(1, view.drawnBoxCount())
-        val towardB = frame(box(1, 0f), box(2, 40f))
-        assertEquals(1, aim.observe(towardB).lockedId)
-        val switched = aim.observe(towardB)
-        assertEquals(2, switched.lockedId)
-        val onlyB = towardB.copy(boxes = listOf(towardB.boxes.first { it.trackId == 2 }), sequence = 4)
-        view.updateFrame(onlyB)
-        assertEquals(1, view.drawnBoxCount())
-        val back = frame(box(1, 40f), box(2, 0f))
-        aim.observe(back)
-        assertEquals(1, aim.observe(back).lockedId)
+        val handoff = TrackingHandoff()
+        var sequence = 0L
+
+        fun detectorFrame(aX: Float, bX: Float): FrameDetections {
+            sequence += 1
+            return FrameDetections(
+                width = 100,
+                height = 100,
+                boxes = listOf(box(1, aX), box(2, bX)),
+                sequence = sequence,
+                capturedAtMs = sequence * 250,
+            )
+        }
+
+        // Follow the production service order: let the overlay inspect every
+        // detector candidate, offer the corresponding decoded frame, run the
+        // detector-to-motion handoff with the overlay's current lock, then draw
+        // the returned frame through TrackingOverlayView.updateFrame().
+        fun process(frame: FrameDetections): Int {
+            view.observeCandidates(frame)
+            val gray = GrayFrame(
+                width = frame.width,
+                height = frame.height,
+                bytes = ByteArray(frame.width * frame.height) { 127 },
+                sequence = frame.sequence,
+                capturedAtMs = frame.capturedAtMs,
+            )
+            handoff.offer(gray)
+            val event = handoff.pump(
+                nowMs = frame.capturedAtMs,
+                detection = DetectionBaseline(frame, gray),
+                lockedId = view.selectedTrackId(),
+            )
+            assertTrue("handoff did not publish detector frame #${frame.sequence}", event != null)
+            view.updateFrame(event!!.frame)
+            assertEquals("overlay must draw exactly one target", 1, view.drawnBoxCount())
+            assertEquals("handoff must publish the target selected by the lock",
+                view.selectedTrackId(), event.frame.boxes.single().trackId)
+            return event.frame.boxes.single().trackId
+        }
+
+        // A is centered twice, so the normal lock path acquires A.
+        assertEquals(1, process(detectorFrame(aX = 40f, bX = 80f)))
+        assertEquals(1, process(detectorFrame(aX = 40f, bX = 80f)))
+        assertEquals(1, view.selectedTrackId())
+
+        // B becomes centered. The first detector frame must retain A.
+        assertEquals(1, process(detectorFrame(aX = 0f, bX = 40f)))
+        // The second distinct detector frame completes the switch to B.
+        assertEquals(2, process(detectorFrame(aX = 0f, bX = 40f)))
+        assertEquals(2, view.selectedTrackId())
+
+        // Reversing the aim follows the same two-frame rule and returns to A.
+        assertEquals(2, process(detectorFrame(aX = 40f, bX = 80f)))
+        assertEquals(1, process(detectorFrame(aX = 40f, bX = 80f)))
+        assertEquals(1, view.selectedTrackId())
     }
 
     private fun box(id: Int, x: Float) =
         BoxObservation("object", "chair", 0.8f, x, 40f, x + 20f, 80f, trackId = id)
-
-    private fun frame(vararg boxes: BoxObservation) =
-        FrameDetections(100, 100, boxes.toList(), sequence = 1, capturedAtMs = 1)
 
     private fun countGreen(bitmap: Bitmap): Int {
         var count = 0
