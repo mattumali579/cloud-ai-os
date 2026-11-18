@@ -1,6 +1,8 @@
-# Visor tracker performance, version 0.27.0
+# Visor tracker performance, version 0.28.0
 
-Package `com.mattumali.visortracker.stable`, versionCode 27. These numbers are not Galaxy S22 Ultra, Visor Live View, or glasses measurements. A 5-minute thermal soak was not run. `adb devices` was empty, so no phone was measured. Phone battery and thermal throttling were not measured.
+Package `com.mattumali.visortracker.stable`, versionCode 28, versionName 0.28.0. The sections through commit `7e627cf` are the 0.26 and 0.27 history. The 0.28 measurement is at the bottom.
+
+These numbers are emulator or JVM results. They are not Galaxy S22 Ultra, Visor Live View, or glasses measurements. A 5-minute thermal soak was not run. `adb devices` was empty, so no phone was measured. Phone battery and thermal throttling were not measured.
 
 No neural-network fine-tuning was done. There is no labeled training set and no training environment. Model weights are unchanged.
 
@@ -71,3 +73,39 @@ The same tracker code was measured again on commit `7e627cf`, run `44279416931`,
 - The 320 px probe still found the ray (`hand320Ms=818`). Production stayed at 640.
 
 The two emulator samples of the same code are 6.41 and 3.67 detect-only fps, and 1,016 ms and 741 ms to switch. Both are one detect instead of the 0.26.0 two-detect 2,528 ms. Neither switch is under 500 ms. The spread is emulator variance, not a phone result.
+
+## Before, emulator, version 0.27.0, people.jpg, commit 4f12d5b
+
+Run `44281848467`, instrumentation `OK (4 tests)`. This is the baseline 0.28 was measured against.
+
+- Known-target switch reused the previous detection. `switchToBMs=725`. One detect pass: objects 481 ms, hand 167 ms.
+- 60 s replay: detect-only 7.10 fps, wall fps including draw and motion 6.86. An earlier run of similar code hit 3.50 wall fps while also timing a 320 px hand probe. The emulator rate moves.
+- GPU hand init did not stick (`attempted=GPU`, `fallbacks=1`, `handDelegate=CPU`). Object detector stayed CPU.
+- Ray locked person #1. Center object was person #2. Hand score about 0.931. Overlay about 17,526 white pixels and 3,506 cyan ray pixels.
+- Architecture left in place: one worker, IMAGE mode, `numHands=2`, hand long side 640, EfficientDet Lite0 at 384 / score 0.25, AimLock `knownReplacementFrames=2`, occlusion hold 3 when nothing else is visible, GestureGate release after 4 closed-fist frames.
+
+## After, unit tests, version 0.28.0
+
+`testDebugUnitTest`: 191 tests, 0 failures, 0 errors. Simulator `node --test policy.test.js`: 7 tests, 0 failures. The two new policy tests reject a result that arrives after a newer camera tick is already due.
+
+## After, emulator, people.jpg, x86_64, commit 9130589
+
+Instrumentation `OK (4 tests)`. Run `44358229072` (push). Artifact `visor-detector-simulation` id `14452594472`. A pull-request run of the same SHA, `44358246250`, also finished success. This is an emulator replay of `people.jpg`. It is not a phone rate.
+
+Pointing replay (`pointing-stage.txt`):
+
+- Ray target person #1. Center target person #2. Lock A stayed on #1 through the 36 px shift. After the cover, lock B was person #2. Hand score 0.9314127. Five index joints present. Overlay 17,526 white pixels on the locked box, 3,506 cyan ray pixels.
+- The cover changed 48 of 64 samples, so the fresh replacement skipped EfficientDet. `objectSkipped=true`, `objectMs=0`, `handMs=573`, `skipWallMs=631`, `switchToBMs=664`, `switchDetectPasses=1`, `reusedKnownFrame=true`. Production AimLock still made the second observation on that frame.
+- 664 ms is above the 500 ms goal. The object model was skipped. The remaining hand pass on that switch took 573 ms, so the wall time could not land under 500 ms on this run.
+- First detect on this job was 1,346 ms (objects 1,156 ms, hand 792 ms, wall 1,289 ms with overlap). Steady-state medians over the 60 s loop: bitmap 2 ms, object 55 ms, hand 34 ms, wall 57 ms, motion 0 ms, lock 0 ms, draw 0 ms. YUV was not measured because this replay has no camera.
+- 60,013 ms replay: 328 object inferences and 328 hand inferences. Detect-only 5.72 fps (`detectMs=57326`). Wall fps including draw and motion 5.47. Draw and motion are the same 5.47 and are not a separate camera rate. 65 invalid frames, all recovered.
+- Hand delegate CPU after one GPU attempt (`attempted=GPU`, `fallbacks=1`). Object delegate CPU. Running mode IMAGE. `numHands=2`. Hand long side 640. Overlap true.
+- One-shot CPU probes, each a new pipeline, all kept person #1, the ray, and five joints: 2 hands at 640 px took 72 ms, 1 hand at 640 px took 35 ms, 2 hands at 384 px took 40 ms, 2 hands at 320 px took 34 ms. The earlier emulator sample of the same probe block was 57, 40, 29, and 34 ms. 384 won once and lost once. The 60 s median hand time at 640 px was 34 ms on this run and 28 ms on the earlier sample, which is the same band as the 320 px one-shot. Production stayed at 640 px and 2 hands.
+- Sequential probe wall 82 ms (object 49, hand 29). Overlap median wall on the 60 s loop was 57 ms. Overlap stayed. No native crash. The lock stayed on person #1 until the cover, then moved to person #2.
+- LIVE_STREAM and VIDEO were not retried. The GPU attempt on the emulator failed again and was not repeated. A phone is the remaining GPU test.
+
+An earlier emulator sample of the overlap code, before the cover threshold moved from 64 to 40, is commit `58772f6`, run `44356127790`, artifact `14453091983`. The dark cover changed too few samples, `regionObscured=false`, and the switch still ran EfficientDet: `switchToBMs=679`, objects 629 ms, hand 298 ms. That job's 60 s loop was detect-only 7.53 fps and wall 7.20 fps, with median wall 49 ms. The threshold change does not alter the 60 s loop. The two detect-only samples of this architecture are 7.53 and 5.72 fps. That spread is emulator variance.
+
+Release APK artifact `visor-tracker-apk` id `14453443139` on run `44358229072`: `com.mattumali.visortracker.stable`, versionCode 28, versionName 0.28.0, signer SHA-256 `afb36d6baa0eb0b14e038ea7b141bc92662350bdfdf9be30151bb7d759a02308`. Publish stayed skipped. No release tag was created.
+
+No neural-network training was done. Model weights are unchanged. The finger ray is still 2D on the camera image. The Three.js page does not run MediaPipe. Glasses and Visor Live View were not tested. A 5-minute soak was not run.
