@@ -124,8 +124,6 @@ class AimLockTest {
         assertEquals(2, aim.observe(picture).lockedId)
         val gone = frame(other)
         assertEquals(2, aim.observe(gone).lockedId)
-        assertEquals(2, aim.observe(gone).lockedId)
-        assertEquals(2, aim.observe(gone).lockedId)
         val acquired = aim.observe(gone)
         assertEquals(7, acquired.lockedId)
         assertTrue(acquired.changed)

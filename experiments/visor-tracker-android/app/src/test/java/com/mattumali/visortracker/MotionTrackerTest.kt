@@ -29,6 +29,20 @@ class MotionTrackerTest {
         assertEquals(32f, moved.boxes.first().left, 1.1f)
     }
 
+    @Test fun measuredShiftLandsInTheSameFrame() {
+        val shift = MeasuredSmooth.translation(10f, -4f)
+        assertEquals(10f, shift.first, 0.01f)
+        assertEquals(-4f, shift.second, 0.01f)
+        val tracker = MotionTracker()
+        tracker.reset(FrameDetections(100, 80, listOf(
+            BoxObservation("object", "box", 0.9f, 30f, 30f, 50f, 50f, trackId = 3)
+        )), patterned(0))
+        val moved = tracker.advance(patterned(10))
+        assertNotNull(moved)
+        assertEquals(3, moved!!.boxes.first().trackId)
+        assertEquals(40f, moved.boxes.first().left, 1.1f)
+    }
+
     @Test fun followsAHeadTurnBeyondTheOldSixPixelWindow() {
         val tracker = MotionTracker()
         tracker.reset(FrameDetections(100, 80, listOf(

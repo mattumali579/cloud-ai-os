@@ -270,6 +270,11 @@ class DetectorOverlaySimulationTest {
             }
             report.appendLine("frame ${first.width}x${first.height} photo ${base.width}x${base.height}")
             report.appendLine("firstDetectMs=$firstMs objectMs=${pipeline.lastObjectMs} handMs=${pipeline.lastHandMs}")
+            report.appendLine(
+                "handDelegate=${pipeline.handDelegate} attempted=${pipeline.handDelegateAttempt} " +
+                    "fallbacks=${pipeline.handFallbacks} objectDelegate=${pipeline.objectDelegate}",
+            )
+            report.appendLine("delegateNote=phone battery and thermal throttling were not measured")
             report.appendLine("hands=${hands.size} objects=${objects.size} fault=${pipeline.lastOptionalFault}")
             objects.forEach { report.appendLine("object #${it.trackId} ${it.label} ${it.score} ${it.left},${it.top},${it.right},${it.bottom}") }
             hands.forEach { hand ->
@@ -316,13 +321,19 @@ class DetectorOverlaySimulationTest {
             val switchStarted = android.os.SystemClock.elapsedRealtime()
             var replacement: Int? = null
             var switchMs = 0L
+            var switchPasses = 0
+            var knownCandidateFrames = 0
             try {
                 repeat(8) {
                     if (replacement != null) return@repeat
+                    switchPasses++
                     val frame = pipeline.detect(covered)
+                    val oldVisible = frame.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
+                    val otherVisible = frame.boxes.any { it.kind == "object" && it.trackId > 0 && it.trackId != pointed.trackId }
+                    if (!oldVisible && otherVisible) knownCandidateFrames++
                     val decision = aim.observe(frame)
                     val visible = frame.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
-                    report.appendLine("occluded lock=${decision.lockedId} visible=$visible")
+                    report.appendLine("occluded lock=${decision.lockedId} visible=$visible knownFrames=$knownCandidateFrames")
                     if (decision.lockedId != null && decision.lockedId != pointed.trackId &&
                         frame.boxes.any { it.kind == "object" && it.trackId == decision.lockedId }
                     ) {
@@ -335,6 +346,7 @@ class DetectorOverlaySimulationTest {
                 covered.recycle()
             }
             report.appendLine("lockB=$replacement switchToBMs=$switchMs")
+            report.appendLine("switchDetectPasses=$switchPasses knownCandidateFrames=$knownCandidateFrames")
             save()
             assertTrue("covering the pointed object did not acquire the other one\n$report", replacement != null)
 
@@ -404,6 +416,11 @@ class DetectorOverlaySimulationTest {
             report.appendLine("handFps=${"%.2f".format(java.util.Locale.US, handCalls * 1000f / elapsed)}")
             report.appendLine("objectFrames=$objectFrames invalidFrames=$invalidFrames recovered=$recovered")
             report.appendLine("droppedFrames=$invalidFrames")
+            val runtime = Runtime.getRuntime()
+            val usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+            report.appendLine("heapUsedMb=$usedMb")
+            report.appendLine("thermalSoak=not-run needs-phone")
+            report.appendLine("frameAgeNote=lastObjectMs and lastHandMs are emulator detect latency, not phone frame age")
             save()
             assertTrue("sustained run was shorter than 60s\n$report", elapsed >= 60_000)
             assertTrue("object detector stopped\n$report", objectCalls >= 2 && objectFrames >= 2)

@@ -23,6 +23,7 @@ import android.service.quicksettings.TileService
 import android.view.Gravity
 import android.view.WindowManager
 import com.macedonga.visor.kit.LiveVideoDecoder
+import java.io.File
 import com.macedonga.visor.kit.Visor
 import com.macedonga.visor.kit.protocol.LiveConfig
 import com.macedonga.visor.kit.protocol.LiveQuality
@@ -48,8 +49,10 @@ import kotlinx.coroutines.launch
  * No camera server, no second phone camera session, no JPEG polling and no user
  * token sent over the network. The VDK requires a one-time CAMERA scope grant.
  * Decoding happens on an IO coroutine. The motion tracker steps the newest gray
- * frame. Object recognition stays at 5 Hz before a lock and 4 Hz after it, on a
- * separate worker, so a slow detection cannot block the camera frames.
+ * frame. Object recognition stays at 5 Hz before a lock and 4 Hz after it.
+ * Hands can run on the frames in between. One inference worker runs whichever
+ * model is due, because the detectors are not thread-safe and the YUV converter
+ * reuses one bitmap. A newer camera frame replaces the single waiting slot.
  */
 class OverlayTrackingService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -57,6 +60,9 @@ class OverlayTrackingService : Service() {
     private val motionWorker = Executors.newSingleThreadExecutor()
     private val motionBusy = AtomicBoolean(false)
     private val handoff = TrackingHandoff()
+    private val session = TrackerSession<VisionPipeline>()
+    private val queuedFrames = NewestFrameSlot<QueuedInference>()
+    private val failureLog by lazy { FailureLog(File(filesDir, "failure-examples")) }
     private data class PendingDetection(
         val baseline: DetectionBaseline,
         /** Lock id after this detection was applied. Motion must not re-read an older one. */
@@ -83,13 +89,14 @@ class OverlayTrackingService : Service() {
     }
 
     private var overlay: TrackingOverlayView? = null
-    private var pipeline: VisionPipeline? = null
     private var visor: Visor? = null
     private var streamJob: Job? = null
     private var running = false
     private var includeHandsFaces = false
     private var preset = DetectionPreset.FAST
-    private var lastOfferedAtMs = 0L
+    private var lastObjectOfferedAtMs = 0L
+    private var lastHandOfferedAtMs = 0L
+    private var lastSlotOfferAtMs = 0L
     private var lastReportAtMs = 0L
     @Volatile private var lastBoxCount = 0
     private var streamBeginMs = 0L
@@ -119,6 +126,19 @@ class OverlayTrackingService : Service() {
             } else {
                 lastStatus = "Start tracking and Live View before calibrating"
                 stopSelf(startId)
+            }
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_LABEL) {
+            val correct = intent.getIntExtra(EXTRA_CORRECT_ID, Int.MIN_VALUE)
+            if (correct == Int.MIN_VALUE) {
+                lastStatus = "Label needs the correct track id"
+            } else if (!running) {
+                lastStatus = "Start tracking before labeling a frame"
+                stopSelf(startId)
+            } else {
+                val saved = failureLog.labelLatest(correct)
+                report(if (saved != null) "Labeled frame as #$correct" else "No frame to label yet")
             }
             return START_NOT_STICKY
         }
@@ -183,7 +203,7 @@ class OverlayTrackingService : Service() {
                     if (!running) {
                         worker.execute { ready.close() }
                     } else {
-                        pipeline = ready
+                        session.attach(ready)
                         startVdk()
                     }
                 }
@@ -211,12 +231,15 @@ class OverlayTrackingService : Service() {
                 }
                 if (!running) return@launch
 
-                lastOfferedAtMs = 0L
+                lastObjectOfferedAtMs = 0L
+                lastHandOfferedAtMs = 0L
+                lastSlotOfferAtMs = 0L
                 lastReportAtMs = SystemClock.elapsedRealtime()
                 streamBeginMs = lastReportAtMs
                 decodedFrames.set(0)
                 inferenceFrames.set(0)
-                handoff.reset()
+                queuedFrames.poll()?.snapshot?.releasePlanes()
+                session.onReconnect(handoff)
                 handoff.metrics.snapshotAndReset()
                 liveConnected = true
                 report("VDK connected; waiting for Visor Live View")
@@ -252,93 +275,28 @@ class OverlayTrackingService : Service() {
 
                     val anchor = gray
                     val locked = overlay?.selectedTrackId() != null
-                    val inferenceDue = InferenceCadence.due(now, lastOfferedAtMs, locked)
-                    if (DetectorSchedule.shouldStart(inferenceDue, !processing.get()) &&
-                        processing.compareAndSet(false, true)
-                    ) {
-                        lastOfferedAtMs = now
-                        try {
-                            val snapshot = YuvSnapshot.capture(image)
-                            detectorBusy.set(true)
-                            worker.execute {
-                                var bitmap: Bitmap? = null
-                                try {
-                                    if (!running) return@execute
-                                    val yuvStarted = SystemClock.elapsedRealtime()
-                                    bitmap = snapshot.toBitmap(preset.maxFrameWidth)
-                                    stages.record("y", SystemClock.elapsedRealtime() - yuvStarted)
-                                    stageFaults.clear("yuv")
-                                    val aiStarted = SystemClock.elapsedRealtime()
-                                    val vision = pipeline ?: return@execute
-                                    val detections = vision.detect(bitmap)
-                                    stages.record("ai", SystemClock.elapsedRealtime() - aiStarted)
-                                    stageFaults.clear("detect")
-                                    // Object boxes already returned. A hand or face failure
-                                    // stays on the pipeline until this copies it into the
-                                    // notification. A later clean scan clears it.
-                                    OptionalModelFault.apply(stageFaults, vision.lastOptionalFault)
-                                    refreshFaults()
-                                    inferenceFrames.incrementAndGet()
-                                    totalInferences.incrementAndGet()
-                                    val objectCount = detections.boxes.count { it.kind == "object" }
-                                    rawDetections.set(objectCount)
-                                    Log.i(TAG, "detect objects=$objectCount seq=$sequence gray=${anchor != null}")
-                                    deviceLog("detect", "objects=$objectCount seq=$sequence gray=${anchor != null}")
-                                    val stamped = detections.copy(sequence = sequence, capturedAtMs = now)
-                                    // The posted lock update used to run after motion read
-                                    // selectedTrackId(), so this frame still drew the old box.
-                                    // Apply finishes before the id is read. An interrupted
-                                    // wait does not keep the id from before this frame.
-                                    val lockResult = AtomicReference(
-                                        MainThreadLockWait.Result(applied = false, lockId = null),
-                                    )
-                                    val lockId = OverlayFrameSelection.lockIdForFrame(
-                                        applyLock = { lockResult.set(applyDetectionLock(stamped)) },
-                                        readLock = { lockResult.get().lockId },
-                                        deferDraw = { _ ->
-                                            if (anchor == null) {
-                                                mainHandler.post {
-                                                    if (!running) return@post
-                                                    overlay?.updateFrame(stamped)
-                                                    lastBoxCount = overlay?.drawnBoxCount() ?: 0
-                                                }
-                                            }
-                                        },
-                                    )
-                                    val motionQueued = anchor != null &&
-                                        MainThreadLockWait.queueDetection(lockResult.get())
-                                    if (motionQueued) {
-                                        val baseline = DetectionBaseline(stamped, anchor)
-                                        if (pendingDetection.getAndSet(
-                                                PendingDetection(baseline, lockId)
-                                            ) != null
-                                        ) {
-                                            handoff.metrics.onStaleDetection()
-                                        }
-                                        scheduleMotion()
-                                    } else if (DetectionPublish.drawWithoutMotion(
-                                            objectCount, anchor != null, motionQueued,
-                                        )
-                                    ) {
-                                        // 0.22 and 0.23 drew this frame even when the lock
-                                        // update had not landed. Dropping it left video
-                                        // running and the overlay blank.
-                                        deviceLog("publish", "direct objects=$objectCount seq=$sequence")
-                                        publish(stamped)
+                    val pass = SplitSchedule.decide(now, lastObjectOfferedAtMs, lastHandOfferedAtMs, locked)
+                    if (pass != null) {
+                        val captureNewest = !processing.get() || now - lastSlotOfferAtMs >= SplitSchedule.HAND_MS
+                        if (captureNewest) {
+                            try {
+                                val queued = QueuedInference(
+                                    YuvSnapshot.capture(image), sequence, now, anchor,
+                                )
+                                if (processing.compareAndSet(false, true)) {
+                                    lastSlotOfferAtMs = now
+                                    scheduleDetection(queued)
+                                } else {
+                                    val displaced = queuedFrames.offer(queued)
+                                    if (displaced != null) {
+                                        displaced.snapshot.releasePlanes()
+                                        handoff.metrics.onTrackDrop(1)
                                     }
-                                } catch (error: Exception) {
-                                    stageFail("detect", "Decode/detection failed: " + (error.message ?: "unknown"))
-                                } finally {
-                                    snapshot.releasePlanes()
-                                    YuvSnapshot.recycleDetached(bitmap)
-                                    detectorBusy.set(false)
-                                    processing.set(false)
+                                    lastSlotOfferAtMs = now
                                 }
+                            } catch (error: Exception) {
+                                stageFail("yuv", "Hardware frame conversion failed: " + (error.message ?: "unknown"))
                             }
-                        } catch (error: Exception) {
-                            detectorBusy.set(false)
-                            processing.set(false)
-                            stageFail("yuv", "Hardware frame conversion failed: " + (error.message ?: "unknown"))
                         }
                     }
                     if (now - lastReportAtMs >= REPORT_MS) {
@@ -446,6 +404,107 @@ class OverlayTrackingService : Service() {
             idAfterUpdate = idAfter.get(),
             timedOut = timedOut && !updateRan.get(),
         )
+    }
+
+    private fun scheduleDetection(first: QueuedInference) {
+        worker.execute {
+            var frame: QueuedInference? = first
+            try {
+                while (running && frame != null) {
+                    runInference(frame)
+                    frame = queuedFrames.poll()
+                }
+            } finally {
+                frame?.snapshot?.releasePlanes()
+                processing.set(false)
+                val late = if (running) queuedFrames.poll() else queuedFrames.poll()?.also { it.snapshot.releasePlanes() }
+                if (late != null && running && processing.compareAndSet(false, true)) {
+                    scheduleDetection(late)
+                } else {
+                    late?.snapshot?.releasePlanes()
+                }
+            }
+        }
+    }
+
+    private fun runInference(frame: QueuedInference) {
+        var bitmap: Bitmap? = null
+        detectorBusy.set(true)
+        try {
+            if (!running) return
+            val locked = overlay?.selectedTrackId() != null
+            val pass = SplitSchedule.decide(
+                frame.capturedAtMs, lastObjectOfferedAtMs, lastHandOfferedAtMs, locked,
+            ) ?: ModelPass(objects = true, hands = true)
+            if (pass.objects) lastObjectOfferedAtMs = frame.capturedAtMs
+            if (pass.hands) lastHandOfferedAtMs = frame.capturedAtMs
+            val vision = session.pipeline ?: return
+            val yuvStarted = SystemClock.elapsedRealtime()
+            val limit = if (pass.objects) preset.maxFrameWidth else VisionPipeline.HAND_FRAME
+            bitmap = frame.snapshot.toBitmap(limit)
+            stages.record("y", SystemClock.elapsedRealtime() - yuvStarted)
+            stageFaults.clear("yuv")
+            val aiStarted = SystemClock.elapsedRealtime()
+            val detections = vision.detect(bitmap, runObjects = pass.objects, runHands = pass.hands)
+            stages.record("ai", SystemClock.elapsedRealtime() - aiStarted)
+            stageFaults.clear("detect")
+            OptionalModelFault.apply(stageFaults, vision.lastOptionalFault)
+            refreshFaults()
+            inferenceFrames.incrementAndGet()
+            totalInferences.incrementAndGet()
+            val objectCount = detections.boxes.count { it.kind == "object" }
+            rawDetections.set(objectCount)
+            Log.i(
+                TAG,
+                "detect objects=$objectCount hands=${pass.hands} objectsRan=${pass.objects} " +
+                    "handDelegate=${vision.handDelegate} seq=${frame.sequence}",
+            )
+            deviceLog(
+                "detect",
+                "objects=$objectCount seq=${frame.sequence} objectsRan=${pass.objects} hands=${pass.hands} " +
+                    "handDelegate=${vision.handDelegate}",
+            )
+            val stamped = detections.copy(sequence = frame.sequence, capturedAtMs = frame.capturedAtMs)
+            val fresh = session.fusion.offer(stamped, SystemClock.elapsedRealtime())
+            if (fresh == null) {
+                handoff.metrics.onStaleDetection()
+                deviceLog("drop", "stale seq=${frame.sequence}")
+                return
+            }
+            val anchor = frame.gray
+            val lockResult = AtomicReference(MainThreadLockWait.Result(applied = false, lockId = null))
+            val lockId = OverlayFrameSelection.lockIdForFrame(
+                applyLock = { lockResult.set(applyDetectionLock(fresh)) },
+                readLock = { lockResult.get().lockId },
+                deferDraw = { _ ->
+                    if (anchor == null) {
+                        mainHandler.post {
+                            if (!running) return@post
+                            overlay?.updateFrame(fresh)
+                            lastBoxCount = overlay?.drawnBoxCount() ?: 0
+                        }
+                    }
+                },
+            )
+            failureLog.remember(fresh, lockId)
+            val motionQueued = anchor != null && MainThreadLockWait.queueDetection(lockResult.get())
+            if (motionQueued) {
+                val baseline = DetectionBaseline(fresh, anchor)
+                if (pendingDetection.getAndSet(PendingDetection(baseline, lockId)) != null) {
+                    handoff.metrics.onStaleDetection()
+                }
+                scheduleMotion()
+            } else if (DetectionPublish.drawWithoutMotion(objectCount, anchor != null, motionQueued)) {
+                deviceLog("publish", "direct objects=$objectCount seq=${frame.sequence}")
+                publish(fresh)
+            }
+        } catch (error: Exception) {
+            stageFail("detect", "Decode/detection failed: " + (error.message ?: "unknown"))
+        } finally {
+            frame.snapshot.releasePlanes()
+            YuvSnapshot.recycleDetached(bitmap)
+            detectorBusy.set(false)
+        }
     }
 
     private fun scheduleMotion() {
@@ -687,6 +746,7 @@ class OverlayTrackingService : Service() {
         visor = null
         try { applicationContext.unregisterComponentCallbacks(displayCallbacks) } catch (_: Exception) { }
         handoff.reset()
+        queuedFrames.poll()?.snapshot?.releasePlanes()
         overlay?.let {
             it.clear()
             try { windows.removeViewImmediate(it) } catch (_: Exception) { }
@@ -694,8 +754,7 @@ class OverlayTrackingService : Service() {
         overlay = null
         overlayAttached = false
         liveConnected = false
-        val old = pipeline
-        pipeline = null
+        val old = session.detach()
         if (old != null) worker.execute { old.close() }
         worker.shutdown()
         motionWorker.shutdown()
@@ -722,7 +781,9 @@ class OverlayTrackingService : Service() {
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
         const val ACTION_CALIBRATE = "com.mattumali.visortracker.CALIBRATE_DISTANCE"
         const val ACTION_CLEAR_DISTANCE = "com.mattumali.visortracker.CLEAR_DISTANCE"
+        const val ACTION_LABEL = "com.mattumali.visortracker.LABEL_FRAME"
         const val EXTRA_REFERENCE_FEET = "measured_reference_feet"
+        const val EXTRA_CORRECT_ID = "correct_track_id"
         const val EXTRA_ALL_DETECTORS = "all_detectors"
         private const val CHANNEL_ID = "visor_tracker_high_fps"
         private const val NOTIFICATION_ID = 4421
@@ -797,6 +858,13 @@ internal object DetectionPublish {
     fun drawWithoutMotion(objectCount: Int, hasGrayAnchor: Boolean, motionQueued: Boolean): Boolean =
         objectCount > 0 && hasGrayAnchor && !motionQueued
 }
+
+private data class QueuedInference(
+    val snapshot: YuvSnapshot,
+    val sequence: Long,
+    val capturedAtMs: Long,
+    val gray: GrayFrame?,
+)
 
 /**
  * Hand and face failures stay on [VisionPipeline.lastOptionalFault] so object

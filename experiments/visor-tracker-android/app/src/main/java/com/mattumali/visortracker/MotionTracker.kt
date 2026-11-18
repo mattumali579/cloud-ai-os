@@ -218,7 +218,7 @@ class MotionTracker(
             dx = 0
             dy = 0
         }
-        return dx * ratioX to dy * ratioY
+        return MeasuredSmooth.translation(dx * ratioX, dy * ratioY)
     }
 
     private fun matchPatch(

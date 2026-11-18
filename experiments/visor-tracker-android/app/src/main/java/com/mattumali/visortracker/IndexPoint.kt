@@ -36,16 +36,21 @@ object IndexPoint {
 
     private val OTHER_TIPS = intArrayOf(12, 16, 20)
 
-    fun ray(frame: FrameDetections): PointingRay? {
+    fun ray(frame: FrameDetections, minScore: Float = MIN_SCORE): PointingRay? {
         if (frame.width <= 0 || frame.height <= 0) return null
-        val hands = frame.boxes.filter { it.kind == "hand" && !it.held && it.score >= MIN_SCORE }
-        return hands.mapNotNull { extended(it, frame.width, frame.height) }
+        val hands = frame.boxes.filter { it.kind == "hand" && !it.held && it.score >= minScore }
+        return hands.mapNotNull { extended(it, frame.width, frame.height, minScore) }
             .maxByOrNull { it.reach }
     }
 
-    fun extended(hand: BoxObservation, frameWidth: Int, frameHeight: Int): PointingRay? {
+    fun extended(
+        hand: BoxObservation,
+        frameWidth: Int,
+        frameHeight: Int,
+        minScore: Float = MIN_SCORE,
+    ): PointingRay? {
         val points = hand.points
-        if (points.size < 21 || hand.score < MIN_SCORE) return null
+        if (points.size < 21 || hand.score < minScore) return null
         val wrist = points[WRIST]
         val mcp = points[INDEX_MCP]
         val pip = points[INDEX_PIP]
@@ -81,6 +86,7 @@ object IndexPoint {
         ray: PointingRay,
         objects: List<BoxObservation>,
         preferId: Int?,
+        hysteresis: Float = RAY_HYSTERESIS,
     ): BoxObservation? {
         val hits = objects.mapNotNull { box ->
             if (!pointable(box)) return@mapNotNull null
@@ -90,7 +96,7 @@ object IndexPoint {
         if (hits.isEmpty()) return null
         val closest = hits.minWith(compareBy<Pair<BoxObservation, Float>> { it.second }.thenBy { it.first.trackId })
         val preferred = hits.firstOrNull { it.first.trackId == preferId }
-        if (preferred != null && preferred.second <= closest.second * RAY_HYSTERESIS + 8f) return preferred.first
+        if (preferred != null && preferred.second <= closest.second * hysteresis + 8f) return preferred.first
         return closest.first
     }
 
@@ -152,5 +158,5 @@ object IndexPoint {
         return (ax * bx + ay * by) / denom
     }
 
-    private const val RAY_HYSTERESIS = 1.35f
+    const val RAY_HYSTERESIS = 1.35f
 }

@@ -9,3 +9,28 @@ object DetectorSchedule {
     fun shouldStart(inferenceDue: Boolean, workerFree: Boolean): Boolean =
         inferenceDue && workerFree
 }
+
+data class ModelPass(val objects: Boolean, val hands: Boolean)
+
+/**
+ * Hands and objects do not share one cadence.
+ * After a lock, object detection stays on [InferenceCadence] (4 Hz). Hands can
+ * run on the frames in between so a finger update does not wait for EfficientDet.
+ * Both still run on one inference worker: MediaPipe IMAGE mode is not thread-safe
+ * on one detector, and the YUV converter reuses one bitmap.
+ */
+object SplitSchedule {
+    const val HAND_MS = 66L
+
+    fun decide(
+        nowMs: Long,
+        lastObjectMs: Long,
+        lastHandMs: Long,
+        locked: Boolean,
+    ): ModelPass? {
+        val hands = lastHandMs <= 0L || nowMs - lastHandMs >= HAND_MS
+        val objects = InferenceCadence.due(nowMs, lastObjectMs, locked)
+        if (!hands && !objects) return null
+        return ModelPass(objects = objects, hands = hands)
+    }
+}

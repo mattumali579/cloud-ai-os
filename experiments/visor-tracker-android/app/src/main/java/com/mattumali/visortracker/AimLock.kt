@@ -13,6 +13,19 @@ class AimLock(
     private val acquireFrames: Int = 2,
     private val switchFrames: Int = 2,
     private val lostFramesLimit: Int = 3,
+    /**
+     * Frames required once the locked id is already gone and another object is
+     * in this frame. Two rejects a one-frame flicker. This is not added on top
+     * of [lostFramesLimit]. The occlusion hold remains only when no replacement
+     * is visible.
+     *
+     * TrackerTuner accepted 2. The 0.25 path waited out the occlusion hold and
+     * then the acquire dwell, which is why an emulator spent 4062 ms on several
+     * full detect() calls.
+     */
+    private val knownReplacementFrames: Int = 2,
+    private val minHandScore: Float = IndexPoint.MIN_SCORE,
+    private val rayHysteresis: Float = IndexPoint.RAY_HYSTERESIS,
 ) {
     var lockedId: Int? = null
         private set
@@ -36,29 +49,38 @@ class AimLock(
             !box.held && box.kind == "object" && box.trackId > 0 &&
                 box.right > box.left && box.bottom > box.top
         }
-        val ray = IndexPoint.ray(frame)
+        val ray = IndexPoint.ray(frame, minHandScore)
         val current = lockedId
         val visible = current != null && objects.any { it.trackId == current }
         if (current != null && !visible) {
-            lostFrames += 1
-            if (lostFrames < lostFramesLimit) {
-                pendingId = null
-                pendingCount = 0
-                return AimDecision(current, changed = false)
+            val next = if (ray != null) {
+                IndexPoint.alongRay(ray, objects, preferId = null, hysteresis = rayHysteresis)?.trackId
+            } else {
+                IndexPoint.replacement(objects, current)?.trackId
             }
-            val next = IndexPoint.replacement(objects, current)?.trackId
-            if (next == null) {
-                lockedId = null
-                fingerLocked = false
-                pendingId = null
-                pendingCount = 0
+            if (next != null) {
+                // The replacement is already in this frame. Do not wait out the
+                // occlusion hold and then acquire again.
                 lostFrames = 0
-                return AimDecision(null, changed = true)
+                val decision = commit(next, current, knownReplacementFrames)
+                if (ray != null && decision.changed && decision.lockedId == next) fingerLocked = true
+                return decision
             }
-            return commit(next, current, acquireFrames)
+            pendingId = null
+            pendingCount = 0
+            lostFrames += 1
+            if (lostFrames < lostFramesLimit) return AimDecision(current, changed = false)
+            lockedId = null
+            fingerLocked = false
+            lostFrames = 0
+            return AimDecision(null, changed = true)
         }
         lostFrames = 0
-        val rayTarget = if (ray != null) IndexPoint.alongRay(ray, objects, current)?.trackId else null
+        val rayTarget = if (ray != null) {
+            IndexPoint.alongRay(ray, objects, current, rayHysteresis)?.trackId
+        } else {
+            null
+        }
         val handPresent = frame.boxes.any { it.kind == "hand" && !it.held && it.points.size >= 21 }
         val aimed = when {
             rayTarget != null -> rayTarget
