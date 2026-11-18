@@ -173,7 +173,12 @@ class OverlayTrackingService : Service() {
         report("Loading " + preset.name.lowercase() + " detector (VDK video up to 30 FPS)")
         worker.execute {
             try {
-                val ready = VisionPipeline(applicationContext, includeHandsFaces, preset)
+                val ready = VisionPipeline(
+                    applicationContext,
+                    includeFaces = includeHandsFaces,
+                    preset = preset,
+                    includeHands = true,
+                )
                 mainHandler.post {
                     if (!running) {
                         worker.execute { ready.close() }

@@ -4,6 +4,12 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.25: point with the index finger
+
+Version code 25. Same package `com.mattumali.visortracker.stable` and the same signing certificate as 0.23 and 0.24.
+
+MediaPipe Hand Landmarker runs on the CPU delegate with EfficientDet. An extended index finger, with the other fingers curled, builds a 2D ray from the fingertip. The object that ray enters is the lock after two steady frames. The lock stays when the hand drops, follows that track while it moves, and after a short miss takes the next visible object by score, then size, then track id. With no hand landmarks, the center of the picture still locks. The ray is not a 3D direction. Overlapping objects along it stay ambiguous. The phone and glasses are not part of this check.
+
 ## Architecture
 
 - Official **Visor Development Kit (VDK) v0.1.1** from Maven Central: `com.macedonga.visor:kit:0.1.1`.

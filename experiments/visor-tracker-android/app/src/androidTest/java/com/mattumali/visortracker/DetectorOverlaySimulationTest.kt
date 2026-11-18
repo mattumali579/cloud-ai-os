@@ -238,6 +238,227 @@ class DetectorOverlaySimulationTest {
         assertEquals(1, view.selectedTrackId())
     }
 
+    /**
+     * Real Hand Landmarker and EfficientDet on people.jpg, which shows an
+     * extended index finger aimed across two people. The production ray and
+     * AimLock select one person, keep that id while the picture shifts, then
+     * take the remaining person after the first one is covered.
+     */
+    @Test(timeout = 240_000)
+    fun realHandPointsAtOneObjectThenTheOtherIsAcquired() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val base = instrumentation.context.assets.open("people.jpg").use { BitmapFactory.decodeStream(it) }
+        assertTrue(base != null && base.width > 32)
+        val pipeline = VisionPipeline(context, includeFaces = false, preset = DetectionPreset.FAST, includeHands = true)
+        val report = StringBuilder()
+        fun save(extra: String = "") {
+            File(context.filesDir, "pointing-stage.txt").writeText(report.toString() + extra)
+        }
+        try {
+            val firstStarted = android.os.SystemClock.elapsedRealtime()
+            val first = pipeline.detect(base)
+            val firstMs = android.os.SystemClock.elapsedRealtime() - firstStarted
+            val hands = first.boxes.filter { it.kind == "hand" && it.points.size >= 21 }
+            val objects = first.boxes.filter { it.kind == "object" && it.trackId > 0 }
+            val ray = IndexPoint.ray(first)
+            val pointed = if (ray == null) null else IndexPoint.alongRay(ray, first.boxes, null)
+            val center = objects.minByOrNull { box ->
+                val cx = (box.left + box.right) / (2f * first.width) - 0.5f
+                val cy = (box.top + box.bottom) / (2f * first.height) - 0.5f
+                cx * cx + cy * cy
+            }
+            report.appendLine("frame ${first.width}x${first.height} photo ${base.width}x${base.height}")
+            report.appendLine("firstDetectMs=$firstMs objectMs=${pipeline.lastObjectMs} handMs=${pipeline.lastHandMs}")
+            report.appendLine("hands=${hands.size} objects=${objects.size} fault=${pipeline.lastOptionalFault}")
+            objects.forEach { report.appendLine("object #${it.trackId} ${it.label} ${it.score} ${it.left},${it.top},${it.right},${it.bottom}") }
+            hands.forEach { hand ->
+                val wrist = hand.points[IndexPoint.WRIST]
+                val mcp = hand.points[IndexPoint.INDEX_MCP]
+                val pip = hand.points[IndexPoint.INDEX_PIP]
+                val dip = hand.points[IndexPoint.INDEX_DIP]
+                val tip = hand.points[IndexPoint.INDEX_TIP]
+                report.appendLine("hand score=${hand.score} wrist=$wrist mcp=$mcp pip=$pip dip=$dip tip=$tip")
+            }
+            if (ray != null) report.appendLine("ray tip=${ray.tipX},${ray.tipY} dir=${ray.dirX},${ray.dirY}")
+            report.appendLine("rayTarget=${pointed?.trackId} centerTarget=${center?.trackId}")
+            report.appendLine(IndexPoint.LIMITATION)
+            save()
+            assertTrue("Hand Landmarker returned no 21-point hand\n$report", hands.isNotEmpty())
+            assertTrue("index finger was not extended\n$report", ray != null && ray.joints.size == 5)
+            assertTrue("EfficientDet did not return two objects\n$report", objects.size >= 2)
+            assertTrue("finger ray did not meet an object\n$report", pointed != null)
+
+            val aim = AimLock()
+            val lockStarted = android.os.SystemClock.elapsedRealtime()
+            aim.observe(first)
+            val locked = aim.observe(first)
+            val pointToLockMs = android.os.SystemClock.elapsedRealtime() - lockStarted
+            report.appendLine("lockA=${locked.lockedId} fingerLocked=${aim.fingerLocked} pointToLockMs=$pointToLockMs")
+            save()
+            assertEquals("finger did not lock the object on the ray\n$report", pointed!!.trackId, locked.lockedId)
+            assertTrue(aim.fingerLocked)
+
+            val shifted = shift(base, 36)
+            val moved = try {
+                pipeline.detect(shifted)
+            } finally {
+                shifted.recycle()
+            }
+            val still = aim.observe(moved)
+            val stillThere = moved.boxes.any { it.kind == "object" && it.trackId == pointed.trackId }
+            report.appendLine("afterShift lock=${still.lockedId} targetStillVisible=$stillThere")
+            save()
+            assertTrue("shifted frame lost the pointed track\n$report", stillThere)
+            assertEquals("lock changed while the pointed object was still visible\n$report", pointed.trackId, still.lockedId)
+
+            val covered = cover(base, pointed, first.width, first.height)
+            val switchStarted = android.os.SystemClock.elapsedRealtime()
+            var replacement: Int? = null
+            var switchMs = 0L
+            try {
+                repeat(8) {
+                    if (replacement != null) return@repeat
+                    val frame = pipeline.detect(covered)
+                    val decision = aim.observe(frame)
+                    val visible = frame.boxes.filter { it.kind == "object" }.joinToString { "#${it.trackId}" }
+                    report.appendLine("occluded lock=${decision.lockedId} visible=$visible")
+                    if (decision.lockedId != null && decision.lockedId != pointed.trackId &&
+                        frame.boxes.any { it.kind == "object" && it.trackId == decision.lockedId }
+                    ) {
+                        replacement = decision.lockedId
+                        switchMs = android.os.SystemClock.elapsedRealtime() - switchStarted
+                        return@repeat
+                    }
+                }
+            } finally {
+                covered.recycle()
+            }
+            report.appendLine("lockB=$replacement switchToBMs=$switchMs")
+            save()
+            assertTrue("covering the pointed object did not acquire the other one\n$report", replacement != null)
+
+            val view = TrackingOverlayView(context)
+            view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(480, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(854, android.view.View.MeasureSpec.EXACTLY),
+            )
+            view.layout(0, 0, 480, 854)
+            view.observeCandidates(first.copy(sequence = 1, capturedAtMs = 1))
+            view.observeCandidates(first.copy(sequence = 2, capturedAtMs = 2))
+            view.updateFrame(first.copy(sequence = 2, capturedAtMs = 2))
+            val painted = Bitmap.createBitmap(480, 854, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(painted))
+            val projected = CoverGeometry.project(first.width, first.height, 480, 854, pointed)
+            val white = whitePixelsOnBox(painted, projected)
+            val cyan = countCyan(painted)
+            report.appendLine("overlay whiteOnLock=$white cyanRay=$cyan drawn=${view.drawnBoxCount()} selected=${view.selectedTrackId()}")
+            File(context.filesDir, "pointing-overlay.png").outputStream().use {
+                painted.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            painted.recycle()
+            save()
+            assertTrue("locked box was not painted white\n$report", white > 10)
+            assertTrue("pointing ray was not painted\n$report", cyan > 10)
+
+            val started = android.os.SystemClock.elapsedRealtime()
+            var invalidFrames = 0
+            var recovered = 0
+            var objectFrames = 0
+            var steps = 0
+            val beforeObjects = pipeline.objectInferences
+            val beforeHands = pipeline.handInferences
+            while (android.os.SystemClock.elapsedRealtime() - started < 60_000) {
+                if (steps % 5 == 4) {
+                    val junk = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
+                    junk.recycle()
+                    try {
+                        pipeline.detect(junk)
+                    } catch (_: Exception) {
+                        invalidFrames++
+                    }
+                }
+                steps++
+                val dx = (steps % 6) * 16
+                val sample = shift(base, dx)
+                try {
+                    val result = pipeline.detect(sample)
+                    if (result.boxes.any { it.kind == "object" }) {
+                        objectFrames++
+                        if (invalidFrames > recovered) recovered = invalidFrames
+                    }
+                } finally {
+                    sample.recycle()
+                }
+            }
+            val elapsed = android.os.SystemClock.elapsedRealtime() - started
+            val objectCalls = pipeline.objectInferences - beforeObjects
+            val handCalls = pipeline.handInferences - beforeHands
+            report.appendLine("elapsedMs=$elapsed")
+            report.appendLine("objectInferences=$objectCalls handInferences=$handCalls")
+            report.appendLine("objectFps=${"%.2f".format(java.util.Locale.US, objectCalls * 1000f / elapsed)}")
+            report.appendLine("handFps=${"%.2f".format(java.util.Locale.US, handCalls * 1000f / elapsed)}")
+            report.appendLine("objectFrames=$objectFrames invalidFrames=$invalidFrames recovered=$recovered")
+            report.appendLine("droppedFrames=$invalidFrames")
+            save()
+            assertTrue("sustained run was shorter than 60s\n$report", elapsed >= 60_000)
+            assertTrue("object detector stopped\n$report", objectCalls >= 2 && objectFrames >= 2)
+            assertTrue("hand landmarker stopped\n$report", handCalls >= 2)
+            assertTrue("pipeline did not recover from an invalid frame\n$report", invalidFrames >= 1 && recovered >= 1)
+        } finally {
+            save()
+            pipeline.close()
+        }
+    }
+
+    private fun cover(source: Bitmap, box: BoxObservation, frameWidth: Int, frameHeight: Int): Bitmap {
+        val out = source.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(out)
+        val paint = android.graphics.Paint().apply { color = android.graphics.Color.DKGRAY }
+        val sx = source.width.toFloat() / frameWidth
+        val sy = source.height.toFloat() / frameHeight
+        canvas.drawRect(
+            box.left * sx - 12f,
+            box.top * sy - 12f,
+            box.right * sx + 12f,
+            box.bottom * sy + 12f,
+            paint,
+        )
+        return out
+    }
+
+    private fun whitePixelsOnBox(bitmap: Bitmap, box: ProjectedBox): Int {
+        var count = 0
+        val left = box.left.toInt().coerceIn(0, bitmap.width - 1)
+        val right = box.right.toInt().coerceIn(0, bitmap.width - 1)
+        val top = box.top.toInt().coerceIn(0, bitmap.height - 1)
+        val bottom = box.bottom.toInt().coerceIn(0, bitmap.height - 1)
+        for (y in top..bottom) {
+            for (x in left..right) {
+                val pixel = bitmap.getPixel(x, y)
+                val red = android.graphics.Color.red(pixel)
+                val green = android.graphics.Color.green(pixel)
+                val blue = android.graphics.Color.blue(pixel)
+                if (red > 220 && green > 220 && blue > 220) count++
+            }
+        }
+        return count
+    }
+
+    private fun countCyan(bitmap: Bitmap): Int {
+        var count = 0
+        for (y in 0 until bitmap.height step 2) {
+            for (x in 0 until bitmap.width step 2) {
+                val pixel = bitmap.getPixel(x, y)
+                val red = android.graphics.Color.red(pixel)
+                val green = android.graphics.Color.green(pixel)
+                val blue = android.graphics.Color.blue(pixel)
+                if (blue > 180 && green > 140 && red < 80) count++
+            }
+        }
+        return count
+    }
+
     private fun box(id: Int, x: Float) =
         BoxObservation("object", "chair", 0.8f, x, 40f, x + 20f, 80f, trackId = id)
 

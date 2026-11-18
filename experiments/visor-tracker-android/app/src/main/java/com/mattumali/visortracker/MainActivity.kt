@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
             }
         })
         includeAll = CheckBox(this).apply {
-            text = "Also detect hands and faces (slower)"
+            text = "Also detect faces (slower). The pointing hand stays on."
             isChecked = prefs.getBoolean(OverlayTrackingService.PREF_HANDS_FACES, false)
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean(OverlayTrackingService.PREF_HANDS_FACES, checked).apply()
@@ -104,9 +104,9 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(accurate)
         root.addView(TextView(this).apply {
-            text = "One object. It is drawn as soon as the detector sees it, and the " +
-                "center one locks after one or two steady frames. Point at a different " +
-                "object and hold to switch. The old distance does not move with you. " +
+            text = "One object. An extended index finger locks the object on that 2D ray. " +
+                "The lock stays after the hand drops, and follows the object until it leaves. " +
+                "With no hand, the center of the picture still locks. This is not 3D aim. " +
                 "Motion does not swap the lock every frame. Fast mode stays " +
                 "EfficientDet-Lite0. An unsure name is shown as object."
             textSize = 14f

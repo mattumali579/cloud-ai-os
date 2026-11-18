@@ -12,21 +12,66 @@ data class AimDecision(val lockedId: Int?, val changed: Boolean)
 class AimLock(
     private val acquireFrames: Int = 2,
     private val switchFrames: Int = 2,
+    private val lostFramesLimit: Int = 3,
 ) {
     var lockedId: Int? = null
         private set
+    /** True after the index finger, not the screen center, confirmed this lock. */
+    var fingerLocked: Boolean = false
+        private set
     private var pendingId: Int? = null
     private var pendingCount = 0
+    private var lostFrames = 0
 
     fun reset() {
         lockedId = null
+        fingerLocked = false
         pendingId = null
         pendingCount = 0
+        lostFrames = 0
     }
 
     fun observe(frame: FrameDetections): AimDecision {
-        val aimed = pointedObject(frame.width, frame.height, frame.boxes, preferId = lockedId)?.trackId
+        val objects = frame.boxes.filter { box ->
+            !box.held && box.kind == "object" && box.trackId > 0 &&
+                box.right > box.left && box.bottom > box.top
+        }
+        val ray = IndexPoint.ray(frame)
         val current = lockedId
+        val visible = current != null && objects.any { it.trackId == current }
+        if (current != null && !visible) {
+            lostFrames += 1
+            if (lostFrames < lostFramesLimit) {
+                pendingId = null
+                pendingCount = 0
+                return AimDecision(current, changed = false)
+            }
+            val next = IndexPoint.replacement(objects, current)?.trackId
+            if (next == null) {
+                lockedId = null
+                fingerLocked = false
+                pendingId = null
+                pendingCount = 0
+                lostFrames = 0
+                return AimDecision(null, changed = true)
+            }
+            return commit(next, current, acquireFrames)
+        }
+        lostFrames = 0
+        val rayTarget = if (ray != null) IndexPoint.alongRay(ray, objects, current)?.trackId else null
+        val handPresent = frame.boxes.any { it.kind == "hand" && !it.held && it.points.size >= 21 }
+        val aimed = when {
+            rayTarget != null -> rayTarget
+            (fingerLocked || handPresent) && current != null -> current
+            handPresent -> null
+            else -> pointedObject(frame.width, frame.height, frame.boxes, preferId = current)?.trackId
+        }
+        val decision = commit(aimed, current, if (current == null) acquireFrames else switchFrames)
+        if (ray != null && decision.lockedId != null && decision.lockedId == rayTarget) fingerLocked = true
+        return decision
+    }
+
+    private fun commit(aimed: Int?, current: Int?, required: Int): AimDecision {
         if (aimed == null || aimed == current) {
             pendingId = null
             pendingCount = 0
@@ -36,11 +81,11 @@ class AimLock(
             pendingId = aimed
             pendingCount = 1
         }
-        val required = if (current == null) acquireFrames else switchFrames
         if (pendingCount < required) return AimDecision(current, changed = false)
         lockedId = aimed
         pendingId = null
         pendingCount = 0
+        lostFrames = 0
         return AimDecision(aimed, changed = true)
     }
 }

@@ -10,7 +10,7 @@ adb install -r experiments/visor-tracker-android/app/build/outputs/apk/androidTe
 mkdir -p "${RUNNER_TEMP}/detector-sim"
 log="${RUNNER_TEMP}/detector-sim/instrument.txt"
 set +e
-timeout 480s adb shell am instrument -w -r \
+timeout 600s adb shell am instrument -w -r \
   com.mattumali.visortracker.stable.test/androidx.test.runner.AndroidJUnitRunner \
   | tee "$log"
 code=${PIPESTATUS[0]}
@@ -25,8 +25,12 @@ adb exec-out run-as com.mattumali.visortracker.stable cat files/replay-stage.txt
   > "${RUNNER_TEMP}/detector-sim/replay-stage.txt" || true
 adb exec-out run-as com.mattumali.visortracker.stable cat files/overlay-sim.png \
   > "${RUNNER_TEMP}/detector-sim/overlay-sim.png" || true
-if [[ "$code" -ne 0 ]] || ! grep -q "OK (3 tests)" "$log"; then
-  echo "Instrumentation did not report OK (3 tests); collecting crash context."
+adb exec-out run-as com.mattumali.visortracker.stable cat files/pointing-stage.txt \
+  > "${RUNNER_TEMP}/detector-sim/pointing-stage.txt" || true
+adb exec-out run-as com.mattumali.visortracker.stable cat files/pointing-overlay.png \
+  > "${RUNNER_TEMP}/detector-sim/pointing-overlay.png" || true
+if [[ "$code" -ne 0 ]] || ! grep -q "OK (4 tests)" "$log"; then
+  echo "Instrumentation did not report OK (4 tests); collecting crash context."
   grep -E -i "FATAL EXCEPTION|AndroidRuntime|Fatal signal|tombstoned|crash_dump|Process:|Caused by:|OutOfMemoryError|SIGABRT|SIGSEGV|MediaPipe|TFLite" \
     "${RUNNER_TEMP}/detector-sim/logcat.txt" | tail -250 || true
   exit 1
@@ -34,3 +38,5 @@ fi
 
 test -s "${RUNNER_TEMP}/detector-sim/detector-stage.txt"
 test -s "${RUNNER_TEMP}/detector-sim/replay-stage.txt"
+test -s "${RUNNER_TEMP}/detector-sim/pointing-stage.txt"
+test -s "${RUNNER_TEMP}/detector-sim/pointing-overlay.png"

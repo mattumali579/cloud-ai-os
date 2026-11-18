@@ -47,6 +47,12 @@ class TrackingOverlayView(context: Context) : View(context) {
     private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
     private val nearby = NearbyCandidates()
+    private var aimRay: PointingRay? = null
+    private val rayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(3f)
+        color = 0xFF00E5FF.toInt()
+    }
     private var probeLines: List<String> = emptyList()
     @Volatile var frameAgeMs: Int = 0
         private set
@@ -102,18 +108,22 @@ class TrackingOverlayView(context: Context) : View(context) {
      * so a held point at a new center can switch the lock.
      */
     fun observeCandidates(frame: FrameDetections): String? {
+        aimRay = IndexPoint.ray(frame)
         val note = distanceEstimator.observe(frame)
-        if (note != null) invalidate()
+        invalidate()
         return note
     }
 
     fun updateFrame(frame: FrameDetections): String? {
         val previous = latest
         val lockedId = distanceEstimator.selectedTrackId()
+        val aimId = aimRay?.let { ray ->
+            IndexPoint.alongRay(ray, frame.boxes, lockedId)?.trackId
+        }
         val incoming = if (frame.boxes.isEmpty()) {
             emptyList()
         } else {
-            nearby.select(frame.width, frame.height, frame.boxes, lockedId)
+            nearby.select(frame.width, frame.height, frame.boxes, lockedId, aimId)
         }
         val now = SystemClock.elapsedRealtime()
         val accepted = OverlayDiagnostics.acceptFrame(
@@ -160,6 +170,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         removeCallbacks(expire)
         // A restarted camera session must be calibrated again.
         distanceEstimator.clear()
+        aimRay = null
         invalidate()
     }
 
@@ -176,6 +187,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(18f), text)
         canvas.drawText(distanceEstimator.banner(frame.boxes), dp(12f), dp(34f), text)
         canvas.drawText(RelativeDistanceEstimator.LIMITATION, dp(12f), dp(48f), note)
+        drawAim(canvas, frame)
         if (frame.boxes.isEmpty()) return
         if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) {
             // A draw before layout used to return here and never run again.
@@ -220,6 +232,22 @@ class TrackingOverlayView(context: Context) : View(context) {
                     canvas.drawCircle(ox + x * scale, oy + y * scale, dp(2.5f), point)
                 }
             }
+        }
+    }
+
+    private fun drawAim(canvas: Canvas, frame: FrameDetections) {
+        val ray = aimRay ?: return
+        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
+        val ox = (width - frame.width * scale) / 2f
+        val oy = (height - frame.height * scale) / 2f
+        fun px(x: Float, y: Float) = ox + x * scale to oy + y * scale
+        val start = px(ray.tipX, ray.tipY)
+        val end = px(ray.tipX + ray.dirX * ray.reach, ray.tipY + ray.dirY * ray.reach)
+        canvas.drawLine(start.first, start.second, end.first, end.second, rayPaint)
+        ray.joints.forEach { (x, y) ->
+            val at = px(x, y)
+            canvas.drawCircle(at.first, at.second, dp(4f), rayPaint)
         }
     }
 

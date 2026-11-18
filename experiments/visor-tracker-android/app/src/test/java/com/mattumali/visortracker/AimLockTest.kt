@@ -100,4 +100,46 @@ class AimLockTest {
         assertEquals(2, replaced.lockedId)
         assertEquals(2, aim.observe(picture).lockedId)
     }
+
+    @Test fun fingerRayLocksThePointedObjectAndIgnoresTheHandAfterItDrops() {
+        val aim = AimLock()
+        val pointed = BoxObservation("object", "cup", 0.8f, 120f, 30f, 170f, 70f, trackId = 2)
+        val center = BoxObservation("object", "book", 0.95f, 70f, 70f, 130f, 130f, trackId = 1)
+        val picture = frame(center, pointed, pointingHand(90f, 50f))
+        assertEquals(null, aim.observe(picture).lockedId)
+        val locked = aim.observe(picture)
+        assertEquals(2, locked.lockedId)
+        assertTrue(aim.fingerLocked)
+        val handDown = frame(center, pointed)
+        repeat(4) { assertEquals(2, aim.observe(handDown).lockedId) }
+        assertTrue(aim.fingerLocked)
+    }
+
+    @Test fun lostPointedObjectIsReplacedByTheOtherVisibleObject() {
+        val aim = AimLock()
+        val pointed = BoxObservation("object", "cup", 0.8f, 120f, 30f, 170f, 70f, trackId = 2)
+        val other = BoxObservation("object", "book", 0.7f, 10f, 10f, 40f, 40f, trackId = 7)
+        val picture = frame(other, pointed, pointingHand(90f, 50f))
+        aim.observe(picture)
+        assertEquals(2, aim.observe(picture).lockedId)
+        val gone = frame(other)
+        assertEquals(2, aim.observe(gone).lockedId)
+        assertEquals(2, aim.observe(gone).lockedId)
+        assertEquals(2, aim.observe(gone).lockedId)
+        val acquired = aim.observe(gone)
+        assertEquals(7, acquired.lockedId)
+        assertTrue(acquired.changed)
+        assertEquals(7, aim.observe(gone).lockedId)
+    }
+
+    @Test fun oneRayFrameDoesNotStealAFingerLock() {
+        val aim = AimLock()
+        val first = BoxObservation("object", "cup", 0.8f, 120f, 30f, 170f, 70f, trackId = 2)
+        val start = frame(first, pointingHand(90f, 50f))
+        aim.observe(start)
+        assertEquals(2, aim.observe(start).lockedId)
+        val other = BoxObservation("object", "book", 0.9f, 120f, 120f, 170f, 160f, trackId = 4)
+        val moved = frame(first, other, pointingHand(90f, 140f))
+        assertEquals(2, aim.observe(moved).lockedId)
+    }
 }
