@@ -29,3 +29,6 @@ uv.lock
 # Lead engine: company/contact data never goes into this PUBLIC repo
 data/lead_history/
 state/lead_engine/
+
+# Glasses vision: face templates and retained frames stay off this public repo
+data/glasses-vision/

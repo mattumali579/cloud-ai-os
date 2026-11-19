@@ -29,6 +29,7 @@ from .schemas import (
     HiggsfieldGenerateRequest,
     InvokeRequest,
     JobCreate,
+    GlassesVisionRequest,
     PhoneTaskRequest,
     RevenueOSRunRequest,
 )
@@ -111,6 +112,56 @@ async def phone_page() -> HTMLResponse:
 def phone_task(body: PhoneTaskRequest) -> dict:
     """Run one DB-free private task and return the CLI response directly."""
     return execute_phone_task(body.task, body.agent)
+
+
+@app.post("/v1/glasses/vision", dependencies=[authed])
+def glasses_vision(body: GlassesVisionRequest) -> dict:
+    """Describe, track, or compare an authorized still. Requires the API bearer token.
+
+    Frame retention stays off unless the server policy and this request both ask
+    for it. The route never calls a paid model.
+    """
+    import base64
+    import hmac
+    import os
+
+    from cloudos.glasses.vision.images import ImageError, decode_image
+    from cloudos.glasses.vision.safety import SafetyLimits
+    from cloudos.glasses.vision.service import default_store, get_service
+
+    expected = os.environ.get("GLASSES_VISION_DEVICE_TOKEN", "").strip()
+    if expected:
+        presented = body.device_token or ""
+        if len(presented) != len(expected) or not hmac.compare_digest(
+            presented.encode("utf-8"), expected.encode("utf-8")
+        ):
+            raise CloudOSError(ErrorCode.AUTH_REQUIRED, "glasses device token was rejected")
+
+    image = None
+    if body.image_base64:
+        try:
+            raw = base64.b64decode(body.image_base64, validate=True)
+        except Exception as exc:  # noqa: BLE001 — client payload, not a server fault
+            raise CloudOSError(ErrorCode.VALIDATION_ERROR, "image_base64 is not valid base64") from exc
+        try:
+            image = decode_image(raw, body.mime)
+        except ImageError as exc:
+            raise CloudOSError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
+
+    # Retention stays off unless this machine opts in and this request asks.
+    policy = os.environ.get("GLASSES_VISION_RETAIN_FRAMES", "").strip() == "1"
+    result = get_service(default_store(), SafetyLimits(retain_frames=policy)).handle(
+        body.utterance,
+        image,
+        consent=body.consent,
+        face_crop=body.face_crop,
+        thermal_c=body.thermal_c,
+        thermal_state=body.thermal_state,
+        battery_percent=body.battery_percent,
+        retain_frames=bool(body.retain_frames and policy),
+        request_id=body.request_id,
+    )
+    return result
 
 
 # ---------------------------------------------------------------- jobs
