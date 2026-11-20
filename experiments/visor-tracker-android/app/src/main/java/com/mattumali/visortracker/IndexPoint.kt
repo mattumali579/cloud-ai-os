@@ -31,7 +31,7 @@ object IndexPoint {
     const val INDEX_DIP = 7
     const val INDEX_TIP = 8
     const val MIN_SCORE = 0.28f
-    const val MAX_POINTABLE_FRAME_FRACTION = 0.35f
+    const val MAX_POINTABLE_FRAME_FRACTION = 0.20f
     const val LIMITATION =
         "Hand z recognizes depth-angled pointing, but object boxes have no measured depth. " +
             "Depth-angled aim uses the fingertip position; overlapping objects stay ambiguous."
@@ -83,28 +83,17 @@ object IndexPoint {
         val best = ranked.first()
         val secondReach = ranked.getOrNull(1)?.reach ?: 0f
         val index = ranked.first { it.finger.tip == INDEX_TIP }
-        val unique = best.reach >= secondReach * 1.08f && best.reach >= palm * 0.70f
         val indexUsable = index.length >= palm * 0.70f && index.straight <= -0.25f &&
-            index.reach >= secondReach * 1.05f && index.reach >= palm * 0.70f
-        val chosen = when {
-            indexUsable -> index
-            unique && index.length < palm * 0.75f && best.straight <= -0.25f &&
-                best.length >= palm * 0.65f -> best
-            else -> return null
-        }
-        val chosenTip = points[chosen.finger.tip]
-        val chosenDip = points[chosen.finger.dip]
-        val chosenJoints = listOf(
-            wrist,
-            points[chosen.finger.mcp],
-            points[chosen.finger.pip],
-            chosenDip,
-            chosenTip,
-        )
+            index.reach >= secondReach * 1.05f && index.reach >= palm * 0.70f &&
+            index.finger.tip == INDEX_TIP && best.finger.tip == INDEX_TIP
+        if (!indexUsable) return null
+        val chosenTip = tip
+        val chosenDip = dip
+        val chosenJoints = joints
         val dx = chosenTip.first - chosenDip.first
         val dy = chosenTip.second - chosenDip.second
         val projectedLength = hypot(dx, dy)
-        val dz = if (hasDepth) hand.depths[chosen.finger.tip] - hand.depths[chosen.finger.dip] else 0f
+        val dz = if (hasDepth) hand.depths[INDEX_TIP] - hand.depths[INDEX_DIP] else 0f
         val segmentLength = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
         if (segmentLength < 3f) return null
         val depthDominant = hasDepth && kotlin.math.abs(dz) > projectedLength * 0.75f
@@ -186,6 +175,13 @@ object IndexPoint {
     }
 
     fun entered(ray: PointingRay, box: BoxObservation): Float? {
+        // Fingertip inside this box is a self-hit (arm labeled person, hand
+        // in front of a couch). 10912 locked those instead of the far object.
+        if (ray.tipX >= box.left && ray.tipX <= box.right &&
+            ray.tipY >= box.top && ray.tipY <= box.bottom
+        ) {
+            return null
+        }
         var tMin = 0f
         var tMax = ray.reach
         val origin = floatArrayOf(ray.tipX, ray.tipY)

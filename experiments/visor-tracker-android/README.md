@@ -4,6 +4,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.35: 10912 glasses recording failed v35
+
+Version code 36. Live View clip `10912.mp4` is v0.34.0 #35. Landmark 8 is correct on an open palm and wrong on a side-on point (marker on the knuckles). Pointing often stays off. When it fires, the ray can start from a collapsed landmark 8 / longest finger and lock a sofa or `person` box that already contains the fingertip. This build aims only from landmark 8 and ignores boxes the fingertip is already inside. It is a fix for that recording, not a new glasses pass.
+
 ## Version 0.34: glasses-recording pointing gates
 
 Version code 35. Phone screen recording `10910.mp4` of Live View on v34 showed 21 landmarks on the phone-holding hand, landmark 8 on the wrong end of a side-on point, `State: hand` with `Target: none`, and giant person boxes covering the scene. Pointing now requires a uniquely extended finger (index first; collapsed landmark 8 can aim from the long finger), ignores objects that fill more than 35% of the frame, and keeps a moving hand by the wrist when landmark 8 jumps. Hand landmarker input is 768px. This is a recording-driven code fix, not a new glasses proof.

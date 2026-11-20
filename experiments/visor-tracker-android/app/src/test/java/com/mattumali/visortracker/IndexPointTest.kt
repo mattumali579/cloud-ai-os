@@ -70,7 +70,7 @@ class IndexPointTest {
         assertEquals(90f, ray!!.tipX, 0.1f)
     }
 
-    @Test fun collapsedIndexAimsFromTheUniqueExtendedFinger() {
+    @Test fun collapsedIndexDoesNotAimFromTheMiddleFinger() {
         val hand = pointingHand(90f, 50f).let { original ->
             val points = original.points.toMutableList()
             points[IndexPoint.INDEX_TIP] = points[IndexPoint.INDEX_MCP]
@@ -80,9 +80,19 @@ class IndexPointTest {
             points[10] = 50f to 50f
             original.copy(points = points)
         }
-        val ray = IndexPoint.extended(hand, 200, 200)
-        assertTrue(ray != null)
-        assertEquals(90f, ray!!.tipX, 0.1f)
+        assertNull(IndexPoint.extended(hand, 200, 200))
+    }
+
+    @Test fun aBoxContainingTheFingertipIsNotTheAimTarget() {
+        val sofa = BoxObservation("object", "couch", 0.9f, 40f, 20f, 190f, 160f, trackId = 144)
+        val bottle = BoxObservation("object", "bottle", 0.8f, 120f, 30f, 170f, 70f, trackId = 7)
+        val frame = FrameDetections(200, 200, listOf(sofa, bottle, pointingHand(90f, 50f)))
+        val ray = IndexPoint.ray(frame)!!
+        val hit = IndexPoint.alongRay(
+            ray, frame.boxes, preferId = null,
+            frameWidth = frame.width, frameHeight = frame.height,
+        )
+        assertEquals(7, hit!!.trackId)
     }
 
     @Test fun aScreenFillingPersonBoxIsNotTheAimTarget() {
