@@ -6,6 +6,8 @@ package com.mattumali.visortracker
  */
 object BoxHold {
     const val HOLD_MS = 2_000L
+    /** Overlay never keeps a vanished hand. Zero means no ghost skeleton. */
+    const val HAND_HOLD_MS = 0L
 
     fun keep(
         previous: List<BoxObservation>,

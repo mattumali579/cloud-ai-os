@@ -102,4 +102,13 @@ class NearbyCandidatesTest {
         val shown = NearbyCandidates().select(100, 100, listOf(old, next), lockedId = 2)
         assertEquals(listOf(2), shown.map { it.trackId })
     }
+
+    @Test fun aOneFrameAimFlickerDoesNotReplaceTheStickyObject() {
+        val selector = NearbyCandidates()
+        val first = box(1, "book", 40f, 80f, 60f, 120f)
+        val other = box(2, "cup", 0f, 10f, 20f, 40f)
+        selector.select(100, 200, listOf(first, other), lockedId = null, aimTrackId = 1)
+        val flickered = selector.select(100, 200, listOf(first, other), lockedId = null, aimTrackId = 2)
+        assertEquals(1, flickered.single().trackId)
+    }
 }

@@ -9,7 +9,7 @@ import kotlin.math.max
  * EfficientDet treat that region as a generic object.
  */
 object HandTrack {
-    const val HAND_GRACE_FRAMES = 10
+    const val HAND_GRACE_FRAMES = 4
 
     fun indexTip(hand: BoxObservation): Pair<Float, Float>? {
         if (hand.kind != "hand") return null
@@ -22,9 +22,7 @@ object HandTrack {
         val live = boxes.filter { box ->
             box.kind == "hand" && !box.held && paintable(box)
         }
-        if (live.isNotEmpty()) return live.sortedByDescending { it.score }
-        return boxes.filter { box -> box.kind == "hand" && paintable(box) }
-            .sortedByDescending { it.score }
+        return live.sortedByDescending { it.score }
     }
 
     fun objectsOnly(boxes: List<BoxObservation>): List<BoxObservation> =

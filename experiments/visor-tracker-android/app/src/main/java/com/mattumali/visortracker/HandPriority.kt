@@ -18,7 +18,9 @@ object HandPriority {
         }
         if (hands.isEmpty()) return observations
         return observations.filterNot { candidate ->
-            candidate.kind == "object" && hands.any { hand -> sameHandRegion(candidate, hand) }
+            candidate.kind == "object" && hands.any { hand ->
+                sameHandRegion(candidate, hand) || armLabeledPerson(candidate, hand)
+            }
         }
     }
 
@@ -33,6 +35,28 @@ object HandPriority {
         val handCoverage = intersectionWidth * intersectionHeight / handArea
         val areaRatio = person.area() / handArea
         return handCoverage >= MIN_HAND_COVERAGE && areaRatio <= MAX_OBJECT_TO_HAND_AREA
+    }
+
+    /**
+     * EfficientDet often labels a forearm as "person". A walking figure stays:
+     * it is tall relative to the hand. A long arm box still contains the wrist
+     * even when its center is far from the palm.
+     */
+    private fun armLabeledPerson(person: BoxObservation, hand: BoxObservation): Boolean {
+        if (!person.label.equals("person", ignoreCase = true)) return false
+        val wrist = hand.points.getOrNull(IndexPoint.WRIST) ?: return false
+        if (wrist.first < person.left || wrist.first > person.right ||
+            wrist.second < person.top || wrist.second > person.bottom
+        ) {
+            return false
+        }
+        val personH = person.bottom - person.top
+        val personW = person.right - person.left
+        val span = max(hand.right - hand.left, hand.bottom - hand.top).coerceAtLeast(24f)
+        val looksLikeBody = personH > personW * 1.6f &&
+            personH > span * 6f &&
+            person.area() > hand.area() * 20f
+        return !looksLikeBody
     }
 }
 

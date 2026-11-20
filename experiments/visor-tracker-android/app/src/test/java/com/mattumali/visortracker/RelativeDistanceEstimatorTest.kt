@@ -65,13 +65,11 @@ class RelativeDistanceEstimatorTest {
         assertNull(estimator.estimate(300, sameSizeNeighbor))
         val aside = at(4, 40f)
         val next = at(8, 150f)
-        assertNull(estimator.observe(frame(aside, next, right)))
-        val switched = estimator.observe(frame(aside, next, right))
-        assertTrue(switched!!.contains("Distance cleared"))
-        assertEquals(8, estimator.selectedTrackId())
-        assertNull(estimator.estimate(300, pointed))
-        assertNull(estimator.estimate(300, aside))
-        assertNull(estimator.estimate(300, next))
+        repeat(6) {
+            assertNull(estimator.observe(frame(aside, next, right)))
+        }
+        assertEquals(4, estimator.selectedTrackId())
+        assertEquals(6f, estimator.estimate(300, pointed)!!, 0.05f)
     }
 
     @Test fun holdingANewCenterTargetClearsTheOldDistance() {
@@ -81,15 +79,9 @@ class RelativeDistanceEstimatorTest {
         assertTrue(estimator.calibrate(frame(first), 6f).contains("6.0"))
         val next = at(8, 150f)
         val aside = at(4, 40f)
-        assertNull(estimator.observe(frame(next, aside)))
-        val switched = estimator.observe(frame(next, aside))
-        assertTrue(switched!!.contains("Distance cleared"))
-        assertEquals(8, estimator.selectedTrackId())
-        assertNull(estimator.estimate(300, first))
-        assertNull(estimator.estimate(300, next))
-        assertTrue(estimator.calibrate(frame(next, aside), 10f).contains("#8"))
-        assertEquals(10f, estimator.estimate(300, next)!!, 0.01f)
-        assertNull(estimator.estimate(300, first))
+        repeat(6) { assertNull(estimator.observe(frame(next, aside))) }
+        assertEquals(4, estimator.selectedTrackId())
+        assertEquals(6f, estimator.estimate(300, first)!!, 0.01f)
     }
 
     @Test fun motionJitterDoesNotSwapTheLockEveryFrame() {

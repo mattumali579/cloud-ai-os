@@ -42,16 +42,13 @@ class PipelineReplayTest {
         assertTrue(motion.disappeared)
     }
 
-    @Test fun aimSwitchesFromAtoBAndBackOnTheSameFrame() {
+    @Test fun aimDoesNotFlickerWhenASecondObjectCrossesTheCenter() {
         val frames = PipelineReplay.switchTargets()
         val acquired = frames.first { it.lockId != null }
         assertEquals(acquired.lockId, acquired.publishedTrackId)
-        val switched = frames.first { it.lockId != null && it.lockId != acquired.lockId }
-        assertEquals(switched.lockId, switched.publishedTrackId)
-        assertTrue(switched.sequence > acquired.sequence)
-        val returned = frames.last { it.sequence > switched.sequence && it.lockId == acquired.lockId }
-        assertEquals(acquired.lockId, returned.publishedTrackId)
-        assertNotEquals(switched.lockId, returned.lockId)
+        val later = frames.filter { it.sequence > acquired.sequence && it.lockId != null }
+        assertTrue(later.isNotEmpty())
+        assertTrue(later.all { it.lockId == acquired.lockId })
     }
 
     @Test fun aMissingLockIsNotGivenToTheOtherObject() {

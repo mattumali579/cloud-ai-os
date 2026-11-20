@@ -11,6 +11,8 @@ package com.mattumali.visortracker
 class NearbyCandidates(
     private val limit: Int = DISPLAY_LIMIT,
 ) {
+    private var lastId: Int? = null
+
     fun select(
         frameWidth: Int,
         frameHeight: Int,
@@ -25,7 +27,13 @@ class NearbyCandidates(
         }
         val locked = if (lockedId == null) null else objects.firstOrNull { it.trackId == lockedId }
         val aimed = if (aimTrackId == null) null else objects.firstOrNull { it.trackId == aimTrackId }
-        val chosen = locked ?: aimed ?: pointedObject(frameWidth, frameHeight, objects)
+        val sticky = lastId?.let { id -> objects.firstOrNull { it.trackId == id } }
+        val chosen = locked
+            ?: aimed?.takeIf { lastId == null || lastId == aimed.trackId }
+            ?: sticky
+            ?: aimed
+            ?: pointedObject(frameWidth, frameHeight, objects)
+        lastId = chosen?.trackId
         return if (chosen == null) emptyList() else listOf(chosen).take(limit)
     }
 

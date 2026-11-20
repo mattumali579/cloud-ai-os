@@ -168,6 +168,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         } else {
             nearby.select(frame.width, frame.height, frame.boxes, lockedId, aimId)
         }
+        aimRay = IndexPoint.ray(frame)
         val incomingHands = HandTrack.forDisplay(frame.boxes)
         val incoming = HandTrack.compose(incomingObjects, incomingHands)
         val now = SystemClock.elapsedRealtime()
@@ -185,13 +186,8 @@ class TrackingOverlayView(context: Context) : View(context) {
         shownSequence = OverlayDiagnostics.nextShownSequence(shownSequence, frame.sequence, accepted = true)
         val ageMs = if (receivedAt == 0L) Long.MAX_VALUE else now - receivedAt
         val previousObjects = HandTrack.objectsOnly(previous?.boxes.orEmpty())
-        val previousHands = previous?.boxes.orEmpty().filter { it.kind == "hand" }
         val keptObjects = BoxHold.keep(previousObjects, incomingObjects, ageMs)
-        val keptHands = if (incomingHands.isNotEmpty()) {
-            incomingHands
-        } else {
-            BoxHold.keep(previousHands, emptyList(), ageMs)
-        }
+        val keptHands = incomingHands
         val kept = HandTrack.compose(keptObjects, keptHands)
         val display = OverlayDiagnostics.frameToDraw(frame, previous, incoming.size, kept)
         latest = display
@@ -362,11 +358,26 @@ class TrackingOverlayView(context: Context) : View(context) {
         val endPoint = if (target != null) {
             (target.left + target.right) / 2f to (target.top + target.bottom) / 2f
         } else {
-            val span = kotlin.math.hypot(frame.width.toFloat(), frame.height.toFloat()) * 0.45f
-            ray.tipX + ray.dirX * span to ray.tipY + ray.dirY * span
+            val span = kotlin.math.hypot(frame.width.toFloat(), frame.height.toFloat()) * 0.95f
+            val rawX = ray.tipX + ray.dirX * span
+            val rawY = ray.tipY + ray.dirY * span
+            clipToFrame(ray.tipX, ray.tipY, rawX, rawY, frame.width.toFloat(), frame.height.toFloat())
         }
         val end = px(endPoint.first, endPoint.second)
-        canvas.drawLine(start.first, start.second, end.first, end.second, rayPaint)
+        val steps = 8
+        var previousX = start.first
+        var previousY = start.second
+        for (step in 1..steps) {
+            val t = step / steps.toFloat()
+            val x = start.first + (end.first - start.first) * t
+            val y = start.second + (end.second - start.second) * t
+            val intoScene = if (ray.dirZ > 0f) ray.dirZ else kotlin.math.abs(ray.dirZ) * 0.5f
+            rayPaint.strokeWidth = dp(5.5f) * (1f - 0.72f * t * (0.35f + intoScene).coerceAtMost(1f))
+            canvas.drawLine(previousX, previousY, x, y, rayPaint)
+            previousX = x
+            previousY = y
+        }
+        rayPaint.strokeWidth = dp(3f)
         canvas.drawCircle(end.first, end.second, dp(4f), indexFill)
         if (target == null) {
             val arm = dp(10f)
@@ -416,6 +427,39 @@ class TrackingOverlayView(context: Context) : View(context) {
         lines.forEachIndexed { index, line ->
             canvas.drawText(line, left + pad, top + pad + lineH * (index + 1) - dp(3f), text)
         }
+    }
+
+    private fun clipToFrame(
+        x0: Float,
+        y0: Float,
+        x1: Float,
+        y1: Float,
+        width: Float,
+        height: Float,
+    ): Pair<Float, Float> {
+        var x = x1
+        var y = y1
+        val dx = x1 - x0
+        val dy = y1 - y0
+        if (kotlin.math.abs(dx) > 1e-3f) {
+            if (x < 0f) {
+                y = y0 + dy * (0f - x0) / dx
+                x = 0f
+            } else if (x > width) {
+                y = y0 + dy * (width - x0) / dx
+                x = width
+            }
+        }
+        if (kotlin.math.abs(dy) > 1e-3f) {
+            if (y < 0f) {
+                x = x0 + dx * (0f - y0) / dy
+                y = 0f
+            } else if (y > height) {
+                x = x0 + dx * (height - y0) / dy
+                y = height
+            }
+        }
+        return x.coerceIn(0f, width) to y.coerceIn(0f, height)
     }
 
     private fun dp(value: Float) = value * resources.displayMetrics.density

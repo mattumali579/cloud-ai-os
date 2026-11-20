@@ -59,6 +59,7 @@ class VisionPipeline(
     private var frameNumber = 0
     private var recentObjects = emptyList<BoxObservation>()
     private var recentHands = emptyList<BoxObservation>()
+    private var handMisses = 0
     private var recentFaces = emptyList<BoxObservation>()
     var objectInferences: Int = 0
         private set
@@ -200,7 +201,17 @@ class VisionPipeline(
                     optionalFailed = true
                     lastOptionalFault = it
                 }
-                recentHands = handPass.boxes
+                if (handPass.boxes.isNotEmpty()) {
+                    recentHands = handPass.boxes
+                    handMisses = 0
+                } else {
+                    handMisses += 1
+                    if (handMisses > HAND_STALE_FRAMES) {
+                        recentHands = emptyList()
+                    } else {
+                        recentHands = recentHands.map { it.copy(held = true) }
+                    }
+                }
                 lastHandMs = handPass.modelMs
                 handInferences += 1
             }
@@ -306,8 +317,9 @@ class VisionPipeline(
             val score = handed.getOrNull(index)?.firstOrNull()?.score() ?: 0f
             if (score < IndexPoint.MIN_SCORE) return@mapIndexedNotNull null
             val wristOk = landmarkReliable(hand[IndexPoint.WRIST])
+            val mcpOk = landmarkReliable(hand[IndexPoint.INDEX_MCP])
             val tipOk = landmarkReliable(hand[IndexPoint.INDEX_TIP])
-            if (!wristOk && !tipOk) return@mapIndexedNotNull null
+            if (!wristOk && !mcpOk && !tipOk) return@mapIndexedNotNull null
             val coords = hand.map { it.x() * width to it.y() * height }
             // MediaPipe z uses approximately the same normalized scale as x. Preserve it
             // in pixel units so a finger aimed toward the camera does not collapse into
@@ -327,7 +339,7 @@ class VisionPipeline(
     private fun landmarkReliable(landmark: com.google.mediapipe.tasks.components.containers.NormalizedLandmark): Boolean {
         val presence = landmark.presence().orElse(1f)
         val visibility = landmark.visibility().orElse(1f)
-        return presence >= IndexPoint.MIN_SCORE && visibility >= IndexPoint.MIN_SCORE
+        return presence >= 0.16f && visibility >= 0.16f
     }
 
     private fun RectF.box(kind: String, label: String, confidence: Float) =
@@ -544,6 +556,8 @@ class VisionPipeline(
          * constant changes only when that probe still finds the extended index.
          */
         internal const val HAND_COUNT = 2
+        /** Keep pointing through MediaPipe drops; overlay hides held skeletons. */
+        internal const val HAND_STALE_FRAMES = 6
         private const val CREATE_TIMEOUT_MS = 3_000L
         private const val PROBE_TIMEOUT_MS = 2_500L
         private const val DETECT_TIMEOUT_MS = 8_000L

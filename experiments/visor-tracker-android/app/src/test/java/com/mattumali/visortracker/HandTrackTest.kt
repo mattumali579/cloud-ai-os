@@ -46,11 +46,12 @@ class HandTrackTest {
         assertTrue(hull.size >= 3)
     }
 
-    @Test fun displayKeepsHeldHandsWhenTheLiveHandIsMissing() {
+    @Test fun displayOmitsAHeldSkeletonAfterTheHandLeaves() {
         val live = pointingHand(90f, 50f).copy(trackId = 7)
         val held = pointingHand(40f, 40f).copy(trackId = 7, held = true, score = 0.5f)
         assertEquals(7, HandTrack.forDisplay(listOf(live)).single().trackId)
-        assertEquals(7, HandTrack.forDisplay(listOf(held)).single().trackId)
+        assertTrue(HandTrack.forDisplay(listOf(held)).isEmpty())
+        assertTrue(HandTrack.forDisplay(listOf(live, held)).none { it.held })
         assertTrue(HandTrack.compose(emptyList(), listOf(live)).any { it.kind == "hand" })
     }
 }

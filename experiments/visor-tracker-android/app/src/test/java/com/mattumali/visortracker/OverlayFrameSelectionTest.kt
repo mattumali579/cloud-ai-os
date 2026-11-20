@@ -17,10 +17,9 @@ class OverlayFrameSelectionTest {
         assertEquals(1, stale.lockId)
         assertEquals(1, stale.trackId)
         assertEquals(false, stale.updateVisible)
-        assertEquals(2, current.lockId)
-        assertEquals(2, current.trackId)
-        assertEquals(2, current.queuedDraw)
-        assertEquals(true, current.updateVisible)
+        assertEquals(1, current.lockId)
+        assertEquals(1, current.trackId)
+        assertEquals(false, current.updateVisible)
     }
 
     @Test fun unconfirmedAimKeepsThePreviousLock() {

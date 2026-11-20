@@ -22,4 +22,11 @@ class BoxHoldTest {
     @Test fun holdExpires() {
         assertTrue(BoxHold.keep(listOf(box), emptyList(), ageMs = BoxHold.HOLD_MS + 1).isEmpty())
     }
+
+    @Test fun aHandHoldIsMuchShorterThanAnObjectHold() {
+        val hand = BoxObservation("hand", "hand", 0.9f, 10f, 10f, 40f, 40f, trackId = 8)
+        assertEquals(0L, BoxHold.HAND_HOLD_MS)
+        assertTrue(BoxHold.HAND_HOLD_MS < BoxHold.HOLD_MS)
+        assertEquals(8, BoxHold.keep(listOf(hand), emptyList(), ageMs = 100).single().trackId)
+    }
 }

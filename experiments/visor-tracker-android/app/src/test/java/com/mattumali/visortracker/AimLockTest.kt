@@ -23,13 +23,9 @@ class AimLockTest {
         val towardTwo = aim.observe(frame(box(1, 0f), box(2, 40f)))
         assertFalse(towardTwo.changed)
         assertEquals(1, towardTwo.lockedId)
-        val switched = aim.observe(frame(box(1, 0f), box(2, 40f)))
-        assertTrue(switched.changed)
-        assertEquals(2, switched.lockedId)
-        val backOne = aim.observe(frame(box(1, 40f), box(2, 0f)))
-        assertFalse(backOne.changed)
-        val back = aim.observe(frame(box(1, 40f), box(2, 0f)))
-        assertEquals(1, back.lockedId)
+        val stillFirst = aim.observe(frame(box(1, 0f), box(2, 40f)))
+        assertEquals(1, stillFirst.lockedId)
+        assertFalse(stillFirst.changed)
     }
 
     @Test fun knownReplacementConfirmsOnTheSameDetection() {
@@ -117,11 +113,8 @@ class AimLockTest {
         val hold = aim.observe(moved)
         assertEquals(1, hold.lockedId)
         assertFalse(hold.changed)
-        val replaced = aim.observe(moved)
-        assertTrue(replaced.changed)
-        assertEquals(2, replaced.lockedId)
         val stayed = aim.observe(moved)
-        assertEquals(2, stayed.lockedId)
+        assertEquals(1, stayed.lockedId)
         assertFalse(stayed.changed)
     }
 
@@ -133,10 +126,9 @@ class AimLockTest {
         val cup = BoxObservation("object", "cup", 0.9f, 42f, 42f, 58f, 58f, trackId = 2)
         val picture = frame(table, cup)
         assertEquals(1, aim.observe(picture).lockedId)
-        val replaced = aim.observe(picture)
-        assertTrue(replaced.changed)
-        assertEquals(2, replaced.lockedId)
-        assertEquals(2, aim.observe(picture).lockedId)
+        val stayed = aim.observe(picture)
+        assertEquals(1, stayed.lockedId)
+        assertFalse(stayed.changed)
     }
 
     @Test fun fingerRayLocksThePointedObjectAndIgnoresTheHandAfterItDrops() {

@@ -42,11 +42,22 @@ class IndexPointTest {
         assertEquals(2, hit!!.trackId)
     }
 
+    @Test fun aHeldHandStillBuildsARaySoPointingSurvivesAMiss() {
+        val live = pointingHand(90f, 50f)
+        val held = live.copy(held = true)
+        val frame = FrameDetections(200, 200, listOf(held))
+        val ray = IndexPoint.ray(frame)
+        assertTrue(ray != null)
+        assertTrue(kotlin.math.abs(ray!!.dirZ) >= 0f)
+        assertTrue(ray.reach > 200f)
+    }
+
     @Test fun depthAngledFingerUsesTheFingertipAsAStableCursor() {
         val hand = depthPointingHand(tipX = 100f, tipY = 80f)
         val ray = IndexPoint.extended(hand, 200, 200)
         assertTrue(ray != null)
         assertTrue(ray!!.depthDominant)
+        assertTrue(kotlin.math.abs(ray.dirZ) > 0.4f)
 
         val underTip = BoxObservation("object", "cup", 0.85f, 90f, 70f, 120f, 110f, trackId = 4)
         val elsewhere = BoxObservation("object", "book", 0.95f, 140f, 20f, 190f, 60f, trackId = 2)

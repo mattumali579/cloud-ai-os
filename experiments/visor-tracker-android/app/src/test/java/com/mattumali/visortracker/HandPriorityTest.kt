@@ -52,6 +52,30 @@ class HandPriorityTest {
         assertTrue(visible.any { it.trackId == 2 && it.label == "cup" })
     }
 
+    @Test fun aPersonBoxCenteredOnTheWristIsTheArmNotAPerson() {
+        val hand = pointingHand(150f, 100f)
+        val arm = BoxObservation(
+            "object", "person", 0.88f,
+            hand.left - 20f, hand.top - 20f, hand.right + 40f, hand.bottom + 20f,
+            trackId = 330,
+        )
+        val visible = HandPriority.apply(listOf(arm, hand))
+        assertFalse(visible.any { it.label == "person" })
+        assertTrue(visible.any { it.kind == "hand" })
+    }
+
+    @Test fun aLongForearmLabeledPersonIsDroppedEvenWhenItsCenterIsFarFromTheWrist() {
+        val hand = pointingHand(150f, 100f)
+        val forearm = BoxObservation(
+            "object", "person", 0.9f,
+            40f, 70f, 520f, 150f,
+            trackId = 330,
+        )
+        val visible = HandPriority.apply(listOf(forearm, hand))
+        assertFalse(visible.any { it.label == "person" })
+        assertTrue(visible.any { it.kind == "hand" })
+    }
+
     @Test fun extendedIndexIsNamedPointingHand() {
         val hand = pointingHand(150f, 100f)
         assertEquals("pointing hand", HandPriority.label(hand, 300, 200))

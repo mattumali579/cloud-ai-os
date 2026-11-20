@@ -37,7 +37,7 @@ object KnownReplacement {
  */
 class AimLock(
     private val acquireFrames: Int = 2,
-    private val switchFrames: Int = 2,
+    private val switchFrames: Int = 6,
     private val lostFramesLimit: Int = 3,
     /**
      * Frames required once the locked id is already gone and another object is
@@ -149,11 +149,9 @@ class AimLock(
         } else {
             null
         }
-        val handPresent = frame.boxes.any { it.kind == "hand" && !it.held && it.points.size >= 21 }
         val aimed = when {
             rayTarget != null -> rayTarget
-            (fingerLocked || handPresent) && current != null -> current
-            handPresent -> null
+            current != null -> current
             else -> pointedObject(frame.width, frame.height, frame.boxes, preferId = current)?.trackId
         }
         val decision = commit(aimed, current, if (current == null) acquireFrames else switchFrames)
