@@ -9,7 +9,7 @@ import kotlin.math.max
  * EfficientDet treat that region as a generic object.
  */
 object HandTrack {
-    const val HAND_GRACE_FRAMES = 6
+    const val HAND_GRACE_FRAMES = 10
 
     fun indexTip(hand: BoxObservation): Pair<Float, Float>? {
         if (hand.kind != "hand") return null
@@ -43,7 +43,7 @@ object HandTrack {
             hypot(previous.right - previous.left, previous.bottom - previous.top),
             hypot(next.right - next.left, next.bottom - next.top),
         ).coerceAtLeast(48f)
-        val limit = span * 1.75f
+        val limit = span * 2.2f
         val previousTip = indexTip(previous)
         val nextTip = indexTip(next)
         if (previousTip != null && nextTip != null) {

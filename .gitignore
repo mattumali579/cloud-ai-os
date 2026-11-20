@@ -26,6 +26,9 @@ wave.fp
 .claude/worktrees/
 uv.lock
 
+# Owner glasses/phone recordings used for local tracker analysis. Never commit.
+test-recordings/
+
 # Lead engine: company/contact data never goes into this PUBLIC repo
 data/lead_history/
 state/lead_engine/

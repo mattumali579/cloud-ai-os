@@ -31,6 +31,16 @@ class HandTrackTest {
         assertEquals(first.trackId, recovered.trackId)
     }
 
+    @Test fun wristKeepsIdentityWhenLandmark8JumpsOffTheFinger() {
+        val start = pointingHand(40f, 80f)
+        val wrongTip = pointingHand(48f, 80f).let { hand ->
+            val points = hand.points.toMutableList()
+            points[IndexPoint.INDEX_TIP] = 4f to 4f
+            hand.copy(points = points)
+        }
+        assertTrue(HandTrack.matchScore(start, wrongTip) > 0f)
+    }
+
     @Test fun hullOutlinesTheWholeHand() {
         val hull = HandOutline.hull(pointingHand(90f, 50f).points)
         assertTrue(hull.size >= 3)

@@ -59,6 +59,44 @@ class IndexPointTest {
         assertNull(IndexPoint.alongRay(ray, listOf(distant), preferId = null))
     }
 
+    @Test fun aSlightlyUncurledMiddleFingerStillCountsAsIndexPointing() {
+        val hand = pointingHand(90f, 50f).let { original ->
+            val points = original.points.toMutableList()
+            points[12] = 82f to 50f
+            original.copy(points = points)
+        }
+        val ray = IndexPoint.extended(hand, 200, 200)
+        assertTrue(ray != null)
+        assertEquals(90f, ray!!.tipX, 0.1f)
+    }
+
+    @Test fun collapsedIndexAimsFromTheUniqueExtendedFinger() {
+        val hand = pointingHand(90f, 50f).let { original ->
+            val points = original.points.toMutableList()
+            points[IndexPoint.INDEX_TIP] = points[IndexPoint.INDEX_MCP]
+            points[IndexPoint.INDEX_DIP] = points[IndexPoint.INDEX_PIP]
+            points[12] = 90f to 50f
+            points[11] = 70f to 50f
+            points[10] = 50f to 50f
+            original.copy(points = points)
+        }
+        val ray = IndexPoint.extended(hand, 200, 200)
+        assertTrue(ray != null)
+        assertEquals(90f, ray!!.tipX, 0.1f)
+    }
+
+    @Test fun aScreenFillingPersonBoxIsNotTheAimTarget() {
+        val giant = BoxObservation("object", "person", 0.99f, 0f, 0f, 200f, 200f, trackId = 346)
+        val cup = BoxObservation("object", "cup", 0.8f, 120f, 30f, 170f, 70f, trackId = 766)
+        val frame = FrameDetections(200, 200, listOf(giant, cup, pointingHand(90f, 50f)))
+        val ray = IndexPoint.ray(frame)!!
+        val hit = IndexPoint.alongRay(
+            ray, frame.boxes, preferId = null,
+            frameWidth = frame.width, frameHeight = frame.height,
+        )
+        assertEquals(766, hit!!.trackId)
+    }
+
     @Test fun replacementPrefersTheHigherScoreThenTheLowerId() {
         val low = BoxObservation("object", "cup", 0.4f, 0f, 0f, 40f, 40f, trackId = 1)
         val high = BoxObservation("object", "book", 0.9f, 50f, 0f, 80f, 20f, trackId = 8)

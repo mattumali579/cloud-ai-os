@@ -116,7 +116,10 @@ class AimLock(
         val visible = current != null && objects.any { it.trackId == current }
         if (current != null && !visible) {
             val next = if (ray != null) {
-                IndexPoint.alongRay(ray, objects, preferId = null, hysteresis = rayHysteresis)?.trackId
+                IndexPoint.alongRay(
+                    ray, objects, preferId = null, hysteresis = rayHysteresis,
+                    frameWidth = frame.width, frameHeight = frame.height,
+                )?.trackId
             } else {
                 IndexPoint.replacement(objects, current)?.trackId
             }
@@ -139,7 +142,10 @@ class AimLock(
         }
         lostFrames = 0
         val rayTarget = if (ray != null) {
-            IndexPoint.alongRay(ray, objects, current, rayHysteresis)?.trackId
+            IndexPoint.alongRay(
+                ray, objects, current, rayHysteresis,
+                frameWidth = frame.width, frameHeight = frame.height,
+            )?.trackId
         } else {
             null
         }

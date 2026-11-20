@@ -4,7 +4,7 @@ Version 0.25.0, versionCode 25, is the measurement below. Versions through 0.29 
 
 ## What changed
 
-- MediaPipe Hand Landmarker runs on the CPU delegate, on a frame whose long side is at most 640px. Landmarks are mapped into the EfficientDet frame. Both models run. A hand failure does not drop object boxes.
+- MediaPipe Hand Landmarker runs on a frame whose long side is at most 768px. Landmarks are mapped into the EfficientDet frame. Both models run. A hand failure does not drop object boxes.
 - An extended index finger (wrist, MCP, PIP, DIP, tip, other fingers curled, handedness at least 0.40) builds a 2D ray from the fingertip. The object the ray enters is the target. The current lock stays when it is also on that ray.
 - Two steady frames lock it. Dropping the hand does not move the lock back to the screen center. One stray ray frame does not switch it.
 - If the locked track is missing and no other object is visible, the lock is held for 3 frames. Version 0.26.0 does not add that hold when a replacement is already in the frame. See [performance.md](performance.md).

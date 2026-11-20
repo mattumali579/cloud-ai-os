@@ -4,6 +4,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.34: glasses-recording pointing gates
+
+Version code 35. Phone screen recording `10910.mp4` of Live View on v34 showed 21 landmarks on the phone-holding hand, landmark 8 on the wrong end of a side-on point, `State: hand` with `Target: none`, and giant person boxes covering the scene. Pointing now requires a uniquely extended finger (index first; collapsed landmark 8 can aim from the long finger), ignores objects that fill more than 35% of the frame, and keeps a moving hand by the wrist when landmark 8 jumps. Hand landmarker input is 768px. This is a recording-driven code fix, not a new glasses proof.
+
 ## Version 0.33: training still overlay
 
 Live View now matches the owner's training stills: 21 cyan landmarks, landmark 8 as the index marker, a green **pointing hand** badge versus a fist labeled **hand**, an aim ray that stops on the locked object (`cup #766`) or ends on an empty-space crosshair, and a top-right HUD (`Hands`, `LMK`, `State`, `Target`, `Conf`, `FPS`). Same package `com.mattumali.visortracker.stable`. versionCode 34. Tap **UPDATE THIS APP**.

@@ -31,7 +31,7 @@ data class BoxObservation(
  */
 class TrackIds(
     private val matchThreshold: Float = 0.25f,
-    private val maxMissedFrames: Int = 8,
+    private val maxMissedFrames: Int = 12,
     private val graceFrames: Int = 2,
     private val handGraceFrames: Int = HandTrack.HAND_GRACE_FRAMES,
     private val relabelConfirmations: Int = 3

@@ -161,7 +161,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         val previous = latest
         val lockedId = distanceEstimator.selectedTrackId()
         val aimId = aimRay?.let { ray ->
-            IndexPoint.alongRay(ray, frame.boxes, lockedId)?.trackId
+            IndexPoint.alongRay(ray, frame.boxes, lockedId, frameWidth = frame.width, frameHeight = frame.height)?.trackId
         }
         val incomingObjects = if (frame.boxes.isEmpty()) {
             emptyList()
@@ -252,7 +252,12 @@ class TrackingOverlayView(context: Context) : View(context) {
             return
         }
         val liveRay = IndexPoint.ray(frame) ?: aimRay
-        val aimed = liveRay?.let { IndexPoint.alongRay(it, frame.boxes, distanceEstimator.selectedTrackId()) }
+        val aimed = liveRay?.let {
+            IndexPoint.alongRay(
+                it, frame.boxes, distanceEstimator.selectedTrackId(),
+                frameWidth = frame.width, frameHeight = frame.height,
+            )
+        }
         drawAim(canvas, frame, liveRay, aimed)
         for (observation in frame.boxes) {
             if (observation.kind == "hand") {

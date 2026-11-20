@@ -99,7 +99,6 @@ class GestureGateTest {
         val hand = pointingHand(90f, 50f)
         val points = hand.points.toMutableList()
         points[IndexPoint.INDEX_TIP] = points[IndexPoint.INDEX_MCP]
-        points[12] = 140f to 40f
         return hand.copy(points = points)
     }
 }

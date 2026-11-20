@@ -30,12 +30,19 @@ object IndexPoint {
     const val INDEX_PIP = 6
     const val INDEX_DIP = 7
     const val INDEX_TIP = 8
-    const val MIN_SCORE = 0.40f
+    const val MIN_SCORE = 0.28f
+    const val MAX_POINTABLE_FRAME_FRACTION = 0.35f
     const val LIMITATION =
         "Hand z recognizes depth-angled pointing, but object boxes have no measured depth. " +
             "Depth-angled aim uses the fingertip position; overlapping objects stay ambiguous."
 
     private val OTHER_TIPS = intArrayOf(12, 16, 20)
+    private val FINGERS = listOf(
+        Finger(INDEX_TIP, INDEX_MCP, INDEX_PIP, INDEX_DIP),
+        Finger(12, 9, 10, 11),
+        Finger(16, 13, 14, 15),
+        Finger(20, 17, 18, 19),
+    )
 
     fun ray(frame: FrameDetections, minScore: Float = MIN_SCORE): PointingRay? {
         if (frame.width <= 0 || frame.height <= 0) return null
@@ -64,18 +71,40 @@ object IndexPoint {
         }
         val hasDepth = hand.depths.size >= 21 && hand.depths.take(21).all { it.isFinite() }
         val palm = distance3(hand, INDEX_MCP, WRIST, hasDepth)
-        val indexLength = distance3(hand, INDEX_TIP, INDEX_MCP, hasDepth)
-        if (palm < 4f || indexLength < palm * 0.85f) return null
-        val straight = cosine3(hand, INDEX_MCP, INDEX_PIP, INDEX_TIP, hasDepth)
-        if (straight > -0.50f) return null
-        val tipReach = distance3(hand, INDEX_TIP, WRIST, hasDepth)
-        for (other in OTHER_TIPS) {
-            if (distance3(hand, other, WRIST, hasDepth) > tipReach * 0.92f) return null
+        if (palm < 4f) return null
+        val ranked = FINGERS.map { finger ->
+            RankedFinger(
+                finger = finger,
+                reach = distance3(hand, finger.tip, WRIST, hasDepth),
+                length = distance3(hand, finger.tip, finger.mcp, hasDepth),
+                straight = cosine3(hand, finger.mcp, finger.pip, finger.tip, hasDepth),
+            )
+        }.sortedByDescending { it.reach }
+        val best = ranked.first()
+        val secondReach = ranked.getOrNull(1)?.reach ?: 0f
+        val index = ranked.first { it.finger.tip == INDEX_TIP }
+        val unique = best.reach >= secondReach * 1.08f && best.reach >= palm * 0.70f
+        val indexUsable = index.length >= palm * 0.70f && index.straight <= -0.25f &&
+            index.reach >= secondReach * 1.05f && index.reach >= palm * 0.70f
+        val chosen = when {
+            indexUsable -> index
+            unique && index.length < palm * 0.75f && best.straight <= -0.25f &&
+                best.length >= palm * 0.65f -> best
+            else -> return null
         }
-        val dx = tip.first - dip.first
-        val dy = tip.second - dip.second
+        val chosenTip = points[chosen.finger.tip]
+        val chosenDip = points[chosen.finger.dip]
+        val chosenJoints = listOf(
+            wrist,
+            points[chosen.finger.mcp],
+            points[chosen.finger.pip],
+            chosenDip,
+            chosenTip,
+        )
+        val dx = chosenTip.first - chosenDip.first
+        val dy = chosenTip.second - chosenDip.second
         val projectedLength = hypot(dx, dy)
-        val dz = if (hasDepth) hand.depths[INDEX_TIP] - hand.depths[INDEX_DIP] else 0f
+        val dz = if (hasDepth) hand.depths[chosen.finger.tip] - hand.depths[chosen.finger.dip] else 0f
         val segmentLength = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
         if (segmentLength < 3f) return null
         val depthDominant = hasDepth && kotlin.math.abs(dz) > projectedLength * 0.75f
@@ -83,7 +112,7 @@ object IndexPoint {
         val reach = hypot(frameWidth.toFloat(), frameHeight.toFloat())
         val dirX = if (projectedLength >= 3f) dx / projectedLength else 0f
         val dirY = if (projectedLength >= 3f) dy / projectedLength else 0f
-        return PointingRay(tip.first, tip.second, dirX, dirY, reach, joints, depthDominant)
+        return PointingRay(chosenTip.first, chosenTip.second, dirX, dirY, reach, chosenJoints, depthDominant)
     }
 
     /**
@@ -95,10 +124,12 @@ object IndexPoint {
         objects: List<BoxObservation>,
         preferId: Int?,
         hysteresis: Float = RAY_HYSTERESIS,
+        frameWidth: Int = 0,
+        frameHeight: Int = 0,
     ): BoxObservation? {
-        if (ray.depthDominant) return underFingertip(ray, objects, preferId)
+        if (ray.depthDominant) return underFingertip(ray, objects, preferId, frameWidth, frameHeight)
         val hits = objects.mapNotNull { box ->
-            if (!pointable(box)) return@mapNotNull null
+            if (!pointable(box, frameWidth, frameHeight)) return@mapNotNull null
             val distance = entered(ray, box) ?: return@mapNotNull null
             box to distance
         }
@@ -119,10 +150,12 @@ object IndexPoint {
         ray: PointingRay,
         objects: List<BoxObservation>,
         preferId: Int?,
+        frameWidth: Int = 0,
+        frameHeight: Int = 0,
     ): BoxObservation? {
         val radius = max(24f, ray.reach * 0.045f)
         val hits = objects.mapNotNull { box ->
-            if (!pointable(box)) return@mapNotNull null
+            if (!pointable(box, frameWidth, frameHeight)) return@mapNotNull null
             val dx = when {
                 ray.tipX < box.left -> box.left - ray.tipX
                 ray.tipX > box.right -> ray.tipX - box.right
@@ -211,8 +244,19 @@ object IndexPoint {
         return curledIndex(hand) || fist(hand)
     }
 
-    private fun pointable(box: BoxObservation): Boolean =
-        !box.held && box.kind == "object" && box.trackId > 0 && box.right > box.left && box.bottom > box.top
+    private fun pointable(box: BoxObservation, frameWidth: Int = 0, frameHeight: Int = 0): Boolean {
+        if (box.held || box.kind != "object" || box.trackId <= 0 || box.right <= box.left || box.bottom <= box.top) {
+            return false
+        }
+        if (frameWidth > 0 && frameHeight > 0) {
+            val limit = frameWidth.toFloat() * frameHeight.toFloat() * MAX_POINTABLE_FRAME_FRACTION
+            if (box.area() > limit) return false
+        }
+        return true
+    }
+
+    private data class Finger(val tip: Int, val mcp: Int, val pip: Int, val dip: Int)
+    private data class RankedFinger(val finger: Finger, val reach: Float, val length: Float, val straight: Float)
 
     private fun distance(a: Pair<Float, Float>, b: Pair<Float, Float>): Float =
         hypot(a.first - b.first, a.second - b.second)

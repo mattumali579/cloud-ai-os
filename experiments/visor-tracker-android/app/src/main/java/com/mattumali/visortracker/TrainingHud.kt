@@ -22,13 +22,14 @@ object TrainingHud {
 
     fun status(frame: FrameDetections, lockedId: Int?): Status {
         val hands = frame.boxes.filter { it.kind == "hand" && it.points.size >= 21 }
-        val primary = hands.maxByOrNull { it.score }
         val ray = IndexPoint.ray(frame)
         val pointing = ray != null
+        val primary = hands.firstOrNull { IndexPoint.extended(it, frame.width, frame.height) != null }
+            ?: hands.maxByOrNull { it.score }
         val aimed = if (ray == null) {
             null
         } else {
-            IndexPoint.alongRay(ray, frame.boxes, lockedId)
+            IndexPoint.alongRay(ray, frame.boxes, lockedId, frameWidth = frame.width, frameHeight = frame.height)
         }
         val locked = lockedId?.let { id ->
             frame.boxes.firstOrNull { it.kind == "object" && it.trackId == id }

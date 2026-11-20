@@ -538,7 +538,7 @@ class VisionPipeline(
 
     companion object {
         private const val TAG = "VisorTracker"
-        internal const val HAND_FRAME = 640
+        internal const val HAND_FRAME = 768
         /**
          * Production default. A same-image probe may record a faster count, and the
          * constant changes only when that probe still finds the extended index.
