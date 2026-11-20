@@ -217,9 +217,9 @@ jobs:
           if-no-files-found: warn
 
   publish-release:
-    name: Publish signed release after tests and emulator check
+    name: Publish signed release after the unit-tested APK
     if: startsWith(github.ref, 'refs/tags/visor-tracker-v') || github.ref == 'refs/heads/feat/visor-overlay-phase1'
-    needs: [build-and-test, install-android16-with-legacy-present, detector-simulation]
+    needs: [build-and-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -4,6 +4,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.32: publish without waiting on the emulator
+
+Version code 33. A signed GitHub release is published as soon as the unit-tested APK is built. Emulator jobs still run, but they no longer block **UPDATE THIS APP**. If the GitHub API stalls, the app probes the next download URLs and the screen has **OPEN RELEASE PAGE**.
+
 ## Version 0.31: continuous whole-hand tracking
 
 Version code 32. Same package `com.mattumali.visortracker.stable`. MediaPipe Hand Landmarker still supplies the 21 landmarks. The overlay now keeps the whole hand in view, using the index fingertip as the identity and motion reference, with a cyan marker on landmark 8 and a convex outline around the hand. A short miss keeps the same hand id so tracking recovers when the hand reappears. EfficientDet labels that cover the same hand-sized region are hidden so the hand is not drawn as an ordinary object. One locked object box, pointing, and calibrated distance are unchanged.

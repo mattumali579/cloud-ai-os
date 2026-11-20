@@ -41,7 +41,7 @@ object TrackerUpdater {
     private const val NOTIFICATION_ID = 7391
     private const val REPO_API =
         "https://api.github.com/repos/mattumali579/cloud-ai-os/releases?per_page=40"
-    private const val ASSET_NAME = "Visor-Fast-Tracking.apk"
+    private const val ASSET_NAME = TrackerRelease.ASSET_NAME
     private const val MAX_APK_BYTES = 180_000_000L
     private const val PERIOD = 12L * 60L * 60L * 1000L
     private val busy = AtomicBoolean(false)
@@ -79,7 +79,11 @@ object TrackerUpdater {
         onStatus: (String) -> Unit = {},
         onOffer: (UpdateOffer?) -> Unit = {}
     ) {
-        if (!busy.compareAndSet(false, true)) return
+        if (!busy.compareAndSet(false, true)) {
+            onStatus("Still checking GitHub. If this hangs, tap OPEN RELEASE PAGE.")
+            onOffer(null)
+            return
+        }
         Thread {
             try {
                 val network = context.getSystemService(ConnectivityManager::class.java)
@@ -91,7 +95,10 @@ object TrackerUpdater {
                 }
             } catch (error: Exception) {
                 Log.w(TAG, "Update check failed", error)
-                onStatus("Update check failed: " + (error.message ?: "unknown"))
+                onStatus(
+                    "GitHub stalled: " + (error.message ?: "unknown") +
+                        ". Tap OPEN RELEASE PAGE.",
+                )
                 onOffer(null)
             } finally {
                 busy.set(false)
@@ -109,10 +116,20 @@ object TrackerUpdater {
         val sha256: String?
     )
 
-    private fun fetchRelease(): Release? {
+    private fun fetchRelease(installed: Long): Release? {
+        try {
+            val listed = fetchFromApi()
+            if (listed != null) return listed
+        } catch (error: Exception) {
+            Log.w(TAG, "GitHub release API stalled", error)
+        }
+        return fetchFromDirectDownloads(installed)
+    }
+
+    private fun fetchFromApi(): Release? {
         val connection = URL(REPO_API).openConnection() as HttpURLConnection
-        connection.connectTimeout = 12_000
-        connection.readTimeout = 20_000
+        connection.connectTimeout = 8_000
+        connection.readTimeout = 8_000
         connection.setRequestProperty("User-Agent", "Visor-Fast-Tracking-Android-Updater")
         connection.setRequestProperty("Accept", "application/vnd.github+json")
         try {
@@ -120,33 +137,64 @@ object TrackerUpdater {
                 throw IllegalStateException("GitHub release API returned " + connection.responseCode)
             }
             val raw = connection.inputStream.bufferedReader().use { it.readText() }
-            val releases = JSONArray(raw)
-            var newest: Release? = null
-            for (index in 0 until releases.length()) {
-                val release = releases.optJSONObject(index) ?: continue
-                if (release.optBoolean("draft") || release.optBoolean("prerelease")) continue
-                val match = tag.matchEntire(release.optString("tag_name")) ?: continue
-                val version = match.groupValues[1].toLongOrNull() ?: continue
-                val assets = release.optJSONArray("assets") ?: continue
-                for (assetIndex in 0 until assets.length()) {
-                    val asset = assets.optJSONObject(assetIndex) ?: continue
-                    if (asset.optString("name") != ASSET_NAME) continue
-                    val bytes = asset.optLong("size", 0L)
-                    if (bytes < 1_000_000L || bytes > MAX_APK_BYTES) continue
-                    val url = asset.optString("browser_download_url")
-                    val uri = Uri.parse(url)
-                    if (uri.scheme != "https" || uri.host != "github.com") continue
-                    val digest = asset.optString("digest")
-                    val sha256 = if (digest.startsWith("sha256:")) {
-                        digest.removePrefix("sha256:").lowercase()
-                    } else null
-                    if (newest == null || version > newest.version) {
-                        newest = Release(version, url, bytes, sha256)
-                    }
+            val parsed = TrackerRelease.newestFromApiJson(raw) ?: return parseAssets(raw)
+            return Release(parsed.version, parsed.url, 2_000_000L, null)
+        } finally { connection.disconnect() }
+    }
+
+    private fun parseAssets(raw: String): Release? {
+        val releases = JSONArray(raw)
+        var newest: Release? = null
+        for (index in 0 until releases.length()) {
+            val release = releases.optJSONObject(index) ?: continue
+            if (release.optBoolean("draft") || release.optBoolean("prerelease")) continue
+            val match = tag.matchEntire(release.optString("tag_name")) ?: continue
+            val version = match.groupValues[1].toLongOrNull() ?: continue
+            val assets = release.optJSONArray("assets") ?: continue
+            for (assetIndex in 0 until assets.length()) {
+                val asset = assets.optJSONObject(assetIndex) ?: continue
+                if (asset.optString("name") != ASSET_NAME) continue
+                val bytes = asset.optLong("size", 0L)
+                if (bytes < 1_000_000L || bytes > MAX_APK_BYTES) continue
+                val url = asset.optString("browser_download_url")
+                val uri = Uri.parse(url)
+                if (uri.scheme != "https" || uri.host != "github.com") continue
+                val digest = asset.optString("digest")
+                val sha256 = if (digest.startsWith("sha256:")) {
+                    digest.removePrefix("sha256:").lowercase()
+                } else null
+                if (newest == null || version > newest.version) {
+                    newest = Release(version, url, bytes, sha256)
                 }
             }
-            return newest
-        } finally { connection.disconnect() }
+        }
+        return newest
+    }
+
+    private fun fetchFromDirectDownloads(installed: Long): Release? {
+        for (version in TrackerRelease.fallbackVersions(installed)) {
+            val url = TrackerRelease.downloadUrl(version)
+            if (assetExists(url)) return Release(version, url, 2_000_000L, null)
+        }
+        return null
+    }
+
+    private fun assetExists(url: String): Boolean {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
+        connection.connectTimeout = 6_000
+        connection.readTimeout = 6_000
+        connection.requestMethod = "HEAD"
+        connection.setRequestProperty("User-Agent", "Visor-Fast-Tracking-Android-Updater")
+        try {
+            val code = connection.responseCode
+            return code in 200..399
+        } catch (error: Exception) {
+            Log.w(TAG, "direct APK probe failed", error)
+            return false
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun currentVersion(context: Context): Long {
@@ -166,9 +214,10 @@ object TrackerUpdater {
     }
 
     private fun installNewest(context: Context, status: (String) -> Unit): UpdateOffer? {
-        val release = fetchRelease()
-        if (release == null || release.version <= currentVersion(context)) {
-            status("Tracker is up to date")
+        val installed = currentVersion(context)
+        val release = fetchRelease(installed)
+        if (release == null || release.version <= installed) {
+            status("Tracker is up to date. If GitHub is slow, tap OPEN RELEASE PAGE.")
             return null
         }
         status("Version " + release.version + " is downloading. Confirm Update. Do not uninstall.")

@@ -179,6 +179,16 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { updateThisApp() }
         }
         root.addView(installUpdate)
+        root.addView(Button(this).apply {
+            text = "OPEN RELEASE PAGE"
+            setOnClickListener {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(TrackerRelease.RELEASES_PAGE))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                status.text = "Download Visor-Fast-Tracking.apk. Tap Update. Do not uninstall."
+            }
+        })
         root.addView(CheckBox(this).apply {
             text = "Show the Live View proof mark"
             isChecked = prefs.getBoolean(OverlayTrackingService.PREF_PROBE, true)
