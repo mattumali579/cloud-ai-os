@@ -251,10 +251,24 @@ def command_body(text: str, phrase: str) -> str:
     return re.sub(r"^(?:to|please|can you|could you)\s+", "", value).strip()
 
 
+def _is_notebooklm_read_only_task(text: str) -> bool:
+    """Keep account inspection requests intact and route them to the Codex operator."""
+    lower = normalize_voice_text(text)
+    if "notebooklm" not in lower:
+        return False
+    if not re.search(r"\b(?:check|count|inspect|report|show|tell|how\s+many|total\s+number)\b", lower):
+        return False
+    from cloudos.worker.task_exec import unattended_blocked
+
+    return not unattended_blocked(lower)
+
+
 def plan_commands(text: str, phrase: str) -> list[str]:
     """Split one utterance into ordered, allowlisted actions instead of turning it into one browser query."""
     body = command_body(text, phrase)
     if parse_notepad_document_workflow(body):
+        return [body]
+    if _is_notebooklm_read_only_task(body):
         return [body]
     body = re.sub(
         r"[,;]\s*(?=(?:open|launch|start|close|quit|click|select|choose|go\s+to|show|search|find|locate|look\s+for|type|save|summarize|read|scrape|append|replace|edit|confirm|list|check|press|scroll|focus|copy|paste|undo|cut|audit|diagnose|manage|fix|repair|troubleshoot)\b)",
@@ -334,9 +348,9 @@ def start_operator_task(text: str, config: "BridgeConfig") -> str:
     task = re.sub(r"^(?:use|ask|have)\s+codex\s+(?:to\s+)?", "", task).strip()
     if not task:
         return "Tell me what you want me to do."
-    from cloudos.worker.task_exec import UNATTENDED_BLOCKED
+    from cloudos.worker.task_exec import unattended_blocked
 
-    if UNATTENDED_BLOCKED.search(task):
+    if unattended_blocked(task):
         return (
             "That needs a confirmed workflow. I will not run send, delete, pay, "
             "password, or security changes unattended from voice."
@@ -2212,6 +2226,8 @@ def classify_command(text: str) -> str:
         return "operator_status"
     if re.search(r"\b(?:cancel\s+(?:the\s+)?(?:task|codex)|stop\s+jarvis|cancel\s+jarvis)\b", lower):
         return "operator_cancel"
+    if _is_notebooklm_read_only_task(lower):
+        return "operator"
     if re.search(r"\b(?:confirm(?:\s+(?:send|delete|it|that)?)?|yes\s+do\s+it|go\s+ahead)\b", lower) or (
         re.search(r"\b(?:cancel|never\s+mind)\b", lower) and _get_pending_risk() is not None
     ):

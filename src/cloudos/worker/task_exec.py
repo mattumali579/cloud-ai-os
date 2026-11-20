@@ -75,6 +75,20 @@ UNATTENDED_BLOCKED = re.compile(
     re.IGNORECASE,
 )
 
+NEGATED_READ_ONLY_GUARD = re.compile(
+    r"\bdo\s+not\s+(?:create\s*,?\s*)?(?:delete|remove|erase)\s*,?\s*"
+    r"(?:or\s+)?modify\s+anything\b|"
+    r"\bwithout\s+(?:creating\s*,?\s*)?(?:deleting|removing|erasing)\s*,?\s*"
+    r"(?:or\s+)?modifying\s+anything\b",
+    re.IGNORECASE,
+)
+
+
+def unattended_blocked(task: str) -> bool:
+    """Block requested risky actions, but not an explicit read-only prohibition."""
+    safety_scoped = NEGATED_READ_ONLY_GUARD.sub("", task)
+    return UNATTENDED_BLOCKED.search(safety_scoped) is not None
+
 
 def _workspace_root() -> Path:
     return Path(os.environ.get("TASK_WORKSPACE_ROOT") or DEFAULT_WORKSPACE_ROOT)
@@ -103,7 +117,7 @@ def _child_env() -> dict:
 
 def _run_codex(task: str, workspace: Path, timeout_s: int) -> dict:
     """Run Codex with subscription auth and bounded writable directories."""
-    if UNATTENDED_BLOCKED.search(task):
+    if unattended_blocked(task):
         raise CloudOSError(
             ErrorCode.PRIVACY_BLOCKED,
             "unattended Codex operator refused a high-risk action; use a purpose-built confirmed workflow",

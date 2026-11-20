@@ -8,7 +8,7 @@ from websockets.asyncio.server import serve
 from cloudos.contracts import CloudOSError
 import cloudos.glasses.jarvis as jarvis_module
 from cloudos.glasses.jarvis import BridgeConfig, classify_command, close_named_target, command_body, create_note, docker_control_name, find_files, glasses_status, handle_command, is_jarvis_hotword, jarvis_hotword_command, normalize_voice_text, open_named_target, operator_task_status, plan_commands, play_media_query, search_web, start_operator_task, validate_private_ws_url, voice_request_phrases
-from cloudos.worker.task_exec import _run_codex
+from cloudos.worker.task_exec import _run_codex, unattended_blocked
 import scripts.jarvis_glasses as bridge
 from scripts.jarvis_glasses import serve_assistant_tools, serve_once, wants_jarvis_off
 
@@ -653,6 +653,48 @@ def test_generic_tasks_use_a_fifteen_minute_operator_timeout(monkeypatch, tmp_pa
     asyncio.run(scenario())
     assert bridge.GENERIC_TASK_TIMEOUT_S == 900
     assert observed["timeout_s"] == bridge.GENERIC_TASK_TIMEOUT_S
+
+
+def test_notebooklm_count_request_stays_whole_and_routes_to_codex():
+    command = (
+        "Hey Jarvis, on my Windows PC, open or switch to NotebookLM in Chrome and check "
+        "the total number of notebooks in my account. Report the number shown; do not "
+        "create, delete, or modify anything."
+    )
+    expected = command_body(command, "jarvis")
+    assert classify_command(command) == "operator"
+    assert plan_commands(command, "jarvis") == [expected]
+    assert unattended_blocked(expected) is False
+    assert unattended_blocked("delete a NotebookLM notebook") is True
+
+
+def test_notebooklm_count_request_reaches_codex_as_one_read_only_task(monkeypatch, tmp_path: Path):
+    observed = {}
+
+    def fake_run_codex(task, workspace, timeout_s):
+        observed["task"] = task
+        return {"output": "You have 21 NotebookLM notebooks."}
+
+    class FakeVisor:
+        async def call(self, method, params=None):
+            return {"paired": True}
+
+    async def scenario():
+        monkeypatch.setattr("scripts.jarvis_glasses._run_codex", fake_run_codex)
+        from scripts.jarvis_glasses import answer_text
+
+        config = BridgeConfig("ws://127.0.0.1:7333/rpc", (tmp_path,))
+        command = (
+            "Hey Jarvis, open or switch to NotebookLM in Chrome and check the total number "
+            "of notebooks in my account. Report the number shown; do not create, delete, "
+            "or modify anything."
+        )
+        answer = await answer_text(FakeVisor(), config, command)
+        assert answer == "You have 21 NotebookLM notebooks."
+
+    asyncio.run(scenario())
+    assert "notebooklm" in observed["task"].lower()
+    assert "do not create, delete, or modify anything" in observed["task"].lower()
 
 
 def test_operator_timeout_message_uses_configured_minutes(monkeypatch, tmp_path: Path):
