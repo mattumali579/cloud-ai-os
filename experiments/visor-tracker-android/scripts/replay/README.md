@@ -30,7 +30,24 @@ A passing local run must report `composited_screen_recording` and:
 Synthetic Kotlin boxes are not a ship gate. Do not tag a new APK until this
 command has been run on the owner’s `10917.mp4`.
 
-## Latest local run (2026-11-20, issue #39 follow-up)
+## Latest local run (2026-11-20, zero-lock follow-up)
+
+Same 424-frame composited clip. A forearm guess may lock again, but only the
+box its ray keeps entering, and it aims across the middle of the frame instead
+of up at the chair. A run with zero locks fails even if phone steal is zero.
+
+| metric | zero-lock run | this run | denominator |
+| --- | --- | --- | --- |
+| lock recall | 0.000 | 0.059 | 341 pointing frames |
+| lock precision | n/a (0 locks) | 0.235 | frames with a lock while pointing |
+| phone steal, other targets | 0.000 | 0.000 | non-phone pointing frames |
+| phone lock recall | 0.000 | 0.000 | 87 phone frames |
+| cylinder lock recall | 0.000 | 0.351 | 57 tune frames |
+| geometric ray hit | 0.405 | 0.481 | 341 |
+| no-target false lock | low | 0.301 | 83 open-palm frames, mostly MediaPipe |
+| holdout chair/optics lock recall | 0 | 0 | 104, not used to tune |
+
+## Previous run (2026-11-20, issue #39 follow-up)
 
 Footage: owner `10917.mp4` (composited Live View, HUD v0.36.0 #37). 424 frames, 341 pointing.
 Annotated output stays gitignored: `test-recordings/10917/replay/10917_replay.mp4`.

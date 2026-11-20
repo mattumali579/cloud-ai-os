@@ -44,9 +44,9 @@ class GlassesFootage10917Test {
         val frame = FrameDetections(width, height, kept)
         assertEquals(112, IndexPoint.aimed(frame)!!.hit!!.trackId)
         val aim = AimLock()
-        aim.observe(frame)
-        val locked = aim.observe(frame)
-        assertEquals(null, locked.lockedId)
+        var locked = aim.observe(frame)
+        repeat(3) { locked = aim.observe(frame) }
+        assertEquals(112, locked.lockedId)
     }
 
     @Test fun aPersonBoxIsNeverTheLock() {

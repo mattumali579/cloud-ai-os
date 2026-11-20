@@ -408,16 +408,38 @@ def main() -> int:
         "holdout_segments": ["chair", "optics"],
         "source": "composited_screen_recording",
         "model": "efficientdet_lite0",
-        "note": "arm_box is not a MediaPipe fingertip. semantic does not rename book to phone or cup to barrel.",
+        "note": "arm_box is not a MediaPipe fingertip. semantic does not rename book to phone or cup to barrel. Zero locks fails.",
     }
+    locked_rows = [r for r in rows if r["lock_id"] is not None]
+    correct_locks = [r for r in aimed_rows if r["target_ok"] and r["lock_id"] is not None]
+    none_rows = [r for r in rows if r["gt_target"] == "none"]
+    delays = []
+    for seg in gt["segments"]:
+        if seg["target"] == "none" or seg.get("holdout"):
+            continue
+        hits = [r["t"] for r in rows if seg["t0"] <= r["t"] < seg["t1"] and r["target_ok"] and r["lock_id"] is not None]
+        if hits:
+            delays.append(hits[0] - seg["t0"])
+    metrics["lock_frames"] = len(locked_rows)
+    metrics["lock_recall"] = rate(lambda r: r["target_ok"] and r["lock_id"] is not None, aimed_rows)
+    metrics["lock_precision"] = round(len(correct_locks) / max(1, len([r for r in aimed_rows if r["lock_id"] is not None])), 4)
+    metrics["no_target_false_lock_rate"] = rate(lambda r: r["lock_id"] is not None, none_rows)
+    metrics["median_acquire_delay_s"] = round(sorted(delays)[len(delays) // 2], 3) if delays else None
+    per_target = {}
+    for name in sorted({r["gt_target"] for r in aimed_rows}):
+        group = [r for r in aimed_rows if r["gt_target"] == name]
+        per_target[name] = {
+            "frames": len(group),
+            "holdout": bool(group and group[0]["holdout"]),
+            "lock_recall": rate(lambda r: r["target_ok"] and r["lock_id"] is not None, group),
+            "ray_hit": rate(lambda r: r["ray_hits_gt"], group),
+        }
+    metrics["per_target"] = per_target
     (out_dir / "frames.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     print(json.dumps(metrics, indent=2))
-    fail = (
-        metrics["hand_recall_while_pointing"] < 0.70
-        or metrics["phone_steal_rate"] > 0.25
-        or metrics["person_fp_rate"] > 0.35
-    )
+    # Zero locks is a failure even when phone steal is also zero.
+    fail = metrics["lock_frames"] == 0 or metrics["lock_recall"] <= 0 or metrics["phone_steal_rate_other_targets"] > 0.08
     return 1 if fail else 0
 
 

@@ -46,12 +46,12 @@ object HandTrack {
             fromBottom -> midX to clipped.bottom
             else -> midX to midY
         }
-        // Glasses Live View looks down at the table: the index is the far
-        // top of the forearm box, not the floor-side corner.
-        val aimY = (clipped.top + midY) * 0.5f
+        // Aim across the table, toward the middle of the frame. The top of the
+        // arm box is usually the chair or the wall, not the fingertip.
+        val tableY = (frameHeight * 0.55f).coerceIn(clipped.top, clipped.bottom)
         val tip = when {
-            fromRight -> clipped.left to aimY
-            fromLeft -> clipped.right to aimY
+            fromRight -> clipped.left to tableY
+            fromLeft -> clipped.right to tableY
             else -> midX to clipped.top
         }
         fun along(t: Float) = wrist.first + (tip.first - wrist.first) * t to

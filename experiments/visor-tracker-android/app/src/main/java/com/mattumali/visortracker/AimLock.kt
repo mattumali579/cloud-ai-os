@@ -143,23 +143,32 @@ class AimLock(
             lostFrames = 0
             return AimDecision(null, changed = true)
         }
-        lostFrames = 0
         val rayTarget = aimedRay?.hit?.trackId
         val inferredHand = frame.boxes.any { box -> box.kind == "hand" && box.synthetic }
         val liveHand = measuredHand || inferredHand
-        // An arm-box skeleton is a guess. Draw it, but do not acquire or switch
-        // a lock from it. A visible lock stays until a measured hand moves it.
         if (inferredHand && !measuredHand) {
-            // A forearm guess may keep a lock it still hits. It must not acquire,
-            // switch, or hold a target after the guess leaves that box.
-            if (current != null && rayTarget == current) return AimDecision(current, changed = false)
-            pendingId = null
-            pendingCount = 0
-            if (current == null) return AimDecision(null, changed = false)
-            lockedId = null
-            fingerLocked = false
-            return AimDecision(null, changed = true)
+            // Side-on pointing has no landmarks. Lock only the box the ray
+            // keeps hitting, and wait longer than a measured fingertip.
+            val required = if (current == null) acquireFrames + 2 else switchFrames
+            if (rayTarget == null) {
+                lostFrames += 1
+                if (!visible || lostFrames >= lostFramesLimit) {
+                    pendingId = null
+                    pendingCount = 0
+                    if (current == null) return AimDecision(null, changed = false)
+                    lockedId = null
+                    fingerLocked = false
+                    lostFrames = 0
+                    return AimDecision(null, changed = true)
+                }
+                return AimDecision(current, changed = false)
+            }
+            lostFrames = 0
+            val decision = commit(rayTarget, current, required)
+            if (decision.lockedId != null && decision.lockedId == rayTarget) fingerLocked = true
+            return decision
         }
+        lostFrames = 0
         val aimed = when {
             rayTarget != null -> rayTarget
             current != null -> current

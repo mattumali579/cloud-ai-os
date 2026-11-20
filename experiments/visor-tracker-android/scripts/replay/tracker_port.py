@@ -141,11 +141,11 @@ def from_arm_box(arm: Box, fw: int, fh: int) -> Box:
         wrist = (mid_x, arm.bottom)
     else:
         wrist = (mid_x, mid_y)
-    aim_y = (arm.top + mid_y) * 0.5
+    table_y = min(max(fh * 0.55, arm.top), arm.bottom)
     if from_right:
-        tip = (left, aim_y)
+        tip = (left, table_y)
     elif from_left:
-        tip = (right, aim_y)
+        tip = (right, table_y)
     else:
         tip = (mid_x, arm.top)
 
@@ -410,14 +410,19 @@ class AimLock:
             self.locked_id = None
             self.lost_frames = 0
             return None
-        self.lost_frames = 0
         if inferred and not measured:
-            if current is not None and ray_target == current:
+            required = (self.acquire + 2) if current is None else self.switch
+            if ray_target is None:
+                self.lost_frames += 1
+                if not visible or self.lost_frames >= self.lost_limit:
+                    self.pending_id = None
+                    self.pending_count = 0
+                    self.locked_id = None
+                    self.lost_frames = 0
+                    return None
                 return current
-            self.pending_id = None
-            self.pending_count = 0
-            self.locked_id = None
-            return None
+            self.lost_frames = 0
+            return self._commit(ray_target, current, required)
         elif ray_target is not None:
             chosen = ray_target
         elif current is not None:
