@@ -108,8 +108,7 @@ class AimLock(
             }
         }
         val objects = frame.boxes.filter { box ->
-            !box.held && box.kind == "object" && box.trackId > 0 &&
-                box.right > box.left && box.bottom > box.top
+            IndexPoint.pointable(box, frame.width, frame.height)
         }
         val ray = IndexPoint.ray(frame, minHandScore)
         val current = lockedId
@@ -203,8 +202,7 @@ internal fun pointedObject(
 ): BoxObservation? {
     if (frameWidth <= 0 || frameHeight <= 0) return null
     val objects = boxes.filter { box ->
-        !box.held && box.kind == "object" && box.trackId > 0 &&
-            box.right > box.left && box.bottom > box.top
+        IndexPoint.pointable(box, frameWidth, frameHeight)
     }
     if (objects.isEmpty()) return null
     val aimX = frameWidth * 0.5f

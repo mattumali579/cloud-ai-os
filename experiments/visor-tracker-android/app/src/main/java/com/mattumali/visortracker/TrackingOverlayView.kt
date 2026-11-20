@@ -168,8 +168,8 @@ class TrackingOverlayView(context: Context) : View(context) {
         } else {
             nearby.select(frame.width, frame.height, frame.boxes, lockedId, aimId)
         }
-        aimRay = IndexPoint.ray(frame)
         val incomingHands = HandTrack.forDisplay(frame.boxes)
+        aimRay = if (incomingHands.isEmpty()) null else IndexPoint.ray(frame)
         val incoming = HandTrack.compose(incomingObjects, incomingHands)
         val now = SystemClock.elapsedRealtime()
         val accepted = OverlayDiagnostics.acceptFrame(
@@ -350,6 +350,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         target: BoxObservation?,
     ) {
         if (ray == null) return
+        if (frame.boxes.none { it.kind == "hand" && !it.held && it.points.size >= 21 }) return
         val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
         val ox = (width - frame.width * scale) / 2f
         val oy = (height - frame.height * scale) / 2f

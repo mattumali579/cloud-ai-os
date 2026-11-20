@@ -12,17 +12,27 @@ object HandPriority {
     private const val MIN_HAND_COVERAGE = 0.55f
     private const val MAX_OBJECT_TO_HAND_AREA = 12f
 
-    fun apply(observations: List<BoxObservation>): List<BoxObservation> {
+    fun apply(
+        observations: List<BoxObservation>,
+        frameWidth: Int = 0,
+        frameHeight: Int = 0,
+    ): List<BoxObservation> {
         val hands = observations.filter { hand ->
             hand.kind == "hand" && hand.points.size >= 21 && hand.area() > 0f
         }
-        if (hands.isEmpty()) return observations
         return observations.filterNot { candidate ->
-            candidate.kind == "object" && hands.any { hand ->
-                sameHandRegion(candidate, hand) || armLabeledPerson(candidate, hand)
-            }
+            candidate.kind == "object" && (
+                wearerArm(candidate, frameWidth, frameHeight) ||
+                    (hands.isNotEmpty() && hands.any { hand ->
+                        sameHandRegion(candidate, hand) || armLabeledPerson(candidate, hand)
+                    })
+                )
         }
     }
+
+    /** True when EfficientDet still sees the glasses wearer's arm, even with no landmarks. */
+    fun wearerArmPresent(observations: List<BoxObservation>, frameWidth: Int, frameHeight: Int): Boolean =
+        observations.any { wearerArm(it, frameWidth, frameHeight) }
 
     fun label(hand: BoxObservation, frameWidth: Int, frameHeight: Int): String =
         if (IndexPoint.extended(hand, frameWidth, frameHeight) != null) "pointing hand" else "hand"
@@ -57,6 +67,26 @@ object HandPriority {
             personH > span * 6f &&
             person.area() > hand.area() * 20f
         return !looksLikeBody
+    }
+
+    /**
+     * The wearer's forearm enters from a frame edge. A standing person in the
+     * scene starts near the top of the picture and is much taller than wide.
+     */
+    internal fun wearerArm(person: BoxObservation, frameWidth: Int, frameHeight: Int): Boolean {
+        if (!person.label.equals("person", ignoreCase = true)) return false
+        if (frameWidth <= 0 || frameHeight <= 0) return false
+        val margin = max(12f, min(frameWidth, frameHeight) * 0.03f)
+        val fromEdge = person.left <= margin ||
+            person.right >= frameWidth - margin ||
+            person.bottom >= frameHeight - margin
+        if (!fromEdge) return false
+        val boxH = person.bottom - person.top
+        val boxW = person.right - person.left
+        val standingFigure = boxH > boxW * 1.8f &&
+            person.top < frameHeight * 0.18f &&
+            boxH > frameHeight * 0.50f
+        return !standingFigure
     }
 }
 

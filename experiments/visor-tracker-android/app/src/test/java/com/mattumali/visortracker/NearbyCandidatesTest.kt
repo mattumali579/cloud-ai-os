@@ -90,7 +90,7 @@ class NearbyCandidatesTest {
     }
 
     @Test fun lockStaysWhileAnotherCenterIsCloser() {
-        val target = box(1, "book", 10f, 20f, 70f, 90f)
+        val target = box(1, "book", 20f, 25f, 60f, 75f)
         val intruder = box(2, "book", 30f, 30f, 80f, 80f)
         val shown = NearbyCandidates().select(100, 100, listOf(intruder, target), lockedId = 1)
         assertEquals(1, shown.single().trackId)

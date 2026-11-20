@@ -76,6 +76,20 @@ class HandPriorityTest {
         assertTrue(visible.any { it.kind == "hand" })
     }
 
+    @Test fun aWearerArmIsDroppedEvenWhenMediaPipeMissesTheHand() {
+        val arm = BoxObservation("object", "person", 0.9f, 80f, 90f, 200f, 200f, trackId = 102)
+        val cup = BoxObservation("object", "cup", 0.8f, 10f, 10f, 40f, 50f, trackId = 7)
+        val visible = HandPriority.apply(listOf(arm, cup), 200, 200)
+        assertFalse(visible.any { it.label == "person" })
+        assertTrue(visible.any { it.trackId == 7 })
+    }
+
+    @Test fun aStandingPersonInTheSceneRemainsWithoutAHand() {
+        val person = BoxObservation("object", "person", 0.9f, 40f, 0f, 120f, 180f, trackId = 4)
+        val visible = HandPriority.apply(listOf(person), 200, 200)
+        assertTrue(visible.any { it.label == "person" })
+    }
+
     @Test fun extendedIndexIsNamedPointingHand() {
         val hand = pointingHand(150f, 100f)
         assertEquals("pointing hand", HandPriority.label(hand, 300, 200))

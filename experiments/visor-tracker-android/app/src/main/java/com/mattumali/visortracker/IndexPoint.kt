@@ -33,7 +33,7 @@ object IndexPoint {
     const val INDEX_DIP = 7
     const val INDEX_TIP = 8
     const val MIN_SCORE = 0.28f
-    const val MAX_POINTABLE_FRAME_FRACTION = 0.20f
+    const val MAX_POINTABLE_FRAME_FRACTION = 0.40f
     const val LIMITATION =
         "Hand z recognizes depth-angled pointing, but object boxes have no measured depth. " +
             "Depth-angled aim uses the fingertip position; overlapping objects stay ambiguous."
@@ -49,8 +49,35 @@ object IndexPoint {
     fun ray(frame: FrameDetections, minScore: Float = MIN_SCORE): PointingRay? {
         if (frame.width <= 0 || frame.height <= 0) return null
         val hands = frame.boxes.filter { it.kind == "hand" && it.score >= minScore }
-        return hands.mapNotNull { extended(it, frame.width, frame.height, minScore) }
-            .maxByOrNull { it.reach }
+        val objects = frame.boxes.filter { pointable(it, frame.width, frame.height) }
+        val rays = hands.mapNotNull { hand ->
+            extended(hand, frame.width, frame.height, minScore)?.let { ray ->
+                oriented(ray, objects, frame.width, frame.height)
+            }
+        }
+        if (rays.isEmpty()) return null
+        return rays.maxWith(
+            compareBy<PointingRay> {
+                alongRay(it, objects, null, frameWidth = frame.width, frameHeight = frame.height) != null
+            }.thenBy { it.reach },
+        )
+    }
+
+    /** MediaPipe often inverts a side-on index. Keep the direction that hits an object. */
+    internal fun oriented(
+        ray: PointingRay,
+        objects: List<BoxObservation>,
+        frameWidth: Int,
+        frameHeight: Int,
+    ): PointingRay {
+        if (alongRay(ray, objects, null, frameWidth = frameWidth, frameHeight = frameHeight) != null) {
+            return ray
+        }
+        val flipped = ray.copy(dirX = -ray.dirX, dirY = -ray.dirY)
+        if (alongRay(flipped, objects, null, frameWidth = frameWidth, frameHeight = frameHeight) != null) {
+            return flipped
+        }
+        return ray
     }
 
     fun extended(
@@ -85,38 +112,59 @@ object IndexPoint {
         val index = ranked.first { it.finger.tip == INDEX_TIP }
         val otherMax = ranked.filter { it.finger.tip != INDEX_TIP }.maxOfOrNull { it.reach } ?: 0f
         val otherMin = ranked.filter { it.finger.tip != INDEX_TIP }.minOfOrNull { it.reach } ?: 0f
-        val openPalm = otherMin >= index.reach * 0.85f && index.reach >= palm * 0.8f
+        val openPalm = otherMin >= index.reach * 0.85f &&
+            index.reach >= palm * 0.8f &&
+            hypot(tip.first - mcp.first, tip.second - mcp.second) >= palm * 0.50f
         val dx = tip.first - mcp.first
         val dy = tip.second - mcp.second
         val projectedLength = hypot(dx, dy)
         val dz = if (hasDepth) hand.depths[INDEX_TIP] - hand.depths[INDEX_MCP] else 0f
         val segmentLength = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-        if (segmentLength < 3f) return null
         val depthPointing = hasDepth &&
             kotlin.math.abs(dz) > max(palm * 0.22f, projectedLength * 0.40f)
         val depthDominant = hasDepth && kotlin.math.abs(dz) > projectedLength * 0.45f
         val indexOut = (index.length >= palm * 0.55f && index.straight <= -0.12f &&
             index.reach >= palm * 0.75f) ||
             (depthPointing && index.straight <= 0.05f && index.length >= palm * 0.35f)
-        if ((openPalm && !depthPointing) || !indexOut ||
-            (!depthPointing && otherMax > index.reach * 1.10f)
+        val forearmX = mcp.first - wrist.first
+        val forearmY = mcp.second - wrist.second
+        val forearm = hypot(forearmX, forearmY)
+        val pipAlong = (pip.first - mcp.first) * forearmX + (pip.second - mcp.second) * forearmY
+        val sideOnPoint = projectedLength < palm * 0.50f &&
+            forearm >= 8f &&
+            pipAlong >= 0f &&
+            otherMax <= index.reach * 1.15f &&
+            !openPalm
+        if (segmentLength < 3f && !sideOnPoint) return null
+        if ((openPalm && !depthPointing && !sideOnPoint) ||
+            (!indexOut && !sideOnPoint) ||
+            (!depthPointing && !sideOnPoint && otherMax > index.reach * 1.10f)
         ) {
             return null
         }
-        val wristToTipX = tip.first - wrist.first
-        val wristToTipY = tip.second - wrist.second
+        val repaired = if (sideOnPoint && forearm >= 1f) {
+            val scale = palm.coerceAtLeast(forearm) * 0.85f / forearm
+            (mcp.first + forearmX * scale) to (mcp.second + forearmY * scale)
+        } else {
+            tip
+        }
+        val aimDx = if (sideOnPoint && forearm >= 1f) forearmX else repaired.first - mcp.first
+        val aimDy = if (sideOnPoint && forearm >= 1f) forearmY else repaired.second - mcp.second
+        val wristToTipX = repaired.first - wrist.first
+        val wristToTipY = repaired.second - wrist.second
         val wristPlanar = hypot(wristToTipX, wristToTipY)
+        val planarAim = hypot(aimDx, aimDy)
         val (dirX, dirY) = when {
-            projectedLength >= 8f -> dx / projectedLength to dy / projectedLength
+            planarAim >= 8f -> aimDx / planarAim to aimDy / planarAim
             wristPlanar >= 8f -> wristToTipX / wristPlanar to wristToTipY / wristPlanar
-            projectedLength >= 1f -> dx / projectedLength to dy / projectedLength
+            planarAim >= 1f -> aimDx / planarAim to aimDy / planarAim
             else -> 0f to 0f
         }
         val reach = hypot(frameWidth.toFloat(), frameHeight.toFloat())
         val dirZ = if (segmentLength > 1e-3f) dz / segmentLength else 0f
         val tipZ = if (hasDepth) hand.depths[INDEX_TIP] else 0f
         return PointingRay(
-            tip.first, tip.second, dirX, dirY, dirZ, tipZ, reach, joints, depthDominant,
+            repaired.first, repaired.second, dirX, dirY, dirZ, tipZ, reach, joints, depthDominant,
         )
     }
 
@@ -261,10 +309,11 @@ object IndexPoint {
         return curledIndex(hand) || fist(hand)
     }
 
-    private fun pointable(box: BoxObservation, frameWidth: Int = 0, frameHeight: Int = 0): Boolean {
+    internal fun pointable(box: BoxObservation, frameWidth: Int = 0, frameHeight: Int = 0): Boolean {
         if (box.held || box.kind != "object" || box.trackId <= 0 || box.right <= box.left || box.bottom <= box.top) {
             return false
         }
+        if (box.label.equals("person", ignoreCase = true)) return false
         if (frameWidth > 0 && frameHeight > 0) {
             val limit = frameWidth.toFloat() * frameHeight.toFloat() * MAX_POINTABLE_FRAME_FRACTION
             if (box.area() > limit) return false

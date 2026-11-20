@@ -88,7 +88,7 @@ class AimLockTest {
 
     @Test fun keepsTheLockWhileThePointStaysOnThatObject() {
         val aim = AimLock()
-        val target = BoxObservation("object", "book", 0.9f, 10f, 20f, 70f, 90f, trackId = 2)
+        val target = BoxObservation("object", "book", 0.9f, 20f, 25f, 60f, 75f, trackId = 2)
         val start = frame(box(1, 0f), target)
         aim.observe(start)
         assertEquals(2, aim.observe(start).lockedId)
@@ -120,7 +120,7 @@ class AimLockTest {
 
     @Test fun aSmallerObjectUnderThePointReplacesTheLock() {
         val aim = AimLock()
-        val table = BoxObservation("object", "table", 0.9f, 0f, 0f, 100f, 100f, trackId = 1)
+        val table = BoxObservation("object", "table", 0.9f, 20f, 20f, 80f, 80f, trackId = 1)
         aim.observe(frame(table))
         assertEquals(1, aim.observe(frame(table)).lockedId)
         val cup = BoxObservation("object", "cup", 0.9f, 42f, 42f, 58f, 58f, trackId = 2)

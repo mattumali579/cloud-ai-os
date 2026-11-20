@@ -206,10 +206,16 @@ class VisionPipeline(
                     handMisses = 0
                 } else {
                     handMisses += 1
-                    if (handMisses > HAND_STALE_FRAMES) {
-                        recentHands = emptyList()
+                    val armVisible = HandPriority.wearerArmPresent(observed, width, height)
+                    val keepPointing = recentHands.any { hand ->
+                        !hand.held && IndexPoint.extended(hand, width, height) != null
+                    }
+                    if (recentHands.isNotEmpty() &&
+                        (armVisible || (keepPointing && handMisses <= HAND_STALE_FRAMES))
+                    ) {
+                        recentHands = recentHands.map { it.copy(held = false) }
                     } else {
-                        recentHands = recentHands.map { it.copy(held = true) }
+                        recentHands = emptyList()
                     }
                 }
                 lastHandMs = handPass.modelMs
@@ -241,7 +247,7 @@ class VisionPipeline(
             if (scannedOptional && !optionalFailed) lastOptionalFault = null
             observed += recentHands
             observed += recentFaces
-            val tracked = tracks.update(HandPriority.apply(observed))
+            val tracked = tracks.update(HandPriority.apply(observed, width, height))
                 .filter { box -> !box.held || box.kind == "hand" }
             return FrameDetections(width, height, tracked.map { it.copy(points = it.points.toList()) })
         } catch (error: Exception) {
@@ -315,7 +321,7 @@ class VisionPipeline(
         return marked.landmarks().mapIndexedNotNull { index, hand ->
             if (hand.size < 21) return@mapIndexedNotNull null
             val score = handed.getOrNull(index)?.firstOrNull()?.score() ?: 0f
-            if (score < IndexPoint.MIN_SCORE) return@mapIndexedNotNull null
+            if (score < HAND_DETECT) return@mapIndexedNotNull null
             val wristOk = landmarkReliable(hand[IndexPoint.WRIST])
             val mcpOk = landmarkReliable(hand[IndexPoint.INDEX_MCP])
             val tipOk = landmarkReliable(hand[IndexPoint.INDEX_TIP])
@@ -339,7 +345,7 @@ class VisionPipeline(
     private fun landmarkReliable(landmark: com.google.mediapipe.tasks.components.containers.NormalizedLandmark): Boolean {
         val presence = landmark.presence().orElse(1f)
         val visibility = landmark.visibility().orElse(1f)
-        return presence >= 0.16f && visibility >= 0.16f
+        return presence >= HAND_DETECT || visibility >= HAND_DETECT
     }
 
     private fun RectF.box(kind: String, label: String, confidence: Float) =
@@ -507,9 +513,9 @@ class VisionPipeline(
                     )
                     .setRunningMode(RunningMode.IMAGE)
                     .setNumHands(numHands)
-                    .setMinHandDetectionConfidence(IndexPoint.MIN_SCORE)
-                    .setMinHandPresenceConfidence(IndexPoint.MIN_SCORE)
-                    .setMinTrackingConfidence(IndexPoint.MIN_SCORE)
+                    .setMinHandDetectionConfidence(HAND_DETECT)
+                    .setMinHandPresenceConfidence(HAND_DETECT)
+                    .setMinTrackingConfidence(HAND_DETECT)
                     .build()
             )
 
@@ -556,8 +562,9 @@ class VisionPipeline(
          * constant changes only when that probe still finds the extended index.
          */
         internal const val HAND_COUNT = 2
-        /** Keep pointing through MediaPipe drops; overlay hides held skeletons. */
-        internal const val HAND_STALE_FRAMES = 6
+        /** Keep a pointing skeleton only while the arm is still in view. */
+        internal const val HAND_STALE_FRAMES = 3
+        internal const val HAND_DETECT = 0.15f
         private const val CREATE_TIMEOUT_MS = 3_000L
         private const val PROBE_TIMEOUT_MS = 2_500L
         private const val DETECT_TIMEOUT_MS = 8_000L

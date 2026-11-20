@@ -21,7 +21,7 @@ object TrainingHud {
     )
 
     fun status(frame: FrameDetections, lockedId: Int?): Status {
-        val hands = frame.boxes.filter { it.kind == "hand" && it.points.size >= 21 }
+        val hands = frame.boxes.filter { it.kind == "hand" && !it.held && it.points.size >= 21 }
         val ray = IndexPoint.ray(frame)
         val pointing = ray != null
         val primary = hands.firstOrNull { IndexPoint.extended(it, frame.width, frame.height) != null }

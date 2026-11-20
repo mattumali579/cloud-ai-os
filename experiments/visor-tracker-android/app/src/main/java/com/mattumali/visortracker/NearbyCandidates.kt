@@ -22,8 +22,7 @@ class NearbyCandidates(
     ): List<BoxObservation> {
         if (frameWidth <= 0 || frameHeight <= 0 || limit <= 0) return emptyList()
         val objects = boxes.filter {
-            !it.held && it.kind == "object" && it.trackId > 0 &&
-                it.right > it.left && it.bottom > it.top
+            IndexPoint.pointable(it, frameWidth, frameHeight)
         }
         val locked = if (lockedId == null) null else objects.firstOrNull { it.trackId == lockedId }
         val aimed = if (aimTrackId == null) null else objects.firstOrNull { it.trackId == aimTrackId }
