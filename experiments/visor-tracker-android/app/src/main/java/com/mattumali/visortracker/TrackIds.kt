@@ -66,7 +66,7 @@ class TrackIds(
                 }
                 val overlap = iou(track.box, observation)
                 val sameLabel = track.label == observation.label
-                val threshold = if (sameLabel) matchThreshold else 0.55f
+                val threshold = if (sameLabel || observation.label == LabelPolicy.UNCERTAIN || track.label == LabelPolicy.UNCERTAIN) matchThreshold else 0.35f
                 if (overlap >= threshold) {
                     candidates += Triple(overlap + if (sameLabel) 0.12f else 0f, track, index)
                 }

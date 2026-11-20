@@ -137,7 +137,6 @@ class AimLock(
             if (lostFrames < lostFramesLimit) return AimDecision(current, changed = false)
             return dropLock()
         }
-        lostFrames = 0
         if (current != null && !visible) {
             lostFrames += 1
             if (lostFrames < lostFramesLimit) return AimDecision(current, changed = false)
@@ -149,6 +148,7 @@ class AimLock(
             if (lostFrames < lostFramesLimit) return AimDecision(current, changed = false)
             return dropLock()
         }
+        lostFrames = 0
         val decision = commit(rayTarget, current, if (current == null) acquireFrames else switchFrames)
         if (decision.lockedId != null && decision.lockedId == rayTarget) fingerLocked = true
         return decision

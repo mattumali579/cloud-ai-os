@@ -189,4 +189,28 @@ class AimLockTest {
         val moved = frame(first, other, pointingHand(90f, 140f))
         assertEquals(2, aim.observe(moved).lockedId)
     }
+
+    @Test fun vanishedLockedObjectClearsAfterLostFramesLimitWhileHandContinuesPointing() {
+        val aim = AimLock(lostFramesLimit = 3)
+        val target = BoxObservation("object", "cup", 0.9f, 120f, 30f, 170f, 70f, trackId = 2)
+        val hand = pointingHand(90f, 50f)
+        val picture = frame(target, hand)
+        aim.observe(picture)
+        val locked = aim.observe(picture)
+        assertEquals(2, locked.lockedId)
+
+        // Target vanishes from frame while pointing hand remains
+        val vanished = frame(hand)
+        val frame1 = aim.observe(vanished)
+        assertEquals("frame 1 held", 2, frame1.lockedId)
+        assertFalse(frame1.changed)
+
+        val frame2 = aim.observe(vanished)
+        assertEquals("frame 2 held", 2, frame2.lockedId)
+        assertFalse(frame2.changed)
+
+        val frame3 = aim.observe(vanished)
+        assertNull("frame 3 cleared", frame3.lockedId)
+        assertTrue(frame3.changed)
+    }
 }

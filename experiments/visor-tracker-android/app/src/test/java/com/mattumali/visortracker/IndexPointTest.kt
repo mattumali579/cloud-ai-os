@@ -76,6 +76,43 @@ class IndexPointTest {
         assertEquals(90f, ray!!.tipX, 0.1f)
     }
 
+    @Test fun openPalmWithMultipleExtendedFingersIsRejectedEvenWithDepth() {
+        val hand = depthPointingHand(100f, 80f).let { original ->
+            val points = original.points.toMutableList()
+            val depths = original.depths.toMutableList()
+            // Make middle finger straight in 3D just like index
+            points[9] = 82f to 84f
+            points[10] = 88f to 84f
+            points[11] = 96f to 84f
+            points[12] = 100f to 84f
+            depths[9] = 35f
+            depths[10] = 20f
+            depths[11] = 8f
+            depths[12] = -8f
+            // Make ring finger straight in 3D
+            points[13] = 82f to 88f
+            points[14] = 88f to 88f
+            points[15] = 96f to 88f
+            points[16] = 98f to 88f
+            depths[13] = 35f
+            depths[14] = 20f
+            depths[15] = 8f
+            depths[16] = -8f
+            original.copy(points = points, depths = depths)
+        }
+        assertNull(IndexPoint.extended(hand, 200, 200))
+    }
+
+    @Test fun depthDominantRayIsNotReversibleAndDoesNotFlipBackward() {
+        val hand = depthPointingHand(100f, 80f)
+        val ray = IndexPoint.extended(hand, 200, 200)!!
+        assertTrue(ray.depthDominant)
+        assertTrue(!ray.reversible)
+        val behind = BoxObservation("object", "phone", 0.9f, 10f, 70f, 40f, 90f, trackId = 15)
+        val aimed = IndexPoint.aimed(FrameDetections(200, 200, listOf(behind, hand)))
+        assertTrue(aimed == null || aimed.hit?.trackId != 15)
+    }
+
     @Test fun collapsedIndexDoesNotAimFromTheMiddleFinger() {
         val hand = pointingHand(90f, 50f).let { original ->
             val points = original.points.toMutableList()

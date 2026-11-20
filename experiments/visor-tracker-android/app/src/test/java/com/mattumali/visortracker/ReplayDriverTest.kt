@@ -1,6 +1,7 @@
 package com.mattumali.visortracker
 
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 
@@ -32,6 +33,62 @@ class ReplayDriverTest {
         check(out.readLines().count { it.isNotBlank() } == frames.size) {
             "decision count does not match detections"
         }
+    }
+
+    @Test fun preservesDepthsAndScoresThroughSerialization() {
+        val width = 720
+        val height = 1280
+        val points = (0 until 21).map { i ->
+            (100f + i * 5f) to (200f + i * 8f)
+        }
+        val depths = (0 until 21).map { i ->
+            if (i == 8) -60f else (i * -2f)
+        }
+        val originalBox = BoxObservation(
+            kind = "hand",
+            label = "hand",
+            score = 0.83f,
+            left = 100f,
+            top = 200f,
+            right = 250f,
+            bottom = 400f,
+            points = points,
+            depths = depths,
+        )
+        val lineProtocol = buildString {
+            appendLine("FRAME $width $height 1.0")
+            appendLine("BOX hand \"hand\" 0.83 100.0 200.0 250.0 400.0")
+            appendLine("POINTS " + points.joinToString(" ") { "${it.first} ${it.second}" })
+            appendLine("DEPTHS " + depths.joinToString(" "))
+            appendLine("END")
+        }
+        val parsed = parse(lineProtocol)
+        assertEquals(1, parsed.size)
+        val frame = parsed[0]
+        assertEquals(width, frame.width)
+        assertEquals(height, frame.height)
+        assertEquals(1, frame.boxes.size)
+        val parsedBox = frame.boxes[0]
+        assertEquals(originalBox.kind, parsedBox.kind)
+        assertEquals(originalBox.score, parsedBox.score, 1e-4f)
+        assertEquals(originalBox.points.size, parsedBox.points.size)
+        assertEquals(originalBox.depths.size, parsedBox.depths.size)
+        assertEquals(21, parsedBox.depths.size)
+        for (i in 0 until 21) {
+            assertEquals("depth $i", originalBox.depths[i], parsedBox.depths[i], 1e-4f)
+        }
+        val tracker1 = ProductionTracker()
+        val step1 = tracker1.step(listOf(originalBox), width, height)
+        val tracker2 = ProductionTracker()
+        val step2 = tracker2.step(listOf(parsedBox), width, height)
+        assertEquals(step1.state, step2.state)
+        assertEquals(step1.lockId, step2.lockId)
+        assertEquals(step1.hitId, step2.hitId)
+        assertEquals(step1.ray, step2.ray)
+        assertEquals(step1.tipX, step2.tipX, 1e-3f)
+        assertEquals(step1.tipY, step2.tipY, 1e-3f)
+        assertEquals(step1.dirX, step2.dirX, 1e-3f)
+        assertEquals(step1.dirY, step2.dirY, 1e-3f)
     }
 
     private data class Parsed(val width: Int, val height: Int, val boxes: List<BoxObservation>)
@@ -81,6 +138,11 @@ class ReplayDriverTest {
                     val numbers = parts.drop(1).map { it.toFloat() }
                     val points = numbers.chunked(2).map { it[0] to it[1] }
                     pending = box.copy(points = points)
+                }
+                "DEPTHS" -> {
+                    val box = pending ?: error("DEPTHS before BOX")
+                    val depths = parts.drop(1).map { it.toFloat() }
+                    pending = box.copy(depths = depths)
                 }
                 "END" -> {
                     finishBox()

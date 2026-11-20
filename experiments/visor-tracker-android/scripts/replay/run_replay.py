@@ -14,7 +14,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from tracker_port import Box
+from tracker_port import Box, INDEX_MCP, INDEX_TIP, WRIST
 
 # Honest COCO names only. Do not map cup->barrel or book->phone.
 SEMANTIC = {
@@ -147,22 +147,44 @@ def detect_hands(landmarker, bgr: np.ndarray, ts_ms: int) -> list[Box]:
     rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     result = landmarker.detect_for_video(mp_image, ts_ms)
-    sx, sy = w / ow, h / oh
     boxes = []
-    for lm in result.hand_landmarks:
-        pts = [(p.x * ow * sx, p.y * oh * sy) for p in lm]
+    handed = result.handedness if hasattr(result, "handedness") and result.handedness else []
+    for idx, lm in enumerate(result.hand_landmarks):
+        if len(lm) < 21:
+            continue
+        score = 0.0
+        if idx < len(handed) and len(handed[idx]) > 0:
+            score = float(handed[idx][0].score)
+        if score < HAND_SCORE:
+            continue
+
+        def landmark_reliable(p) -> bool:
+            presence = getattr(p, "presence", None)
+            if presence is None:
+                presence = 1.0
+            visibility = getattr(p, "visibility", None)
+            if visibility is None:
+                visibility = 1.0
+            return presence >= HAND_SCORE or visibility >= HAND_SCORE
+
+        if not (landmark_reliable(lm[WRIST]) or landmark_reliable(lm[INDEX_MCP]) or landmark_reliable(lm[INDEX_TIP])):
+            continue
+
+        pts = [(p.x * w, p.y * h) for p in lm]
+        depths = [float(p.z * w) for p in lm]
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         boxes.append(
             Box(
                 kind="hand",
                 label="hand",
-                score=0.9,
+                score=score,
                 left=min(xs),
                 top=min(ys),
                 right=max(xs),
                 bottom=max(ys),
                 points=pts,
+                depths=depths,
             )
         )
     return boxes
@@ -527,6 +549,9 @@ def detection_record(row: dict) -> str:
         if box.get("points"):
             flat = " ".join(f"{p[0]} {p[1]}" for p in box["points"])
             lines.append("POINTS " + flat)
+        if box.get("depths"):
+            flat_d = " ".join(f"{d}" for d in box["depths"])
+            lines.append("DEPTHS " + flat_d)
     lines.append("END")
     return "\n".join(lines) + "\n"
 
@@ -543,6 +568,8 @@ def box_payload(box: Box) -> dict:
     }
     if box.points:
         payload["points"] = [[p[0], p[1]] for p in box.points]
+    if box.depths:
+        payload["depths"] = [float(d) for d in box.depths]
     return payload
 
 
@@ -617,6 +644,8 @@ def run_kotlin(out_dir: Path) -> None:
     if gradle is None:
         raise SystemExit("gradle.bat not found; ProductionTracker replay cannot run")
     env = os.environ.copy()
+    if "ANDROID_HOME" not in env:
+        env["ANDROID_HOME"] = r"C:\Users\Admin\AppData\Local\Android\Sdk"
     env["VISOR_REPLAY_DIR"] = str(out_dir)
     print("ProductionTracker decisions", flush=True)
     subprocess.run(

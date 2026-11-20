@@ -150,22 +150,30 @@ object IndexPoint {
             )
         }.sortedByDescending { it.reach }
         val index = ranked.first { it.finger.tip == INDEX_TIP }
-        val otherMax = ranked.filter { it.finger.tip != INDEX_TIP }.maxOfOrNull { it.reach } ?: 0f
-        val otherMin = ranked.filter { it.finger.tip != INDEX_TIP }.minOfOrNull { it.reach } ?: 0f
-        val openPalm = otherMin >= index.reach * 0.85f &&
-            index.reach >= palm * 0.8f &&
-            hypot(tip.first - mcp.first, tip.second - mcp.second) >= palm * 0.50f
+        val otherFingers = ranked.filter { it.finger.tip != INDEX_TIP }
+        val otherMax = otherFingers.maxOfOrNull { it.reach } ?: 0f
+        val otherMin = otherFingers.minOfOrNull { it.reach } ?: 0f
+        val otherStraight = otherFingers.filter { it.straight <= -0.70f && it.reach >= index.reach * 0.70f }
+
         val dx = tip.first - mcp.first
         val dy = tip.second - mcp.second
         val projectedLength = hypot(dx, dy)
         val dz = if (hasDepth) hand.depths[INDEX_TIP] - hand.depths[INDEX_MCP] else 0f
         val segmentLength = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+        val indexExtended = projectedLength >= palm * 0.50f || (hasDepth && segmentLength >= palm * 0.50f)
+
+        val otherReaches = otherFingers.map { it.reach }.sortedDescending()
+        val otherStraightCount = otherFingers.count { it.straight <= -0.80f }
+        val openPalm = indexExtended && otherReaches.size >= 2 &&
+            otherReaches[0] >= index.reach * 0.92f &&
+            otherReaches[1] >= index.reach * 0.85f &&
+            otherStraightCount >= 2
         val depthPointing = hasDepth &&
-            kotlin.math.abs(dz) > max(palm * 0.22f, projectedLength * 0.40f)
+            kotlin.math.abs(dz) > max(palm * 0.20f, projectedLength * 0.35f)
         val depthDominant = hasDepth && kotlin.math.abs(dz) > projectedLength * 0.45f
-        val indexOut = (index.length >= palm * 0.55f && index.straight <= -0.12f &&
-            index.reach >= palm * 0.75f) ||
-            (depthPointing && index.straight <= 0.05f && index.length >= palm * 0.35f)
+        val indexOut = (index.length >= palm * 0.50f && index.straight <= -0.10f &&
+            index.reach >= palm * 0.70f) ||
+            (depthPointing && index.straight <= 0.10f && index.length >= palm * 0.30f)
         val forearmX = mcp.first - wrist.first
         val forearmY = mcp.second - wrist.second
         val forearm = hypot(forearmX, forearmY)
@@ -176,7 +184,7 @@ object IndexPoint {
             otherMax <= index.reach * 1.15f &&
             !openPalm
         if (segmentLength < 3f && !sideOnPoint) return null
-        if ((openPalm && !depthPointing && !sideOnPoint) ||
+        if (openPalm ||
             (!indexOut && !sideOnPoint) ||
             (!depthPointing && !sideOnPoint && otherMax > index.reach * 1.10f)
         ) {
@@ -195,6 +203,16 @@ object IndexPoint {
         val wristPlanar = hypot(wristToTipX, wristToTipY)
         val planarAim = hypot(aimDx, aimDy)
         val (dirX, dirY) = when {
+            planarAim >= 8f && wristPlanar >= 8f && !sideOnPoint -> {
+                val fX = aimDx / planarAim
+                val fY = aimDy / planarAim
+                val wX = wristToTipX / wristPlanar
+                val wY = wristToTipY / wristPlanar
+                val bX = fX * 0.75f + wX * 0.25f
+                val bY = fY * 0.75f + wY * 0.25f
+                val bLen = hypot(bX, bY)
+                if (bLen >= 1e-3f) bX / bLen to bY / bLen else fX to fY
+            }
             planarAim >= 8f -> aimDx / planarAim to aimDy / planarAim
             wristPlanar >= 8f -> wristToTipX / wristPlanar to wristToTipY / wristPlanar
             planarAim >= 1f -> aimDx / planarAim to aimDy / planarAim
@@ -205,7 +223,7 @@ object IndexPoint {
         val tipZ = if (hasDepth) hand.depths[INDEX_TIP] else 0f
         return PointingRay(
             repaired.first, repaired.second, dirX, dirY, dirZ, tipZ, reach, joints,
-            depthDominant, reversible = !hand.synthetic && (sideOnPoint || depthDominant || planarAim < 8f),
+            depthDominant, reversible = !hand.synthetic && !depthDominant && (sideOnPoint || planarAim < 8f),
         )
     }
 
