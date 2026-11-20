@@ -556,6 +556,46 @@ def test_named_reply_keeps_voice_request_conversation_open(tmp_path: Path):
     asyncio.run(scenario())
 
 
+def test_operator_ack_releases_visor_call_while_job_continues(monkeypatch, tmp_path: Path):
+    class FakeVisor:
+        def __init__(self):
+            self.calls = []
+
+        async def subscribe(self, topic, options):
+            yield {"id": "voice-operator", "text": "Hey Jarvis how many notebooks do I have in NotebookLM"}
+
+        async def call(self, method, params=None):
+            self.calls.append((method, params))
+            return {"ok": True}
+
+    scheduled = []
+    monkeypatch.setattr(
+        bridge,
+        "schedule_computer_task",
+        lambda visor, config, session, text, correlation_id: scheduled.append((text, correlation_id)),
+    )
+
+    async def scenario():
+        config = BridgeConfig("ws://127.0.0.1:7333/rpc", (tmp_path,))
+        session = bridge.new_session()
+        visor = FakeVisor()
+        await bridge.serve_named_requests(visor, config, session)
+        assert len(scheduled) == 1
+        assert visor.calls == [
+            (
+                "voice.reply",
+                {
+                    "request": "voice-operator",
+                    "text": "Working on it. I will tell you when it is done.",
+                    "listen": False,
+                },
+            )
+        ]
+        assert session["active"] is True
+
+    asyncio.run(scenario())
+
+
 def test_private_transcript_stream_reopens_when_rearmed(tmp_path: Path):
     class WaitingStream:
         def __init__(self):
@@ -989,6 +1029,7 @@ def test_capability3_listen_flag_follows_session_active_not_hardcoded_false():
     source = Path("scripts/jarvis_glasses.py").read_text(encoding="utf-8")
     assert '"listen": bool(listen)' in source or '"listen": bool(listen)' in source.replace(" ", "")
     assert 'listen = bool(session.get("active", False))' in source
+    assert 'claim["classification"] not in {"off", "operator"}' in source
     assert "unsupported wildcard follow-up routing is disabled" not in source
 
 

@@ -944,7 +944,13 @@ async def serve_named_requests(visor, config: BridgeConfig, session: dict) -> No
                 conversation_id=str(session.get("conversation_id") or ""),
                 request_id=request_id,
             )
-        listen = bool(session.get("active", False)) and claim["classification"] not in {"off"}
+        # A long-running computer job continues independently and reports its
+        # result through voice.speak. Keeping voice.reply in listen mode here
+        # leaves Visor's assistant audio session open like a call; Meta then
+        # rejects the next computer-tool request with "hang up the call".
+        # Release that audio session while preserving the Jarvis conversation
+        # and background task so a new named request can resume it later.
+        listen = bool(session.get("active", False)) and claim["classification"] not in {"off", "operator"}
         _log_event(
             correlation_id,
             "session_state",

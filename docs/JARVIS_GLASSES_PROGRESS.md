@@ -3,6 +3,13 @@
 **Updated:** 2026-11-20 02:24:00Z (local 2026-11-19 20:24 America/Chicago)
 **Current status:** `BLOCKED` on physical input/output proof; recovery branch is software-verified and the live Visor bridge is authenticated.
 
+## 2026-11-19: release Visor audio session for background computer jobs
+
+- Physical retry evidence showed Visor saying the user must hang up the call after Jarvis accepted a long-running operator request.
+- Runtime logs confirmed the request reached Jarvis, Codex verified 21 NotebookLM notebooks, and `voice.speak` accepted the result. The blocking call was the earlier `voice.reply` acknowledgement sent with `listen=true`.
+- Operator acknowledgements now use `listen=false`. The background Codex job and Jarvis conversation remain alive, and completion still returns through `voice.speak`, but Visor's assistant audio session is released for the next named request.
+- Added regression coverage that verifies the job is scheduled, the acknowledgement closes listen mode, and session state is preserved.
+
 **Issue #25 vision:** see [JARVIS_GLASSES_VISION_PROGRESS.md](JARVIS_GLASSES_VISION_PROGRESS.md). Software pipeline + 16 vision tests landed in worktree `cursor/issue-25-glasses-vision` and synced additively into this dirty checkout; **bridge not restarted**; camera hardware **not** verified. Preservation manifest: `_preservation/issue25_2026-11-13_17-33-46/`.
 
 **Current failing hop:** the authenticated bridge reaches Visor, but `glasses.status` reports `worn=False`, `folded=True`, and the live bridge log repeatedly reports that the glasses are not the phone's Bluetooth headset. No current private transcript can reach the router in that state. The reported phrases “close the call” and “you haven't given me access to the computer” do not appear in the Jarvis bridge log, so they are upstream Visor/Meta-session responses rather than confirmed Jarvis errors. All required Visor methods, including `assistant.tools`, `assistant.tools.answer`, `voice.requests`, `voice.reply`, `voice.speak`, and `voice.transcripts`, are currently supported/granted.
