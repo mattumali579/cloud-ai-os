@@ -42,6 +42,23 @@ class IndexPointTest {
         assertEquals(2, hit!!.trackId)
     }
 
+    @Test fun depthAngledFingerUsesTheFingertipAsAStableCursor() {
+        val hand = depthPointingHand(tipX = 100f, tipY = 80f)
+        val ray = IndexPoint.extended(hand, 200, 200)
+        assertTrue(ray != null)
+        assertTrue(ray!!.depthDominant)
+
+        val underTip = BoxObservation("object", "cup", 0.85f, 90f, 70f, 120f, 110f, trackId = 4)
+        val elsewhere = BoxObservation("object", "book", 0.95f, 140f, 20f, 190f, 60f, trackId = 2)
+        assertEquals(4, IndexPoint.alongRay(ray, listOf(elsewhere, underTip), preferId = null)!!.trackId)
+    }
+
+    @Test fun depthCursorDoesNotSelectAnUnrelatedDistantBox() {
+        val ray = IndexPoint.extended(depthPointingHand(100f, 80f), 200, 200)!!
+        val distant = BoxObservation("object", "book", 0.95f, 160f, 150f, 195f, 195f, trackId = 2)
+        assertNull(IndexPoint.alongRay(ray, listOf(distant), preferId = null))
+    }
+
     @Test fun replacementPrefersTheHigherScoreThenTheLowerId() {
         val low = BoxObservation("object", "cup", 0.4f, 0f, 0f, 40f, 40f, trackId = 1)
         val high = BoxObservation("object", "book", 0.9f, 50f, 0f, 80f, 20f, trackId = 8)
@@ -94,5 +111,34 @@ internal fun pointingHand(tipX: Float, tipY: Float): BoxObservation {
         "hand", "hand", 0.92f,
         tipX - 80f, tipY - 10f, tipX, tipY + 30f,
         points = points, trackId = 50,
+    )
+}
+
+internal fun depthPointingHand(tipX: Float, tipY: Float): BoxObservation {
+    val hand = pointingHand(tipX, tipY)
+    val points = hand.points.toMutableList()
+    // Foreshorten the projected index while keeping a straight 3D finger.
+    points[IndexPoint.WRIST] = tipX - 24f to tipY
+    points[IndexPoint.INDEX_MCP] = tipX - 18f to tipY
+    points[IndexPoint.INDEX_PIP] = tipX - 12f to tipY
+    points[IndexPoint.INDEX_DIP] = tipX - 4f to tipY
+    points[IndexPoint.INDEX_TIP] = tipX to tipY
+    points[12] = tipX - 22f to tipY + 6f
+    points[16] = tipX - 25f to tipY + 8f
+    points[20] = tipX - 28f to tipY + 7f
+    val depths = MutableList(21) { 0f }
+    depths[IndexPoint.WRIST] = 50f
+    depths[IndexPoint.INDEX_MCP] = 35f
+    depths[IndexPoint.INDEX_PIP] = 20f
+    depths[IndexPoint.INDEX_DIP] = 8f
+    depths[IndexPoint.INDEX_TIP] = -8f
+    depths[12] = 46f
+    depths[16] = 47f
+    depths[20] = 48f
+    return hand.copy(
+        left = tipX - 32f,
+        right = tipX + 8f,
+        points = points,
+        depths = depths,
     )
 }

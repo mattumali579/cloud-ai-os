@@ -12,6 +12,8 @@ data class BoxObservation(
     val right: Float,
     val bottom: Float,
     val points: List<Pair<Float, Float>> = emptyList(),
+    /** MediaPipe landmark z values, scaled into image-pixel units. Empty for non-hand boxes. */
+    val depths: List<Float> = emptyList(),
     var trackId: Int = 0,
     /** True when this box is a remembered miss, not a measurement on this frame. */
     val held: Boolean = false,

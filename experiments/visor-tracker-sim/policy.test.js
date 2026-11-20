@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import test from "node:test"
-import { createLockPolicy, createResultGate, SPEC } from "./policy.js"
+import { createLockPolicy, createResultGate, depthPointerMode, SPEC } from "./policy.js"
 
 const fileSpec = JSON.parse(fs.readFileSync(new URL("./spec.json", import.meta.url), "utf8"))
 
@@ -14,6 +14,13 @@ test("spec file matches the policy numbers and does not claim a shared executabl
   assert.equal(SPEC.executablesShared, false)
   assert.match(fileSpec.simulatorRay, /not what the glasses do/i)
   assert.match(fileSpec.glassesRay, /cannot measure depth/i)
+})
+
+test("depth lab switches from a projected ray to a fingertip cursor", () => {
+  assert.equal(depthPointerMode(0).depthAwareMode, "2D ray")
+  assert.equal(depthPointerMode(60).depthAwareMode, "fingertip depth cursor")
+  assert.equal(depthPointerMode(80).legacyMode, "not recognized")
+  assert.ok(depthPointerMode(60).projectedFraction < depthPointerMode(20).projectedFraction)
 })
 
 test("hiding A acquires known replacement B within 2 ticks", () => {

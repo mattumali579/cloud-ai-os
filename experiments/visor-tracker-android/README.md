@@ -4,6 +4,12 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.30: depth-angled finger recognition
+
+Version code 31. MediaPipe hand landmark `z` is now preserved and used for the index-extension and straightness checks. When the index points mostly toward or away from the camera, the tracker uses the projected fingertip as a stable depth cursor instead of rejecting the foreshortened finger or inventing a noisy 2D direction. Ordinary side-on pointing keeps the existing 2D ray.
+
+This does **not** add object depth. EfficientDet still supplies 2D boxes, so two objects overlapping at the fingertip remain ambiguous. The Three.js depth lab can show the ray-to-cursor transition, but only a signed S22 Ultra build in Visor Live View can prove camera behavior.
+
 ## Version 0.29: hand landmarks win over a false person label
 
 Version code 30. Same package `com.mattumali.visortracker.stable` and the same protected signing path.

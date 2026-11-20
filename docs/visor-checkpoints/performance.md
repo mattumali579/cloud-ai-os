@@ -6,7 +6,7 @@ These numbers are emulator or JVM results. They are not Galaxy S22 Ultra, Visor 
 
 No neural-network fine-tuning was done. There is no labeled training set and no training environment. Model weights are unchanged.
 
-The finger ray is 2D on the camera image. It cannot measure depth. The Three.js page at `experiments/visor-tracker-sim/` uses an idealized 3D raycast. That page and the Kotlin tracker do not share an executable.
+The measurements below predate version 0.30. Version 0.30 preserves MediaPipe hand z to recognize depth-angled pointing and uses the projected fingertip as a cursor in that mode. Object boxes remain 2D and cannot measure depth. The Three.js page at `experiments/visor-tracker-sim/` now visualizes that mode transition alongside its idealized 3D raycast. That page and the Kotlin tracker do not share an executable.
 
 ## Before, emulator, version 0.26.0, people.jpg
 

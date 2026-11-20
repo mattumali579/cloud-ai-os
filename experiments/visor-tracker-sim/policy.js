@@ -2,7 +2,8 @@
  * Numbers from AimLock and GestureGate.
  * Kotlin and this file do not share an executable. Do not treat a pass here
  * as a pass of the Android tracker. The page's raycast is idealized 3D.
- * The glasses use a 2D camera finger ray and cannot measure depth.
+ * Version 0.30 can use hand z to select its pointer mode. Object boxes remain
+ * 2D and cannot measure depth.
  */
 export const SPEC = {
   knownReplacementFrames: 2,
@@ -12,6 +13,23 @@ export const SPEC = {
   releaseFrames: 4,
   fingerLockHoldsWhenHandDrops: true,
   executablesShared: false,
+}
+
+/**
+ * Exposes the pointer-mode transition used by the depth lab. This models the
+ * v31 decision boundary; it is not MediaPipe and does not prove phone output.
+ */
+export function depthPointerMode(angleDegrees) {
+  const clamped = Math.max(0, Math.min(90, Number(angleDegrees) || 0))
+  const radians = clamped * Math.PI / 180
+  const projected = Math.cos(radians)
+  const depth = Math.sin(radians)
+  return {
+    angleDegrees: clamped,
+    projectedFraction: projected,
+    legacyMode: projected < 0.25 ? "not recognized" : "2D ray",
+    depthAwareMode: depth > projected * 0.75 ? "fingertip depth cursor" : "2D ray",
+  }
 }
 
 export function createLockPolicy(spec = SPEC) {

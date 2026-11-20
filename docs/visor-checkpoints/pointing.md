@@ -1,6 +1,6 @@
 # Finger pointing and target reacquisition
 
-Version 0.25.0, versionCode 25, is the measurement below. Version 0.26.0 keeps this ray and records the speed changes in [performance.md](performance.md). Version 0.27.0 still uses this 2D camera ray. It is not measured depth. The switch timing for 0.27.0 is in [performance.md](performance.md). Package remains `com.mattumali.visortracker.stable`.
+Version 0.25.0, versionCode 25, is the measurement below. Versions through 0.29 use only the projected 2D camera ray. Version 0.30, versionCode 31, preserves MediaPipe hand z: side-on pointing keeps the 2D ray, while a depth-dominant finger uses the projected fingertip as a cursor. Object depth is still not measured. Package remains `com.mattumali.visortracker.stable`.
 
 ## What changed
 
@@ -13,7 +13,7 @@ Version 0.25.0, versionCode 25, is the measurement below. Version 0.26.0 keeps t
 
 ## Limitation
 
-The ray is 2D on the camera image. It is not a measured 3D direction. Two objects on the same ray cannot be separated by depth.
+The detector's object boxes are 2D. Hand z helps recognize a foreshortened pointing finger, but it does not supply each object's distance. Two objects overlapping at the fingertip cannot be separated by depth.
 
 ## Proof
 

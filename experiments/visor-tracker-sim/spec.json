@@ -6,7 +6,7 @@
   "releaseFrames": 4,
   "fingerLockHoldsWhenHandDrops": true,
   "executablesShared": false,
-  "glassesRay": "2D ray on the camera image. The glasses cannot measure depth.",
+  "glassesRay": "Version 0.30 uses hand z to recognize depth-angled pointing, but 2D object boxes cannot measure depth.",
   "simulatorRay": "Idealized 3D raycast from the view center. This is not what the glasses do.",
   "replacementWhenHidden": "The visible object closest to the screen center. That rule is only for this simulator."
 }

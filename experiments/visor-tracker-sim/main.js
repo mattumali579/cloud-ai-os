@@ -1,5 +1,5 @@
 import * as THREE from "https://esm.sh/three@0.170.0"
-import { createLockPolicy, createResultGate } from "./policy.js"
+import { createLockPolicy, createResultGate, depthPointerMode } from "./policy.js"
 
 const canvas = document.querySelector("#view")
 const fpsEl = document.querySelector("#fps")
@@ -9,6 +9,12 @@ const lockEl = document.querySelector("#lock")
 const switchEl = document.querySelector("#switch")
 const statusEl = document.querySelector("#status")
 const stageNoteEl = document.querySelector("#stage-note")
+const fingerDemoEl = document.querySelector("#finger-demo")
+const depthSliderEl = document.querySelector("#depth-slider")
+const depthValueEl = document.querySelector("#depth-value")
+const depthAngleEl = document.querySelector("#depth-angle")
+const legacyPointerEl = document.querySelector("#legacy-pointer")
+const depthPointerEl = document.querySelector("#depth-pointer")
 
 function cappedPixelRatio() {
   return Math.min(window.devicePixelRatio || 1, 1)
@@ -123,6 +129,7 @@ document.querySelector("#mode-realistic").addEventListener("click", () => setMod
 document.querySelector("#delay-ms").addEventListener("input", readIntervals)
 document.querySelector("#hand-ms").addEventListener("input", readIntervals)
 document.querySelector("#object-ms").addEventListener("input", readIntervals)
+depthSliderEl.addEventListener("input", updateDepthLab)
 document.querySelector("#stage-file").addEventListener("change", async (event) => {
   const file = event.target.files && event.target.files[0]
   if (!file) return
@@ -133,6 +140,16 @@ document.querySelector("#load-sample").addEventListener("click", async () => {
   const response = await fetch("./stage-timings.sample.json")
   applyStageTimings(await response.json())
 })
+
+function updateDepthLab() {
+  const state = depthPointerMode(depthSliderEl.value)
+  const percent = Math.max(0.08, state.projectedFraction)
+  fingerDemoEl.style.transform = `scaleX(${percent})`
+  depthValueEl.textContent = `${state.angleDegrees.toFixed(0)}°`
+  depthAngleEl.textContent = `Finger depth angle ${state.angleDegrees.toFixed(0)}° · projected length ${(state.projectedFraction * 100).toFixed(0)}%`
+  legacyPointerEl.textContent = `v30 pointer ${state.legacyMode}`
+  depthPointerEl.textContent = `v31 pointer ${state.depthAwareMode}`
+}
 
 function setMode(next) {
   mode = next
@@ -335,3 +352,4 @@ function tick(now) {
 }
 
 requestAnimationFrame(tick)
+updateDepthLab()

@@ -313,11 +313,16 @@ class VisionPipeline(
             )
             if (needed.any { joint -> !landmarkReliable(hand[joint]) }) return@mapIndexedNotNull null
             val coords = hand.map { it.x() * width to it.y() * height }
+            // MediaPipe z uses approximately the same normalized scale as x. Preserve it
+            // in pixel units so a finger aimed toward the camera does not collapse into
+            // a short/curled finger when its 2D projection becomes foreshortened.
+            val depths = hand.map { it.z() * width }
             val observation = BoxObservation(
                 kind = "hand", label = "hand", score = score,
                 left = coords.minOf { it.first }, top = coords.minOf { it.second },
                 right = coords.maxOf { it.first }, bottom = coords.maxOf { it.second },
                 points = coords,
+                depths = depths,
             )
             observation.copy(label = HandPriority.label(observation, width, height))
         }

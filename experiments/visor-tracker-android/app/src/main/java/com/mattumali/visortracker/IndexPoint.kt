@@ -5,10 +5,10 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * A 2D ray on the camera image, from the index fingertip along the finger.
- * This is not a 3D direction. Two objects on the same ray cannot be separated
- * by depth; the nearer hit along the image ray wins, and the current lock
- * stays when it is also on that ray.
+ * A projected ray on the camera image. MediaPipe z is used to recognize a
+ * foreshortened finger, but object boxes still have no measured depth. When
+ * the finger is aimed mostly through the image plane, [depthDominant] changes
+ * selection to a fingertip cursor instead of inventing an unstable 2D ray.
  */
 data class PointingRay(
     val tipX: Float,
@@ -17,6 +17,7 @@ data class PointingRay(
     val dirY: Float,
     val reach: Float,
     val joints: List<Pair<Float, Float>>,
+    val depthDominant: Boolean = false,
 )
 
 /**
@@ -31,8 +32,8 @@ object IndexPoint {
     const val INDEX_TIP = 8
     const val MIN_SCORE = 0.40f
     const val LIMITATION =
-        "Finger pointing is a 2D ray on the camera image, not a measured 3D aim. " +
-            "Overlapping objects along that ray stay ambiguous."
+        "Hand z recognizes depth-angled pointing, but object boxes have no measured depth. " +
+            "Depth-angled aim uses the fingertip position; overlapping objects stay ambiguous."
 
     private val OTHER_TIPS = intArrayOf(12, 16, 20)
 
@@ -61,21 +62,28 @@ object IndexPoint {
         if (joints.any { it.first < -4f || it.second < -4f || it.first > frameWidth + 4f || it.second > frameHeight + 4f }) {
             return null
         }
-        val palm = distance(mcp, wrist)
-        val indexLength = distance(tip, mcp)
+        val hasDepth = hand.depths.size >= 21 && hand.depths.take(21).all { it.isFinite() }
+        val palm = distance3(hand, INDEX_MCP, WRIST, hasDepth)
+        val indexLength = distance3(hand, INDEX_TIP, INDEX_MCP, hasDepth)
         if (palm < 4f || indexLength < palm * 0.85f) return null
-        val straight = cosine(mcp, pip, tip)
+        val straight = cosine3(hand, INDEX_MCP, INDEX_PIP, INDEX_TIP, hasDepth)
         if (straight > -0.50f) return null
-        val tipReach = distance(tip, wrist)
+        val tipReach = distance3(hand, INDEX_TIP, WRIST, hasDepth)
         for (other in OTHER_TIPS) {
-            if (distance(points[other], wrist) > tipReach * 0.92f) return null
+            if (distance3(hand, other, WRIST, hasDepth) > tipReach * 0.92f) return null
         }
         val dx = tip.first - dip.first
         val dy = tip.second - dip.second
-        val length = hypot(dx, dy)
-        if (length < 3f) return null
+        val projectedLength = hypot(dx, dy)
+        val dz = if (hasDepth) hand.depths[INDEX_TIP] - hand.depths[INDEX_DIP] else 0f
+        val segmentLength = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+        if (segmentLength < 3f) return null
+        val depthDominant = hasDepth && kotlin.math.abs(dz) > projectedLength * 0.75f
+        if (!depthDominant && projectedLength < 3f) return null
         val reach = hypot(frameWidth.toFloat(), frameHeight.toFloat())
-        return PointingRay(tip.first, tip.second, dx / length, dy / length, reach, joints)
+        val dirX = if (projectedLength >= 3f) dx / projectedLength else 0f
+        val dirY = if (projectedLength >= 3f) dy / projectedLength else 0f
+        return PointingRay(tip.first, tip.second, dirX, dirY, reach, joints, depthDominant)
     }
 
     /**
@@ -88,6 +96,7 @@ object IndexPoint {
         preferId: Int?,
         hysteresis: Float = RAY_HYSTERESIS,
     ): BoxObservation? {
+        if (ray.depthDominant) return underFingertip(ray, objects, preferId)
         val hits = objects.mapNotNull { box ->
             if (!pointable(box)) return@mapNotNull null
             val distance = entered(ray, box) ?: return@mapNotNull null
@@ -98,6 +107,38 @@ object IndexPoint {
         val preferred = hits.firstOrNull { it.first.trackId == preferId }
         if (preferred != null && preferred.second <= closest.second * hysteresis + 8f) return preferred.first
         return closest.first
+    }
+
+    /**
+     * A camera cannot recover an object box's distance. For a depth-angled
+     * finger, use the projected fingertip as a stable cursor and require it to
+     * be inside or close to the target. This fixes foreshortening without
+     * pretending the monocular detector can distinguish overlapping depths.
+     */
+    private fun underFingertip(
+        ray: PointingRay,
+        objects: List<BoxObservation>,
+        preferId: Int?,
+    ): BoxObservation? {
+        val radius = max(24f, ray.reach * 0.045f)
+        val hits = objects.mapNotNull { box ->
+            if (!pointable(box)) return@mapNotNull null
+            val dx = when {
+                ray.tipX < box.left -> box.left - ray.tipX
+                ray.tipX > box.right -> ray.tipX - box.right
+                else -> 0f
+            }
+            val dy = when {
+                ray.tipY < box.top -> box.top - ray.tipY
+                ray.tipY > box.bottom -> ray.tipY - box.bottom
+                else -> 0f
+            }
+            val distance = hypot(dx, dy)
+            if (distance <= radius) box to distance else null
+        }
+        if (hits.isEmpty()) return null
+        return hits.firstOrNull { it.first.trackId == preferId }?.first
+            ?: hits.minWith(compareBy<Pair<BoxObservation, Float>> { it.second }.thenByDescending { it.first.score }).first
     }
 
     /** Next object after the locked one leaves. Highest score, then largest box, then lowest id. */
@@ -175,6 +216,33 @@ object IndexPoint {
 
     private fun distance(a: Pair<Float, Float>, b: Pair<Float, Float>): Float =
         hypot(a.first - b.first, a.second - b.second)
+
+    private fun distance3(hand: BoxObservation, a: Int, b: Int, hasDepth: Boolean): Float {
+        val dx = hand.points[a].first - hand.points[b].first
+        val dy = hand.points[a].second - hand.points[b].second
+        val dz = if (hasDepth) hand.depths[a] - hand.depths[b] else 0f
+        return kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
+    private fun cosine3(
+        hand: BoxObservation,
+        back: Int,
+        joint: Int,
+        forward: Int,
+        hasDepth: Boolean,
+    ): Float {
+        if (!hasDepth) return cosine(hand.points[back], hand.points[joint], hand.points[forward])
+        val ax = hand.points[back].first - hand.points[joint].first
+        val ay = hand.points[back].second - hand.points[joint].second
+        val az = hand.depths[back] - hand.depths[joint]
+        val bx = hand.points[forward].first - hand.points[joint].first
+        val by = hand.points[forward].second - hand.points[joint].second
+        val bz = hand.depths[forward] - hand.depths[joint]
+        val aLength = kotlin.math.sqrt(ax * ax + ay * ay + az * az)
+        val bLength = kotlin.math.sqrt(bx * bx + by * by + bz * bz)
+        if (aLength * bLength < 1e-3f) return 1f
+        return (ax * bx + ay * by + az * bz) / (aLength * bLength)
+    }
 
     /** Cosine of the angle at [joint]. A straight finger is near -1. */
     private fun cosine(
