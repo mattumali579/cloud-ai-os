@@ -175,7 +175,12 @@ class MotionTracker(
         val ratioX = visible.width.toFloat() / after.width
         val ratioY = visible.height.toFloat() / after.height
         val boxes = visible.boxes.mapNotNull { box ->
-            val shift = estimate(before, after, box, ratioX, ratioY, radius) ?: return@mapNotNull null
+            val shift = estimate(before, after, box, ratioX, ratioY, radius)
+            if (shift == null) {
+                // Skin patches are often too smooth for a match. Keep the last
+                // hand pose until the landmarker returns instead of dropping it.
+                return@mapNotNull if (box.kind == "hand") box else null
+            }
             val (dx, dy) = shift
             box.copy(
                 left = box.left + dx, right = box.right + dx,
@@ -199,8 +204,9 @@ class MotionTracker(
         ratioY: Float,
         radius: Int,
     ): Pair<Float, Float>? {
-        val midX = (box.left + box.right) / 2f / ratioX
-        val midY = (box.top + box.bottom) / 2f / ratioY
+        val tip = HandTrack.indexTip(box)
+        val midX = (if (tip != null) tip.first else (box.left + box.right) / 2f) / ratioX
+        val midY = (if (tip != null) tip.second else (box.top + box.bottom) / 2f) / ratioY
         val qX = (box.right - box.left) / 4f / ratioX
         val qY = (box.bottom - box.top) / 4f / ratioY
         val centers = listOf(

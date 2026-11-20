@@ -33,6 +33,7 @@ class TrackIds(
     private val matchThreshold: Float = 0.25f,
     private val maxMissedFrames: Int = 8,
     private val graceFrames: Int = 2,
+    private val handGraceFrames: Int = HandTrack.HAND_GRACE_FRAMES,
     private val relabelConfirmations: Int = 3
 ) {
     private data class Track(
@@ -56,6 +57,11 @@ class TrackIds(
         for (track in tracks) {
             observations.forEachIndexed { index, observation ->
                 if (track.kind != observation.kind) return@forEachIndexed
+                if (track.kind == "hand") {
+                    val score = HandTrack.matchScore(track.box, observation)
+                    if (score > 0f) candidates += Triple(score, track, index)
+                    return@forEachIndexed
+                }
                 val overlap = iou(track.box, observation)
                 val sameLabel = track.label == observation.label
                 val threshold = if (sameLabel) matchThreshold else 0.55f
@@ -110,8 +116,15 @@ class TrackIds(
         tracks.removeAll { it.missed > maxMissedFrames }
         // Identity survives a short miss so the same track can be reacquired.
         // held=true means the rectangle is the last measurement, not this frame.
-        // The overlay must not paint it: a remembered box is a frozen box.
-        val held = tracks.filter { it.missed in 1..graceFrames.coerceAtMost(maxMissedFrames) }
+        // Frozen object boxes stay hidden. A held hand is still the same hand.
+        val held = tracks.filter { track ->
+            val grace = if (track.kind == "hand") {
+                handGraceFrames
+            } else {
+                graceFrames
+            }
+            track.missed in 1..grace.coerceAtMost(maxMissedFrames)
+        }
             .map { track ->
                 track.box.copy(
                     score = track.box.score * if (track.missed == 1) 0.8f else 0.6f,

@@ -230,7 +230,8 @@ class VisionPipeline(
             if (scannedOptional && !optionalFailed) lastOptionalFault = null
             observed += recentHands
             observed += recentFaces
-            val tracked = tracks.update(HandPriority.apply(observed)).filter { !it.held }
+            val tracked = tracks.update(HandPriority.apply(observed))
+                .filter { box -> !box.held || box.kind == "hand" }
             return FrameDetections(width, height, tracked.map { it.copy(points = it.points.toList()) })
         } catch (error: Exception) {
             handRuntime?.invalidateInFlight()
@@ -304,14 +305,9 @@ class VisionPipeline(
             if (hand.size < 21) return@mapIndexedNotNull null
             val score = handed.getOrNull(index)?.firstOrNull()?.score() ?: 0f
             if (score < IndexPoint.MIN_SCORE) return@mapIndexedNotNull null
-            val needed = intArrayOf(
-                IndexPoint.WRIST,
-                IndexPoint.INDEX_MCP,
-                IndexPoint.INDEX_PIP,
-                IndexPoint.INDEX_DIP,
-                IndexPoint.INDEX_TIP,
-            )
-            if (needed.any { joint -> !landmarkReliable(hand[joint]) }) return@mapIndexedNotNull null
+            val wristOk = landmarkReliable(hand[IndexPoint.WRIST])
+            val tipOk = landmarkReliable(hand[IndexPoint.INDEX_TIP])
+            if (!wristOk && !tipOk) return@mapIndexedNotNull null
             val coords = hand.map { it.x() * width to it.y() * height }
             // MediaPipe z uses approximately the same normalized scale as x. Preserve it
             // in pixel units so a finger aimed toward the camera does not collapse into

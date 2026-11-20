@@ -243,7 +243,10 @@ class TrackingHandoff(
             !it.held && it.kind == "object" && it.trackId > 0 &&
                 it.right > it.left && it.bottom > it.top
         }
-        if (objects.isEmpty()) return null
+        val hands = HandTrack.forDisplay(detections.boxes)
+        if (objects.isEmpty()) {
+            return if (hands.isEmpty()) null else detections.copy(boxes = hands)
+        }
         val lockedPresent = lockedId != null && objects.any { it.trackId == lockedId }
         // One foreign detection must not steal a live lock. AimLock changes
         // the id after two centered frames, and the next pass draws that id.
@@ -254,7 +257,9 @@ class TrackingHandoff(
             objects,
             if (lockedPresent) lockedId else null,
         )
-        if (chosen.isEmpty()) return null
-        return detections.copy(boxes = chosen)
+        if (chosen.isEmpty()) {
+            return if (hands.isEmpty()) null else detections.copy(boxes = hands)
+        }
+        return detections.copy(boxes = HandTrack.compose(chosen, hands))
     }
 }

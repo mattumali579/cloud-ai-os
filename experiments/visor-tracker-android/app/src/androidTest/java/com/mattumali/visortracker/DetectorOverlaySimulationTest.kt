@@ -592,6 +592,77 @@ class DetectorOverlaySimulationTest {
         }
     }
 
+    /**
+     * Real Hand Landmarker on people.jpg. The overlay must keep the whole hand
+     * and paint the index fingertip, not only the locked object box.
+     */
+    @Test(timeout = 180_000)
+    fun realPhotoTracksTheHandByTheIndexTip() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val photo = instrumentation.context.assets.open("people.jpg").use { BitmapFactory.decodeStream(it) }
+        assertTrue("people.jpg did not decode", photo != null && photo.width > 0)
+        val pipeline = VisionPipeline(
+            context,
+            includeFaces = false,
+            preset = DetectionPreset.FAST,
+            includeHands = true,
+        )
+        val report = StringBuilder()
+        try {
+            val first = pipeline.detect(photo)
+            val hands = first.boxes.filter { it.kind == "hand" && it.points.size >= 21 }
+            report.appendLine("hands=${hands.size} objects=${first.boxes.count { it.kind == "object" }}")
+            assertTrue("Hand Landmarker returned no 21-point hand\n$report", hands.isNotEmpty())
+            val tip = HandTrack.indexTip(hands.first())
+            assertTrue("index fingertip missing\n$report", tip != null)
+
+            val shifted = shift(photo, 36)
+            val second = try {
+                pipeline.detect(shifted)
+            } finally {
+                shifted.recycle()
+            }
+            val moved = second.boxes.filter { it.kind == "hand" && it.points.size >= 21 }
+            report.appendLine("movedHands=${moved.size} firstId=${hands.first().trackId} movedId=${moved.firstOrNull()?.trackId}")
+            assertTrue("hand was lost after the photo shifted\n$report", moved.isNotEmpty())
+            assertEquals(hands.first().trackId, moved.first().trackId)
+
+            val blank = Bitmap.createBitmap(photo.width, photo.height, Bitmap.Config.ARGB_8888)
+            val missed = try {
+                pipeline.detect(blank)
+            } finally {
+                blank.recycle()
+            }
+            val held = missed.boxes.filter { it.kind == "hand" }
+            report.appendLine("heldAfterMiss=${held.size} held=${held.firstOrNull()?.held}")
+            val recovered = pipeline.detect(photo)
+            val back = recovered.boxes.filter { it.kind == "hand" && !it.held }
+            report.appendLine("recovered=${back.map { it.trackId }}")
+            assertTrue("hand did not recover after a brief miss\n$report", back.any { it.trackId == hands.first().trackId })
+
+            val view = TrackingOverlayView(context)
+            view.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(960, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(540, android.view.View.MeasureSpec.EXACTLY),
+            )
+            view.layout(0, 0, 960, 540)
+            view.updateFrame(first.copy(sequence = 1, capturedAtMs = 1))
+            val painted = Bitmap.createBitmap(960, 540, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(painted))
+            val cyan = countCyan(painted)
+            File(context.filesDir, "hand-track-stage.txt").writeText(report.toString() + "cyan=$cyan drawn=${view.drawnBoxCount()}\n")
+            File(context.filesDir, "hand-track-overlay.png").outputStream().use {
+                painted.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            assertTrue("index fingertip marker was not painted\n$report cyan=$cyan", cyan > 10)
+            assertTrue("overlay did not keep the hand\n$report", view.drawnBoxCount() >= 1)
+            painted.recycle()
+        } finally {
+            pipeline.close()
+        }
+    }
+
     private fun acceptedSwitch(decision: AimDecision, frame: FrameDetections, previousId: Int): Boolean =
         decision.lockedId != null && decision.lockedId != previousId &&
             frame.boxes.any { it.kind == "object" && it.trackId == decision.lockedId }

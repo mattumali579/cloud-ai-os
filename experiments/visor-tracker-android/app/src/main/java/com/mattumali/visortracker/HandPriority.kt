@@ -5,20 +5,20 @@ import kotlin.math.min
 
 /**
  * Keeps MediaPipe's hand result authoritative when EfficientDet mistakes the
- * same hand-sized region for a person. Full-body person detections remain.
+ * same hand-sized region for a person or another ordinary object. Full-body
+ * person detections and nearby objects that are not the hand remain.
  */
 object HandPriority {
     private const val MIN_HAND_COVERAGE = 0.55f
-    private const val MAX_PERSON_TO_HAND_AREA = 12f
+    private const val MAX_OBJECT_TO_HAND_AREA = 12f
 
     fun apply(observations: List<BoxObservation>): List<BoxObservation> {
         val hands = observations.filter { hand ->
-            hand.kind == "hand" && !hand.held && hand.points.size >= 21 && hand.area() > 0f
+            hand.kind == "hand" && hand.points.size >= 21 && hand.area() > 0f
         }
         if (hands.isEmpty()) return observations
         return observations.filterNot { candidate ->
-            candidate.kind == "object" && candidate.label.equals("person", ignoreCase = true) &&
-                hands.any { hand -> sameHandRegion(candidate, hand) }
+            candidate.kind == "object" && hands.any { hand -> sameHandRegion(candidate, hand) }
         }
     }
 
@@ -32,7 +32,7 @@ object HandPriority {
         if (handArea <= 0f) return false
         val handCoverage = intersectionWidth * intersectionHeight / handArea
         val areaRatio = person.area() / handArea
-        return handCoverage >= MIN_HAND_COVERAGE && areaRatio <= MAX_PERSON_TO_HAND_AREA
+        return handCoverage >= MIN_HAND_COVERAGE && areaRatio <= MAX_OBJECT_TO_HAND_AREA
     }
 }
 

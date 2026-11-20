@@ -48,13 +48,16 @@ class NearbyCandidatesTest {
         }
     }
 
-    @Test fun handsAreNotDrawn() {
+    @Test fun handsAreNotTheLockedObject() {
         val selector = NearbyCandidates()
         val objectBox = box(1, "cup", 40f, 80f, 60f, 120f)
         val hand = BoxObservation("hand", "hand", 1f, 0f, 0f, 10f, 10f, trackId = 50)
         val shown = selector.select(100, 200, listOf(objectBox, hand), null)
         assertEquals(1, shown.size)
         assertEquals("object", shown.single().kind)
+        val overlay = HandTrack.compose(shown, HandTrack.forDisplay(listOf(objectBox, hand.copy(points = pointingHand(8f, 8f).points))))
+        assertTrue(overlay.any { it.kind == "hand" })
+        assertEquals(1, overlay.count { it.kind == "object" })
     }
 
     @Test fun lockedTrackIsTheOnlyBoxEvenInClutter() {

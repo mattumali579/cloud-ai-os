@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.os.SystemClock
 import android.view.View
@@ -45,6 +46,23 @@ class TrackingOverlayView(context: Context) : View(context) {
         strokeWidth = dp(2f)
         strokeCap = Paint.Cap.ROUND
     }
+    private val handOutline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(3.5f)
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        color = 0xFFFFB300.toInt()
+    }
+    private val indexFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = 0xFF00E5FF.toInt()
+    }
+    private val indexRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2.5f)
+        color = Color.WHITE
+    }
+    private val handPath = Path()
     private var latest: FrameDetections? = null
     private var receivedAt = 0L
     private var shownSequence = Long.MIN_VALUE
@@ -125,25 +143,36 @@ class TrackingOverlayView(context: Context) : View(context) {
         val aimId = aimRay?.let { ray ->
             IndexPoint.alongRay(ray, frame.boxes, lockedId)?.trackId
         }
-        val incoming = if (frame.boxes.isEmpty()) {
+        val incomingObjects = if (frame.boxes.isEmpty()) {
             emptyList()
         } else {
             nearby.select(frame.width, frame.height, frame.boxes, lockedId, aimId)
         }
+        val incomingHands = HandTrack.forDisplay(frame.boxes)
+        val incoming = HandTrack.compose(incomingObjects, incomingHands)
         val now = SystemClock.elapsedRealtime()
         val accepted = OverlayDiagnostics.acceptFrame(
             frameSequence = frame.sequence,
             shownSequence = shownSequence,
             incomingBoxes = incoming.size,
-            showingTrackId = previous?.boxes?.firstOrNull()?.trackId,
-            incomingTrackId = incoming.firstOrNull()?.trackId,
+            showingTrackId = previous?.boxes?.firstOrNull { it.kind == "object" }?.trackId
+                ?: previous?.boxes?.firstOrNull()?.trackId,
+            incomingTrackId = incomingObjects.firstOrNull()?.trackId,
             lockedId = lockedId,
             captureIsRecent = OverlayDiagnostics.captureIsRecent(now, frame.capturedAtMs, BoxHold.HOLD_MS),
         )
         if (!accepted) return null
         shownSequence = OverlayDiagnostics.nextShownSequence(shownSequence, frame.sequence, accepted = true)
         val ageMs = if (receivedAt == 0L) Long.MAX_VALUE else now - receivedAt
-        val kept = BoxHold.keep(previous?.boxes.orEmpty(), incoming, ageMs)
+        val previousObjects = HandTrack.objectsOnly(previous?.boxes.orEmpty())
+        val previousHands = previous?.boxes.orEmpty().filter { it.kind == "hand" }
+        val keptObjects = BoxHold.keep(previousObjects, incomingObjects, ageMs)
+        val keptHands = if (incomingHands.isNotEmpty()) {
+            incomingHands
+        } else {
+            BoxHold.keep(previousHands, emptyList(), ageMs)
+        }
+        val kept = HandTrack.compose(keptObjects, keptHands)
         val display = OverlayDiagnostics.frameToDraw(frame, previous, incoming.size, kept)
         latest = display
         if (incoming.isNotEmpty()) receivedAt = now
@@ -231,9 +260,23 @@ class TrackingOverlayView(context: Context) : View(context) {
             if (observation.kind == "hand") {
                 point.color = color
                 handLine.color = color
+                handOutline.color = color
                 val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
                 val ox = (width - frame.width * scale) / 2f
                 val oy = (height - frame.height * scale) / 2f
+                fun mapped(x: Float, y: Float) = ox + x * scale to oy + y * scale
+                val hull = HandOutline.hull(observation.points)
+                if (hull.size >= 3) {
+                    handPath.reset()
+                    val first = mapped(hull[0].first, hull[0].second)
+                    handPath.moveTo(first.first, first.second)
+                    for (index in 1 until hull.size) {
+                        val at = mapped(hull[index].first, hull[index].second)
+                        handPath.lineTo(at.first, at.second)
+                    }
+                    handPath.close()
+                    canvas.drawPath(handPath, handOutline)
+                }
                 HandSkeleton.connections.forEach { (from, to) ->
                     val start = observation.points.getOrNull(from) ?: return@forEach
                     val end = observation.points.getOrNull(to) ?: return@forEach
@@ -245,8 +288,15 @@ class TrackingOverlayView(context: Context) : View(context) {
                         handLine,
                     )
                 }
-                observation.points.forEach { (x, y) ->
+                observation.points.forEachIndexed { index, (x, y) ->
+                    if (index == IndexPoint.INDEX_TIP) return@forEachIndexed
                     canvas.drawCircle(ox + x * scale, oy + y * scale, dp(2.5f), point)
+                }
+                val tip = HandTrack.indexTip(observation)
+                if (tip != null) {
+                    val at = mapped(tip.first, tip.second)
+                    canvas.drawCircle(at.first, at.second, dp(8f), indexFill)
+                    canvas.drawCircle(at.first, at.second, dp(8f), indexRing)
                 }
             }
         }
