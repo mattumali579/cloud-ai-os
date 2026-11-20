@@ -4,6 +4,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.33: training still overlay
+
+Live View now matches the owner's training stills: 21 cyan landmarks, landmark 8 as the index marker, a green **pointing hand** badge versus a fist labeled **hand**, an aim ray that stops on the locked object (`cup #766`) or ends on an empty-space crosshair, and a top-right HUD (`Hands`, `LMK`, `State`, `Target`, `Conf`, `FPS`). Same package `com.mattumali.visortracker.stable`. versionCode 34. Tap **UPDATE THIS APP**.
+
 ## Version 0.32: publish without waiting on the emulator
 
 Version code 33. A signed GitHub release is published as soon as the unit-tested APK is built. Emulator jobs still run, but they no longer block **UPDATE THIS APP**. If the GitHub API stalls, the app probes the next download URLs and the screen has **OPEN RELEASE PAGE**.

@@ -77,6 +77,22 @@ class TrackingOverlayView(context: Context) : View(context) {
         color = 0xFF00E5FF.toInt()
     }
     private var probeLines: List<String> = emptyList()
+    private var decoderFps: Float = 0f
+    private val hudText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+        textSize = dp(12f)
+        isFakeBoldText = true
+    }
+    private val badge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = 0xE61B5E20.toInt()
+    }
+    private val cross = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2f)
+        color = 0xFF00E5FF.toInt()
+    }
     @Volatile var frameAgeMs: Int = 0
         private set
 
@@ -94,6 +110,10 @@ class TrackingOverlayView(context: Context) : View(context) {
         if (lines == probeLines) return
         probeLines = lines
         invalidate()
+    }
+
+    fun setDecoderFps(fps: Float) {
+        decoderFps = fps
     }
 
     /** Calibrate only the physical object currently nearest the camera center. */
@@ -216,15 +236,14 @@ class TrackingOverlayView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         draws.incrementAndGet()
+        val frame = latest
+        val hud = frame?.let {
+            TrainingHud.status(it, distanceEstimator.selectedTrackId())
+        }
+        drawHud(canvas, hud)
         drawProbe(canvas)
-        val frame = latest ?: return
-        canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(18f), text)
-        canvas.drawText(distanceEstimator.banner(frame.boxes), dp(12f), dp(34f), text)
-        canvas.drawText(RelativeDistanceEstimator.LIMITATION, dp(12f), dp(48f), note)
-        drawAim(canvas, frame)
-        if (frame.boxes.isEmpty()) return
+        if (frame == null) return
         if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) {
-            // A draw before layout used to return here and never run again.
             if (width <= 0 || height <= 0) {
                 post {
                     if (width > 0 && height > 0 && latest?.boxes?.isNotEmpty() == true) invalidate()
@@ -232,16 +251,19 @@ class TrackingOverlayView(context: Context) : View(context) {
             }
             return
         }
+        val liveRay = IndexPoint.ray(frame) ?: aimRay
+        val aimed = liveRay?.let { IndexPoint.alongRay(it, frame.boxes, distanceEstimator.selectedTrackId()) }
+        drawAim(canvas, frame, liveRay, aimed)
         for (observation in frame.boxes) {
+            if (observation.kind == "hand") {
+                drawHand(canvas, frame, observation, hud?.pointing == true)
+                continue
+            }
             val current = CoverGeometry.project(frame.width, frame.height, width, height, observation)
                 .let { RectF(it.left, it.top, it.right, it.bottom) }
-
-            val color = when (observation.kind) {
-                "hand" -> 0xFFFFB300.toInt()
-                "face" -> 0xFF00D9FF.toInt()
-                else -> 0xFF80F45D.toInt()
-            }
-            val locked = observation.trackId == distanceEstimator.selectedTrackId()
+            val color = if (observation.kind == "face") 0xFF00D9FF.toInt() else 0xFF80F45D.toInt()
+            val locked = observation.trackId == distanceEstimator.selectedTrackId() ||
+                observation.trackId == aimed?.trackId
             stroke.color = if (locked) Color.WHITE else color
             stroke.strokeWidth = if (locked) dp(5f) else dp(2.5f)
             canvas.drawRoundRect(current, dp(7f), dp(7f), stroke)
@@ -257,64 +279,117 @@ class TrackingOverlayView(context: Context) : View(context) {
                 labelTop + dp(23f), dp(4f), dp(4f), background
             )
             canvas.drawText(label, current.left + dp(6f), labelTop + dp(16f), text)
-            if (observation.kind == "hand") {
-                point.color = color
-                handLine.color = color
-                handOutline.color = color
-                val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
-                val ox = (width - frame.width * scale) / 2f
-                val oy = (height - frame.height * scale) / 2f
-                fun mapped(x: Float, y: Float) = ox + x * scale to oy + y * scale
-                val hull = HandOutline.hull(observation.points)
-                if (hull.size >= 3) {
-                    handPath.reset()
-                    val first = mapped(hull[0].first, hull[0].second)
-                    handPath.moveTo(first.first, first.second)
-                    for (index in 1 until hull.size) {
-                        val at = mapped(hull[index].first, hull[index].second)
-                        handPath.lineTo(at.first, at.second)
-                    }
-                    handPath.close()
-                    canvas.drawPath(handPath, handOutline)
-                }
-                HandSkeleton.connections.forEach { (from, to) ->
-                    val start = observation.points.getOrNull(from) ?: return@forEach
-                    val end = observation.points.getOrNull(to) ?: return@forEach
-                    canvas.drawLine(
-                        ox + start.first * scale,
-                        oy + start.second * scale,
-                        ox + end.first * scale,
-                        oy + end.second * scale,
-                        handLine,
-                    )
-                }
-                observation.points.forEachIndexed { index, (x, y) ->
-                    if (index == IndexPoint.INDEX_TIP) return@forEachIndexed
-                    canvas.drawCircle(ox + x * scale, oy + y * scale, dp(2.5f), point)
-                }
-                val tip = HandTrack.indexTip(observation)
-                if (tip != null) {
-                    val at = mapped(tip.first, tip.second)
-                    canvas.drawCircle(at.first, at.second, dp(8f), indexFill)
-                    canvas.drawCircle(at.first, at.second, dp(8f), indexRing)
-                }
-            }
         }
     }
 
-    private fun drawAim(canvas: Canvas, frame: FrameDetections) {
-        val ray = aimRay ?: return
-        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
+    private fun drawHand(
+        canvas: Canvas,
+        frame: FrameDetections,
+        observation: BoxObservation,
+        pointing: Boolean,
+    ) {
+        val cyan = 0xFF00E5FF.toInt()
+        val outline = if (pointing) 0xFF80F45D.toInt() else cyan
+        point.color = cyan
+        handLine.color = cyan
+        handOutline.color = outline
+        val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
+        val ox = (width - frame.width * scale) / 2f
+        val oy = (height - frame.height * scale) / 2f
+        fun mapped(x: Float, y: Float) = ox + x * scale to oy + y * scale
+        val hull = HandOutline.hull(observation.points)
+        if (hull.size >= 3) {
+            handPath.reset()
+            val first = mapped(hull[0].first, hull[0].second)
+            handPath.moveTo(first.first, first.second)
+            for (index in 1 until hull.size) {
+                val at = mapped(hull[index].first, hull[index].second)
+                handPath.lineTo(at.first, at.second)
+            }
+            handPath.close()
+            canvas.drawPath(handPath, handOutline)
+        }
+        HandSkeleton.connections.forEach { (from, to) ->
+            val start = observation.points.getOrNull(from) ?: return@forEach
+            val end = observation.points.getOrNull(to) ?: return@forEach
+            canvas.drawLine(
+                ox + start.first * scale,
+                oy + start.second * scale,
+                ox + end.first * scale,
+                oy + end.second * scale,
+                handLine,
+            )
+        }
+        observation.points.forEachIndexed { index, (x, y) ->
+            if (index == IndexPoint.INDEX_TIP) return@forEachIndexed
+            canvas.drawCircle(ox + x * scale, oy + y * scale, dp(3f), point)
+        }
+        val tip = HandTrack.indexTip(observation)
+        if (tip != null) {
+            val at = mapped(tip.first, tip.second)
+            canvas.drawCircle(at.first, at.second, dp(9f), indexFill)
+            canvas.drawCircle(at.first, at.second, dp(9f), indexRing)
+        }
+        val wrist = observation.points.getOrNull(IndexPoint.WRIST)
+        if (wrist != null) {
+            val at = mapped(wrist.first, wrist.second)
+            val title = if (pointing) TrainingHud.POINTING else TrainingHud.HAND
+            val w = text.measureText(title) + dp(12f)
+            val left = at.first
+            val top = (at.second + dp(10f)).coerceAtMost(height - dp(24f))
+            canvas.drawRoundRect(left, top, left + w, top + dp(22f), dp(4f), dp(4f), badge)
+            canvas.drawText(title, left + dp(6f), top + dp(16f), text)
+        }
+    }
+
+    private fun drawAim(
+        canvas: Canvas,
+        frame: FrameDetections,
+        ray: PointingRay?,
+        target: BoxObservation?,
+    ) {
+        if (ray == null) return
         val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
         val ox = (width - frame.width * scale) / 2f
         val oy = (height - frame.height * scale) / 2f
         fun px(x: Float, y: Float) = ox + x * scale to oy + y * scale
         val start = px(ray.tipX, ray.tipY)
-        val end = px(ray.tipX + ray.dirX * ray.reach, ray.tipY + ray.dirY * ray.reach)
+        val endPoint = if (target != null) {
+            (target.left + target.right) / 2f to (target.top + target.bottom) / 2f
+        } else {
+            val span = kotlin.math.hypot(frame.width.toFloat(), frame.height.toFloat()) * 0.45f
+            ray.tipX + ray.dirX * span to ray.tipY + ray.dirY * span
+        }
+        val end = px(endPoint.first, endPoint.second)
         canvas.drawLine(start.first, start.second, end.first, end.second, rayPaint)
-        ray.joints.forEach { (x, y) ->
-            val at = px(x, y)
-            canvas.drawCircle(at.first, at.second, dp(4f), rayPaint)
+        canvas.drawCircle(end.first, end.second, dp(4f), indexFill)
+        if (target == null) {
+            val arm = dp(10f)
+            canvas.drawLine(end.first - arm, end.second, end.first + arm, end.second, cross)
+            canvas.drawLine(end.first, end.second - arm, end.first, end.second + arm, cross)
+        }
+    }
+
+    private fun drawHud(canvas: Canvas, hud: TrainingHud.Status?) {
+        if (width <= 0) return
+        val lines = if (hud == null) {
+            listOf("Hands: 0", "State: --", "Target: none")
+        } else {
+            TrainingHud.lines(hud, decoderFps)
+        }
+        val lineH = dp(16f)
+        val pad = dp(8f)
+        var maxW = dp(120f)
+        for (line in lines) maxW = maxOf(maxW, hudText.measureText(line))
+        val right = width - dp(12f)
+        val left = (right - maxW - pad * 2).coerceAtLeast(dp(12f))
+        val top = dp(12f)
+        val box = RectF(left, top, right, top + pad * 2 + lineH * lines.size)
+        canvas.drawRoundRect(box, dp(6f), dp(6f), background)
+        stroke.color = 0xFF00E5FF.toInt()
+        canvas.drawRoundRect(box, dp(6f), dp(6f), stroke)
+        lines.forEachIndexed { index, line ->
+            canvas.drawText(line, left + pad, top + pad + lineH * (index + 1) - dp(3f), hudText)
         }
     }
 

@@ -763,6 +763,7 @@ class OverlayTrackingService : Service() {
         val line = OverlayDiagnostics.notificationLine(snapshot, diagnosis, extra)
         lastStatus = line
         overlay?.setProbe(OverlayDiagnostics.probeLines(snapshot, diagnosis))
+        overlay?.setDecoderFps(decoderFps)
         if (!running) return
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
             .notify(NOTIFICATION_ID, notification(line))
