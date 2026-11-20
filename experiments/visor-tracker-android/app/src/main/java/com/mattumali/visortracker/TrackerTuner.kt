@@ -128,9 +128,9 @@ object TrackerTuner {
                 forbidSwitchBefore = 3,
             ),
             TuneCase(
-                "known replacement by the second frame",
+                "a disappeared point is not replaced by the center object",
                 listOf(picture, picture, frame(center), frame(center)),
-                1,
+                2,
                 decidedBy = 3,
             ),
             TuneCase(

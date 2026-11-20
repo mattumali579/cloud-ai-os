@@ -5,23 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from tracker_port import (
-    AimLock,
-    Box,
-    TrackIds,
-    aimed,
-    entered,
-    from_arm_box,
-    hand_priority,
-    wearer_arm,
-)
+from tracker_port import Box
 
 # Honest COCO names only. Do not map cup->barrel or book->phone.
 SEMANTIC = {
@@ -131,8 +124,6 @@ def detect_objects(detector, bgr: np.ndarray) -> list[Box]:
         bb = det.bounding_box
         name = cat.category_name or "object"
         score = float(cat.score or 0)
-        if name.lower() != "person" and score < 0.45:
-            name = "object"
         boxes.append(
             Box(
                 kind="object",
@@ -247,31 +238,27 @@ def main() -> int:
     parser.add_argument("--video", type=Path, default=DEFAULT_VIDEO)
     parser.add_argument("--out", type=Path, default=WORKTREE / "test-recordings" / "10917" / "replay")
     parser.add_argument("--fps", type=float, default=5.0)
+    parser.add_argument("--skip-detect", action="store_true")
     args = parser.parse_args()
     video_path = ensure_video(args.video)
     out_dir = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
     gt = json.loads(GT_PATH.read_text(encoding="utf-8"))
-    objects_det, hands_det = load_detectors()
     cap = cv2.VideoCapture(str(video_path))
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(src_fps / args.fps)))
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    writer = cv2.VideoWriter(
-        str(out_dir / "10917_replay.mp4"),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        args.fps,
-        (fw, fh),
-    )
-    tracks = TrackIds()
-    lock = AimLock()
-    recent_hands: list[Box] = []
-    hand_misses = 0
-    rows = []
-    frame_i = 0
-    ts_ms = 0
-    while True:
+    if args.skip_detect:
+        detections = load_saved_detections(out_dir / "detections.txt")
+        cap.release()
+    else:
+        objects_det, hands_det = load_detectors()
+        detections = []
+    if not args.skip_detect:
+        frame_i = 0
+        ts_ms = 0
+    while (not args.skip_detect) and True:
         ok, frame = cap.read()
         if not ok:
             break
@@ -283,37 +270,63 @@ def main() -> int:
         objs = detect_objects(objects_det, masked)
         hands = detect_hands(hands_det, masked, ts_ms)
         ts_ms += int(1000 / args.fps)
-        arm = next((b for b in objs if wearer_arm(b, fw, fh)), None)
-        planar = [h for h in hands if has_planar(h)]
-        if planar:
-            recent_hands = planar
-            hand_misses = 0
-            source = "mediapipe"
-        elif arm is not None:
-            recent_hands = [from_arm_box(arm, fw, fh)]
-            hand_misses = 0
-            source = "arm_box"
-        elif hands:
-            recent_hands = hands
-            hand_misses = 0
-            source = "mediapipe"
-        else:
-            hand_misses += 1
-            keep = any(extended_ok(h, fw, fh) for h in recent_hands)
-            if keep and recent_hands and hand_misses <= 8:
-                recent_hands = [Box(**{**h.__dict__, "held": False}) for h in recent_hands]
-                source = "held"
-            else:
-                recent_hands = []
-                source = "miss"
-        merged = tracks.assign(objs) + recent_hands
-        prioritized = hand_priority(merged, fw, fh)
-        person_shown = any(b.label.lower() == "person" for b in prioritized)
-        locked = lock.update(prioritized, fw, fh)
-        aim = aimed(prioritized, fw, fh, prefer_id=locked)
-        lock_box = next((b for b in prioritized if b.track_id == locked), None)
+        detections.append(
+            {
+                "t": round(t, 3),
+                "width": fw,
+                "height": fh,
+                "boxes": [box_payload(b) for b in objs + hands],
+            }
+        )
+        frame_i += 1
+        if len(detections) % 25 == 0:
+            print(f"detected {len(detections)} frames", flush=True)
+    if not args.skip_detect:
+        cap.release()
+        (out_dir / "detections.txt").write_text(
+            "".join(detection_record(row) for row in detections),
+            encoding="utf-8",
+        )
+    run_kotlin(out_dir)
+    decisions = [
+        json.loads(line)
+        for line in (out_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if len(decisions) != len(detections):
+        raise SystemExit(f"Kotlin returned {len(decisions)} decisions for {len(detections)} frames")
+    writer = cv2.VideoWriter(
+        str(out_dir / "10917_replay.mp4"),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        args.fps,
+        (fw, fh),
+    )
+    cap = cv2.VideoCapture(str(video_path))
+    rows = []
+    frame_i = 0
+    sample = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if frame_i % step != 0:
+            frame_i += 1
+            continue
+        decision = decisions[sample]
+        detected = detections[sample]
+        sample += 1
+        t = detected["t"]
+        boxes = [box_from_decision(raw) for raw in decision["boxes"]]
+        locked = decision["lock_id"]
+        lock_box = next((b for b in boxes if b.track_id == locked), None)
         seg = segment_at(gt, t)
-        hand_ok = (seg["hand"] != "pointing") or any(b.kind == "hand" for b in prioritized)
+        source = {
+            "POINTING_CONFIRMED": "mediapipe",
+            "HAND_VISIBLE": "mediapipe",
+            "ARM_VISIBLE": "arm_box",
+        }.get(decision["state"], "miss")
+        person_shown = any(b.label.lower() == "person" for b in boxes)
+        hand_ok = (seg["hand"] != "pointing") or any(b.kind == "hand" for b in boxes)
         target_ok = True
         steal = False
         if seg["target"] == "none":
@@ -321,7 +334,23 @@ def main() -> int:
         else:
             target_ok = lock_in_region(lock_box, seg.get("region"), fw, fh)
             steal = lock_in_region(lock_box, [0.48, 0.62, 0.92, 0.96], fw, fh) and seg["target"] != "phone"
-        ray_hit = ray_hits_region(aim, seg.get("region"), fw, fh) if seg["target"] != "none" else False
+        ray_hit = False
+        if seg["target"] != "none" and decision["ray"] and seg.get("region"):
+            region = seg["region"]
+            ray_hit = ray_enters(
+                decision["tip_x"],
+                decision["tip_y"],
+                decision["dir_x"],
+                decision["dir_y"],
+                decision["reach"],
+                region[0] * fw,
+                region[1] * fh,
+                region[2] * fw,
+                region[3] * fh,
+            )
+        proposal = False
+        if seg.get("region"):
+            proposal = any(center_in_region(b, seg["region"], fw, fh) for b in boxes)
         label = lock_box.label if lock_box else None
         expected = SEMANTIC.get(seg["target"], set())
         if seg["target"] in ("none",) or label is None or label == "object":
@@ -331,26 +360,39 @@ def main() -> int:
         else:
             semantic = "wrong"
         hud = (
-            f"hands={sum(1 for b in prioritized if b.kind=='hand')} src={source} "
-            f"lock={lock_box.label if lock_box else '-'} gt={seg['target']} person={int(person_shown)}"
+            f"{decision['state']} hands={sum(1 for b in boxes if b.kind == 'hand')} "
+            f"lock={lock_box.label if lock_box else '-'} gt={seg['target']}"
         )
-        writer.write(draw(frame, prioritized, locked, aim, t, hud))
+        aim = None
+        if decision["ray"]:
+            aim = DrawAim(
+                DrawRay(
+                    decision["tip_x"],
+                    decision["tip_y"],
+                    decision["dir_x"],
+                    decision["dir_y"],
+                    decision["reach"],
+                )
+            )
+        writer.write(draw(frame, boxes, locked, aim, t, hud))
         rows.append(
             {
-                "t": round(t, 3),
+                "t": t,
+                "gesture": decision["state"],
                 "hand_source": source,
-                "hands": sum(1 for b in prioritized if b.kind == "hand"),
+                "hands": sum(1 for b in boxes if b.kind == "hand"),
                 "person_fp": person_shown,
-                "lock_label": lock_box.label if lock_box else None,
+                "lock_label": label,
                 "lock_id": locked,
-                "ray": aim is not None,
-                "hit": aim.hit.label if aim and aim.hit else None,
+                "ray": bool(decision["ray"]),
+                "hit_id": decision["hit_id"],
                 "gt_hand": seg["hand"],
                 "gt_target": seg["target"],
                 "holdout": bool(seg.get("holdout")),
                 "hand_ok": hand_ok,
                 "target_ok": target_ok,
                 "ray_hits_gt": ray_hit,
+                "proposal_in_gt": proposal,
                 "semantic": semantic,
                 "phone_steal": steal,
                 "phone_miss": seg["target"] == "phone" and not target_ok,
@@ -408,7 +450,7 @@ def main() -> int:
         "holdout_segments": ["chair", "optics"],
         "source": "composited_screen_recording",
         "model": "efficientdet_lite0",
-        "note": "arm_box is not a MediaPipe fingertip. semantic does not rename book to phone or cup to barrel. Zero locks fails.",
+        "note": "Locks come from ProductionTracker. An arm box is not a finger. semantic does not rename book to phone or cup to barrel. Zero locks fails. This is a screen recording, not glasses proof.",
     }
     locked_rows = [r for r in rows if r["lock_id"] is not None]
     correct_locks = [r for r in aimed_rows if r["target_ok"] and r["lock_id"] is not None]
@@ -432,39 +474,164 @@ def main() -> int:
             "frames": len(group),
             "holdout": bool(group and group[0]["holdout"]),
             "lock_recall": rate(lambda r: r["target_ok"] and r["lock_id"] is not None, group),
+            "lock_frames": sum(1 for r in group if r["target_ok"] and r["lock_id"] is not None),
             "ray_hit": rate(lambda r: r["ray_hits_gt"], group),
+            "proposal_coverage": rate(lambda r: r["proposal_in_gt"], group),
         }
     metrics["per_target"] = per_target
+    metrics["decision_source"] = "ProductionTracker"
+    zero_lock_targets = sum(1 for item in per_target.values() if item["lock_recall"] <= 0)
     (out_dir / "frames.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     print(json.dumps(metrics, indent=2))
-    # Zero locks is a failure even when phone steal is also zero.
-    fail = metrics["lock_frames"] == 0 or metrics["lock_recall"] <= 0 or metrics["phone_steal_rate_other_targets"] > 0.08
+    # Zero locks is a failure. Six of seven targets at 0% lock recall is a failure.
+    # Phone steal of zero does not pass either of those.
+    fail = (
+        metrics["lock_frames"] == 0
+        or metrics["lock_recall"] <= 0
+        or metrics["phone_steal_rate_other_targets"] > 0.08
+        or zero_lock_targets >= 6
+    )
     return 1 if fail else 0
 
 
-def ray_hits_region(aim, region, fw: int, fh: int) -> bool:
-    if aim is None or not region:
+def load_saved_detections(path: Path) -> list[dict]:
+    if not path.is_file():
+        raise SystemExit(f"missing {path}; run without --skip-detect")
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("FRAME "):
+            continue
+        _, width, height, t = line.split()
+        rows.append({"t": float(t), "width": int(width), "height": int(height), "boxes": []})
+    if not rows:
+        raise SystemExit(f"{path} has no FRAME lines")
+    return rows
+
+
+def detection_record(row: dict) -> str:
+    lines = [f"FRAME {row['width']} {row['height']} {row['t']}"]
+    for box in row["boxes"]:
+        label = json.dumps(box["label"], ensure_ascii=True).replace(" ", "\\u0020")
+        lines.append(
+            "BOX {kind} {label} {score} {left} {top} {right} {bottom}".format(
+                kind=box["kind"],
+                label=label,
+                score=box["score"],
+                left=box["left"],
+                top=box["top"],
+                right=box["right"],
+                bottom=box["bottom"],
+            )
+        )
+        if box.get("points"):
+            flat = " ".join(f"{p[0]} {p[1]}" for p in box["points"])
+            lines.append("POINTS " + flat)
+    lines.append("END")
+    return "\n".join(lines) + "\n"
+
+
+def box_payload(box: Box) -> dict:
+    payload = {
+        "kind": box.kind,
+        "label": box.label,
+        "score": box.score,
+        "left": box.left,
+        "top": box.top,
+        "right": box.right,
+        "bottom": box.bottom,
+    }
+    if box.points:
+        payload["points"] = [[p[0], p[1]] for p in box.points]
+    return payload
+
+
+def box_from_decision(raw: dict) -> Box:
+    return Box(
+        kind=raw["kind"],
+        label=raw["label"],
+        score=float(raw["score"]),
+        left=float(raw["left"]),
+        top=float(raw["top"]),
+        right=float(raw["right"]),
+        bottom=float(raw["bottom"]),
+        points=[(p[0], p[1]) for p in raw.get("points", [])],
+        track_id=int(raw.get("track_id") or 0),
+    )
+
+
+class DrawRay:
+    def __init__(self, tip_x: float, tip_y: float, dir_x: float, dir_y: float, reach: float) -> None:
+        self.tip_x = tip_x
+        self.tip_y = tip_y
+        self.dir_x = dir_x
+        self.dir_y = dir_y
+        self.reach = reach
+
+
+class DrawAim:
+    def __init__(self, ray: DrawRay) -> None:
+        self.ray = ray
+
+
+def center_in_region(box: Box, region: list[float], fw: int, fh: int) -> bool:
+    if box.kind != "object" or box.label.lower() == "person":
         return False
-    x0, y0, x1, y1 = region[0] * fw, region[1] * fh, region[2] * fw, region[3] * fh
-    gt_box = Box("object", "region", 1.0, x0, y0, x1, y1, track_id=1)
-    return entered(aim.ray, gt_box) is not None
+    cx = (box.left + box.right) * 0.5 / fw
+    cy = (box.top + box.bottom) * 0.5 / fh
+    x0, y0, x1, y1 = region
+    return x0 <= cx <= x1 and y0 <= cy <= y1
 
 
-def extended_ok(hand: Box, fw: int, fh: int) -> bool:
-    from tracker_port import extended
+def ray_enters(tip_x, tip_y, dir_x, dir_y, reach, x0, y0, x1, y1) -> bool:
+    if x0 <= tip_x <= x1 and y0 <= tip_y <= y1:
+        return True
+    t_min = 0.0
+    t_max = float(reach)
+    origin = (tip_x, tip_y)
+    direction = (dir_x, dir_y)
+    bounds = ((x0, x1), (y0, y1))
+    for axis in (0, 1):
+        if abs(direction[axis]) < 1e-4:
+            if origin[axis] < bounds[axis][0] or origin[axis] > bounds[axis][1]:
+                return False
+            continue
+        near = (bounds[axis][0] - origin[axis]) / direction[axis]
+        far = (bounds[axis][1] - origin[axis]) / direction[axis]
+        if near > far:
+            near, far = far, near
+        t_min = max(t_min, near)
+        t_max = min(t_max, far)
+        if t_min > t_max:
+            return False
+    return True
 
-    return extended(hand, fw, fh) is not None
 
-
-def has_planar(hand: Box) -> bool:
-    if len(hand.points) < 21:
-        return False
-    palm = ((hand.points[5][0] - hand.points[0][0]) ** 2 + (hand.points[5][1] - hand.points[0][1]) ** 2) ** 0.5
-    if palm < 4:
-        return False
-    reach = ((hand.points[8][0] - hand.points[5][0]) ** 2 + (hand.points[8][1] - hand.points[5][1]) ** 2) ** 0.5
-    return reach >= palm * 0.50
+def run_kotlin(out_dir: Path) -> None:
+    temp = Path(os.environ.get("TEMP", ""))
+    candidates = [
+        temp / "gradle-extract" / "gradle-9.6.0" / "bin" / "gradle.bat",
+        temp / "gradle-9.6.0" / "bin" / "gradle.bat",
+    ]
+    gradle = next((path for path in candidates if path.exists()), None)
+    if gradle is None:
+        raise SystemExit("gradle.bat not found; ProductionTracker replay cannot run")
+    env = os.environ.copy()
+    env["VISOR_REPLAY_DIR"] = str(out_dir)
+    print("ProductionTracker decisions", flush=True)
+    subprocess.run(
+        [
+            str(gradle),
+            ":app:testDebugUnitTest",
+            "--offline",
+            "--rerun-tasks",
+            "--tests",
+            "com.mattumali.visortracker.ReplayDriverTest",
+        ],
+        cwd=MODULE,
+        env=env,
+        check=True,
+    )
 
 
 if __name__ == "__main__":

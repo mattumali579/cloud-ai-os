@@ -69,7 +69,18 @@ class RelativeDistanceEstimator {
             appliedSequence = -1L
             return "Lock released. No command was sent."
         }
-        val id = decision.lockedId ?: return null
+        val id = decision.lockedId
+        if (id == null) {
+            if (before != null && decision.changed) {
+                selectedId = null
+                originalHeightFraction = 0f
+                originalFeet = 0f
+                smoothedFeet = null
+                appliedSequence = -1L
+                return "Lock released. Point at an object to lock it."
+            }
+            return null
+        }
         if (id == selectedId) return null
         if (selectedId != id) {
             originalHeightFraction = 0f

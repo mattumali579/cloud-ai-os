@@ -11,35 +11,32 @@ class AimLockTest {
         BoxObservation("object", "chair", 0.4f, x, 40f, x + 20f, 80f, trackId = id)
 
     private fun frame(vararg boxes: BoxObservation) =
-        FrameDetections(100, 100, boxes.toList())
+        FrameDetections(220, 160, boxes.toList())
 
-    @Test fun twoDetectorFramesSwitchWhileBothStayVisible() {
+    private fun wide(vararg boxes: BoxObservation) = frame(*boxes)
+
+    @Test fun twoDetectorFramesDoNotLockWithoutAPointingHand() {
         val aim = AimLock()
         val first = aim.observe(frame(box(1, 40f), box(2, 0f)))
         assertFalse(first.changed)
-        val locked = aim.observe(frame(box(1, 40f), box(2, 0f)))
-        assertTrue(locked.changed)
-        assertEquals(1, locked.lockedId)
-        val towardTwo = aim.observe(frame(box(1, 0f), box(2, 40f)))
-        assertFalse(towardTwo.changed)
-        assertEquals(1, towardTwo.lockedId)
-        val stillFirst = aim.observe(frame(box(1, 0f), box(2, 40f)))
-        assertEquals(1, stillFirst.lockedId)
-        assertFalse(stillFirst.changed)
+        assertNull(first.lockedId)
+        val again = aim.observe(frame(box(1, 40f), box(2, 0f)))
+        assertNull(again.lockedId)
+        assertNull(aim.observe(frame(box(1, 0f), box(2, 40f))).lockedId)
     }
 
-    @Test fun knownReplacementConfirmsOnTheSameDetection() {
+    @Test fun knownReplacementDoesNotInventALock() {
         val aim = AimLock()
         val both = frame(box(1, 40f), box(2, 0f))
         aim.observe(both)
-        assertEquals(1, aim.observe(both).lockedId)
+        assertNull(aim.observe(both).lockedId)
         val gone = frame(box(2, 0f))
         assertTrue(KnownReplacement.alreadyVisible(both, gone, 1))
         val started = System.nanoTime()
         val switched = aim.observeKnownReplacement(gone)
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
-        assertEquals(2, switched.lockedId)
-        assertTrue(switched.changed)
+        assertNull(switched.lockedId)
+        assertFalse(switched.changed)
         assertFalse(switched.released)
         assertTrue(elapsedMs < 50)
         assertFalse(aim.sentExternalCommand)
@@ -51,17 +48,16 @@ class AimLockTest {
         aim.observe(both)
         aim.observe(both)
         val once = aim.observe(frame(box(2, 0f)))
-        assertEquals(1, once.lockedId)
+        assertNull(once.lockedId)
         assertFalse(once.changed)
     }
 
-    @Test fun knownReplacementDoesNotSkipTheEmptyOcclusionHold() {
+    @Test fun anEmptyFrameDoesNotAcquireFromThePreviousCenter() {
         val aim = AimLock()
         val held = frame(box(1, 40f))
         aim.observe(held)
         aim.observe(held)
-        assertEquals(1, aim.observeKnownReplacement(frame()).lockedId)
-        assertEquals(1, aim.observeKnownReplacement(frame()).lockedId)
+        assertNull(aim.observeKnownReplacement(frame()).lockedId)
         assertNull(aim.observeKnownReplacement(frame()).lockedId)
     }
 
@@ -70,16 +66,14 @@ class AimLockTest {
         aim.observe(frame(box(1, 40f)))
         aim.observe(frame(box(1, 40f)))
         val once = aim.observe(frame(box(2, 40f)))
-        assertEquals(1, once.lockedId)
+        assertNull(once.lockedId)
         assertFalse(once.changed)
     }
 
     @Test fun anArmBoxGuessDoesNotAcquireOrStealALock() {
         val phone = BoxObservation("object", "book", 0.9f, 60f, 20f, 95f, 50f, trackId = 4)
-        val guess = HandTrack.fromArmBox(
+        val guess = HandTrack.armMarker(
             BoxObservation("object", "person", 0.8f, 0f, 10f, 100f, 80f, trackId = 8),
-            100,
-            100,
         )
         val fresh = AimLock()
         fresh.observe(frame(phone, guess))
@@ -90,8 +84,7 @@ class AimLockTest {
         val wide = { boxes: List<BoxObservation> -> FrameDetections(220, 160, boxes) }
         aim.observe(wide(listOf(cup, phone, measured)))
         assertEquals(2, aim.observe(wide(listOf(cup, phone, measured))).lockedId)
-        val sameGuess = measured.copy(synthetic = true)
-        assertEquals(2, aim.observe(wide(listOf(cup, phone, sameGuess))).lockedId)
+        assertNull(aim.observe(wide(listOf(cup, phone, guess))).lockedId)
     }
 
     @Test fun aLiveHandDoesNotLockTheScreenCenterWhenTheRayMisses() {
@@ -104,10 +97,9 @@ class AimLockTest {
 
     @Test fun selectsThePointedObjectAmongSeveralCandidates() {
         val aim = AimLock()
-        val pointed = BoxObservation("object", "table", 0.9f, 10f, 20f, 60f, 90f, trackId = 7)
-        val beside = BoxObservation("object", "cup", 0.9f, 55f, 42f, 70f, 58f, trackId = 4)
-        val hand = BoxObservation("hand", "hand", 1f, 0f, 0f, 100f, 100f, trackId = 50)
-        val picture = frame(beside, box(1, 0f), hand, box(3, 78f), pointed)
+        val pointed = BoxObservation("object", "book", 0.9f, 90f, 20f, 150f, 90f, trackId = 7)
+        val beside = BoxObservation("object", "cup", 0.9f, 160f, 40f, 200f, 70f, trackId = 4)
+        val picture = wide(beside, box(1, 0f), pointingHand(110f, 50f), box(3, 180f), pointed)
         assertFalse(aim.observe(picture).changed)
         val locked = aim.observe(picture)
         assertTrue(locked.changed)
@@ -116,12 +108,13 @@ class AimLockTest {
 
     @Test fun keepsTheLockWhileThePointStaysOnThatObject() {
         val aim = AimLock()
-        val target = BoxObservation("object", "book", 0.9f, 20f, 25f, 60f, 75f, trackId = 2)
-        val start = frame(box(1, 0f), target)
+        val target = BoxObservation("object", "book", 0.9f, 90f, 20f, 150f, 90f, trackId = 2)
+        val hand = pointingHand(110f, 50f)
+        val start = wide(box(1, 0f), target, hand)
         aim.observe(start)
         assertEquals(2, aim.observe(start).lockedId)
-        val intruder = BoxObservation("object", "book", 0.9f, 30f, 30f, 80f, 80f, trackId = 8)
-        val held = frame(intruder, box(3, 78f), target)
+        val intruder = BoxObservation("object", "book", 0.9f, 160f, 20f, 210f, 90f, trackId = 8)
+        val held = wide(intruder, box(3, 180f), target, hand)
         repeat(6) { index ->
             val decision = aim.observe(held)
             assertEquals("frame $index", 2, decision.lockedId)
@@ -129,15 +122,15 @@ class AimLockTest {
         }
     }
 
-    @Test fun replacesTheLockWhenThePointMovesToADifferentObject() {
+    @Test fun oneMovedPointDoesNotReplaceTheLock() {
         val aim = AimLock()
-        val first = BoxObservation("object", "book", 0.9f, 30f, 30f, 70f, 80f, trackId = 1)
-        val start = frame(box(3, 0f), first, box(4, 78f))
+        val first = BoxObservation("object", "book", 0.9f, 90f, 20f, 150f, 90f, trackId = 1)
+        val start = wide(box(3, 0f), first, pointingHand(110f, 50f))
         aim.observe(start)
         assertEquals(1, aim.observe(start).lockedId)
-        val aside = first.copy(left = 0f, right = 24f)
-        val next = BoxObservation("object", "cup", 0.9f, 40f, 36f, 64f, 78f, trackId = 2)
-        val moved = frame(box(3, 0f), aside, box(4, 78f), next)
+        val aside = first.copy(left = 0f, right = 40f)
+        val next = BoxObservation("object", "cup", 0.9f, 150f, 20f, 200f, 80f, trackId = 2)
+        val moved = wide(box(3, 0f), aside, next, pointingHand(160f, 50f))
         val hold = aim.observe(moved)
         assertEquals(1, hold.lockedId)
         assertFalse(hold.changed)
@@ -146,17 +139,13 @@ class AimLockTest {
         assertFalse(stayed.changed)
     }
 
-    @Test fun aSmallerObjectUnderThePointReplacesTheLock() {
+    @Test fun aSmallerObjectWithoutAPointDoesNotLock() {
         val aim = AimLock()
-        val table = BoxObservation("object", "table", 0.9f, 20f, 20f, 80f, 80f, trackId = 1)
-        aim.observe(frame(table))
-        assertEquals(1, aim.observe(frame(table)).lockedId)
+        val table = BoxObservation("object", "book", 0.9f, 20f, 20f, 80f, 80f, trackId = 1)
+        aim.observe(wide(table))
+        assertNull(aim.observe(wide(table)).lockedId)
         val cup = BoxObservation("object", "cup", 0.9f, 42f, 42f, 58f, 58f, trackId = 2)
-        val picture = frame(table, cup)
-        assertEquals(1, aim.observe(picture).lockedId)
-        val stayed = aim.observe(picture)
-        assertEquals(1, stayed.lockedId)
-        assertFalse(stayed.changed)
+        assertNull(aim.observe(wide(table, cup)).lockedId)
     }
 
     @Test fun fingerRayLocksThePointedObjectAndIgnoresTheHandAfterItDrops() {
@@ -169,8 +158,10 @@ class AimLockTest {
         assertEquals(2, locked.lockedId)
         assertTrue(aim.fingerLocked)
         val handDown = frame(center, pointed)
-        repeat(4) { assertEquals(2, aim.observe(handDown).lockedId) }
+        repeat(2) { assertEquals(2, aim.observe(handDown).lockedId) }
         assertTrue(aim.fingerLocked)
+        assertNull(aim.observe(handDown).lockedId)
+        assertFalse(aim.fingerLocked)
     }
 
     @Test fun lostPointedObjectIsReplacedByTheOtherVisibleObject() {
@@ -182,10 +173,10 @@ class AimLockTest {
         assertEquals(2, aim.observe(picture).lockedId)
         val gone = frame(other)
         assertEquals(2, aim.observe(gone).lockedId)
-        val acquired = aim.observe(gone)
-        assertEquals(7, acquired.lockedId)
-        assertTrue(acquired.changed)
-        assertEquals(7, aim.observe(gone).lockedId)
+        assertEquals(2, aim.observe(gone).lockedId)
+        val cleared = aim.observe(gone)
+        assertNull(cleared.lockedId)
+        assertTrue(cleared.changed)
     }
 
     @Test fun oneRayFrameDoesNotStealAFingerLock() {

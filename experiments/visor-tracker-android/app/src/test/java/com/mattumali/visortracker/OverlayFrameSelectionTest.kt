@@ -91,10 +91,10 @@ class OverlayFrameSelectionTest {
      */
     private fun publish(readBeforeUpdate: Boolean, holdsBeforeFrame: Int = 1): Published {
         val estimator = RelativeDistanceEstimator()
-        val start = frame(side(3, 0f), centered(1), side(4, 78f))
+        val start = aimedAt(110f, side(3, 0f), centered(1), side(4, 180f))
         estimator.observe(start)
         estimator.observe(start)
-        val aimed = frame(side(3, 0f), aside(1), side(4, 78f), centered(2))
+        val aimed = aimedAt(170f, side(3, 0f), aside(1), side(4, 180f), centered(2).copy(left = 155f, right = 210f))
         repeat(holdsBeforeFrame) { estimator.observe(aimed) }
         val posted = ArrayDeque<() -> Unit>()
         var queuedDraw: Int? = null
@@ -131,14 +131,17 @@ class OverlayFrameSelectionTest {
             lockedId = lockId,
         )
         assertNotNull("lock $lockId published no box", event)
-        return event!!.frame.boxes.single().trackId
+        return event!!.frame.boxes.first { it.trackId == lockId }.trackId
     }
 
     private fun frame(vararg boxes: BoxObservation) =
-        FrameDetections(100, 100, boxes.toList(), sequence = 10, capturedAtMs = 5_000)
+        FrameDetections(220, 160, boxes.toList(), sequence = 10, capturedAtMs = 5_000)
 
     private fun centered(id: Int) =
-        BoxObservation("object", "book", 0.9f, 30f, 30f, 70f, 80f, trackId = id)
+        BoxObservation("object", "book", 0.9f, 90f, 20f, 150f, 90f, trackId = id)
+
+    private fun aimedAt(tipX: Float, vararg boxes: BoxObservation) =
+        frame(*boxes, pointingHand(tipX, 50f))
 
     private fun aside(id: Int) = centered(id).copy(left = 0f, right = 24f)
 

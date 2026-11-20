@@ -1,4 +1,9 @@
-"""Production tracker port used by the 10917 replay (issue #39)."""
+"""Detection box type shared with the replay script.
+
+The 10917 replay no longer scores locks here. Gesture, ray, and lock come
+from ProductionTracker in the Kotlin unit-test driver. Do not add another
+aim or lock implementation in this file.
+"""
 
 from __future__ import annotations
 

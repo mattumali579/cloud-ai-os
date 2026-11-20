@@ -62,8 +62,9 @@ class TrackingScenariosTest {
         aim.observe(picture)
         assertEquals(2, aim.observe(picture).lockedId)
         val handDown = frame(center, pointed)
-        repeat(4) { assertEquals(2, aim.observe(handDown).lockedId) }
+        repeat(2) { assertEquals(2, aim.observe(handDown).lockedId) }
         assertTrue(aim.fingerLocked)
+        assertNull(aim.observe(handDown).lockedId)
     }
 
     @Test fun knownReplacementIsAcquiredOnTheNextPublishedFrame() {
@@ -79,26 +80,22 @@ class TrackingScenariosTest {
         assertEquals(2, aim.observe(gone).lockedId)
         val switchedAt = knownAt + frameMs
         val acquired = aim.observe(gone.copy(sequence = 11, capturedAtMs = switchedAt))
-        assertEquals(7, acquired.lockedId)
-        assertTrue(acquired.changed)
+        assertEquals(2, acquired.lockedId)
+        assertFalse(acquired.changed)
         val latency = switchedAt - knownAt
         assertEquals(33L, latency)
         assertTrue(latency < 500L)
+        assertNull(aim.observe(gone.copy(sequence = 12, capturedAtMs = switchedAt + frameMs)).lockedId)
     }
 
-    @Test fun targetSwitchAndReacquisitionKeepTheShortOcclusionHold() {
+    @Test fun noPointDoesNotAcquireOrReacquireFromTheCenter() {
         val aim = AimLock()
         val first = objectBox(1, 40f, 40f, 70f, 70f)
         aim.observe(frame(first))
-        assertEquals(1, aim.observe(frame(first)).lockedId)
-        repeat(2) { assertEquals(1, aim.observe(frame()).lockedId) }
-        assertEquals(1, aim.observe(frame(first)).lockedId)
-        val replacement = objectBox(2, 10f, 10f, 30f, 30f, 0.9f)
-        assertEquals(1, aim.observe(frame(replacement)).lockedId)
-        assertEquals(2, aim.observe(frame(replacement)).lockedId)
-        assertEquals(2, aim.observe(frame()).lockedId)
-        assertEquals(2, aim.observe(frame()).lockedId)
+        assertNull(aim.observe(frame(first)).lockedId)
         assertNull(aim.observe(frame()).lockedId)
+        val replacement = objectBox(2, 10f, 10f, 30f, 30f, 0.9f)
+        assertNull(aim.observe(frame(replacement)).lockedId)
     }
 
     @Test fun aBurstOfNewerFramesDropsTheOlderOnes() {
@@ -163,14 +160,15 @@ class TrackingScenariosTest {
         val start = TuneConfig(knownReplacementFrames = 4)
         val before = TrackerTuner.score(start)
         val result = TrackerTuner.tune(start)
-        assertTrue(result.score > before)
-        assertEquals(2, result.chosen.knownReplacementFrames)
+        assertEquals(before, result.score)
+        assertEquals(4, result.chosen.knownReplacementFrames)
         assertEquals(IndexPoint.MIN_SCORE, result.chosen.minHandScore)
         assertEquals(IndexPoint.RAY_HYSTERESIS, result.chosen.rayHysteresis)
         assertEquals(2, result.chosen.dwellFrames)
         assertEquals(3, result.chosen.lostFrames)
         assertEquals(1, result.chosen.objectEveryLocked)
-        assertTrue(result.accepted.any { it.startsWith("knownReplacementFrames=2") })
+        assertTrue(result.accepted.isEmpty())
+        assertTrue(result.rejected.any { it.startsWith("knownReplacementFrames=2") })
         assertTrue(result.rejected.any { it.startsWith("minHandScore=0.99") })
         assertTrue(result.rejected.any { it.startsWith("dwellFrames=1") })
         assertTrue(result.rejected.any { it.startsWith("lostFrames=1") })

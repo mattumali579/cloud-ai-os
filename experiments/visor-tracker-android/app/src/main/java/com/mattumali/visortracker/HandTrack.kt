@@ -25,65 +25,16 @@ object HandTrack {
      * freezing at the last palm pose.
      */
     /**
-     * 10917: MediaPipe IMAGE mode misses most side-on points. Build an index
-     * chain along the forearm box from the frame-edge entry to the far corner.
+     * The wearer's forearm is visible. This is not a hand, not 21 landmarks,
+     * and not a pointing gesture.
      */
-    fun fromArmBox(arm: BoxObservation, frameWidth: Int, frameHeight: Int): BoxObservation {
-        val margin = max(12f, kotlin.math.min(frameWidth, frameHeight) * 0.03f)
-        val fromRight = frameWidth - arm.right <= margin
-        val fromLeft = arm.left <= margin
-        val fromBottom = frameHeight - arm.bottom <= margin
-        val maxSpan = min(arm.right - arm.left, frameWidth * 0.38f)
-        val left = if (fromRight) max(arm.left, arm.right - maxSpan) else arm.left
-        val right = if (fromLeft && !fromRight) min(arm.right, arm.left + maxSpan) else arm.right
-        val midX = (left + right) * 0.5f
-        val midY = (arm.top + arm.bottom) * 0.5f
-        val clipped = arm.copy(left = left, right = right)
-        val wrist = when {
-            fromRight && (!fromLeft || clipped.right - midX >= midX - clipped.left) ->
-                clipped.right to midY
-            fromLeft -> clipped.left to midY
-            fromBottom -> midX to clipped.bottom
-            else -> midX to midY
-        }
-        // Aim across the table, toward the middle of the frame. The top of the
-        // arm box is usually the chair or the wall, not the fingertip.
-        val tableY = (frameHeight * 0.55f).coerceIn(clipped.top, clipped.bottom)
-        val tip = when {
-            fromRight -> clipped.left to tableY
-            fromLeft -> clipped.right to tableY
-            else -> midX to clipped.top
-        }
-        fun along(t: Float) = wrist.first + (tip.first - wrist.first) * t to
-            wrist.second + (tip.second - wrist.second) * t
-        val mcp = along(0.35f)
-        val points = MutableList(21) { mcp }
-        points[IndexPoint.WRIST] = along(0f)
-        points[IndexPoint.INDEX_MCP] = mcp
-        points[IndexPoint.INDEX_PIP] = along(0.55f)
-        points[IndexPoint.INDEX_DIP] = along(0.75f)
-        points[IndexPoint.INDEX_TIP] = along(0.95f)
-        points[9] = along(0.38f)
-        points[12] = along(0.42f)
-        points[13] = along(0.36f)
-        points[16] = along(0.40f)
-        points[17] = along(0.33f)
-        points[20] = along(0.37f)
-        val xs = points.map { it.first }
-        val ys = points.map { it.second }
-        return BoxObservation(
-            kind = "hand",
-            label = "pointing hand",
-            score = 0.55f,
-            left = xs.minOrNull() ?: arm.left,
-            top = ys.minOrNull() ?: arm.top,
-            right = xs.maxOrNull() ?: arm.right,
-            bottom = ys.maxOrNull() ?: arm.bottom,
-            points = points,
-            trackId = 0,
-            synthetic = true,
-        )
-    }
+    fun armMarker(arm: BoxObservation): BoxObservation = arm.copy(
+        kind = "arm",
+        label = "arm",
+        points = emptyList(),
+        trackId = 0,
+        synthetic = false,
+    )
 
     fun pinToArm(hand: BoxObservation, arm: BoxObservation): BoxObservation {
         val wrist = hand.points.getOrNull(IndexPoint.WRIST) ?: return hand

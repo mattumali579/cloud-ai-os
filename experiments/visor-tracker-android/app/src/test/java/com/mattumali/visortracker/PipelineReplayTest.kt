@@ -42,13 +42,9 @@ class PipelineReplayTest {
         assertTrue(motion.disappeared)
     }
 
-    @Test fun aimDoesNotFlickerWhenASecondObjectCrossesTheCenter() {
+    @Test fun aimDoesNotLockWhenNothingIsPointing() {
         val frames = PipelineReplay.switchTargets()
-        val acquired = frames.first { it.lockId != null }
-        assertEquals(acquired.lockId, acquired.publishedTrackId)
-        val later = frames.filter { it.sequence > acquired.sequence && it.lockId != null }
-        assertTrue(later.isNotEmpty())
-        assertTrue(later.all { it.lockId == acquired.lockId })
+        assertTrue(frames.all { it.lockId == null })
     }
 
     @Test fun aMissingLockIsNotGivenToTheOtherObject() {

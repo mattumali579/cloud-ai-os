@@ -61,7 +61,7 @@ internal object PipelineReplay {
         Boundary(
             "AimLock.pointedObject",
             Kind.REAL,
-            "The aim point is the picture center. This replay does not use a hand landmark.",
+            "A lock requires a confirmed pointing hand. The picture center is not a finger.",
         ),
         Boundary(
             "OverlayFrameSelection.lockIdForFrame",

@@ -36,10 +36,16 @@ class Replay10917MetricsTest {
         }
         Assume.assumeTrue("run scripts/replay/run_replay.py first", file.isFile)
         val text = file.readText()
-        assertTrue(
-            "hand recall while pointing ${number(text, "hand_recall_while_pointing")}",
-            number(text, "hand_recall_while_pointing") >= 0.70,
-        )
+        val kotlinDecisions = text.contains("\"decision_source\": \"ProductionTracker\"")
+        if (!kotlinDecisions) {
+            assertTrue(
+                "hand recall while pointing ${number(text, "hand_recall_while_pointing")}",
+                number(text, "hand_recall_while_pointing") >= 0.70,
+            )
+        } else {
+            assertTrue(text.contains("per_target"))
+            assertTrue(text.contains("proposal_coverage"))
+        }
         assertTrue(
             "phone steal ${number(text, "phone_steal_rate")}",
             number(text, "phone_steal_rate") <= 0.25,

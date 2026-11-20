@@ -59,6 +59,7 @@ class VisionPipeline(
     private var frameNumber = 0
     private var recentObjects = emptyList<BoxObservation>()
     private var recentHands = emptyList<BoxObservation>()
+    private var recentArms = emptyList<BoxObservation>()
     private var handMisses = 0
     private var recentFaces = emptyList<BoxObservation>()
     var objectInferences: Int = 0
@@ -202,28 +203,13 @@ class VisionPipeline(
                     lastOptionalFault = it
                 }
                 val arm = observed.firstOrNull { HandPriority.wearerArm(it, width, height) }
-                val planar = handPass.boxes.filter { IndexPoint.hasPlanarIndex(it) }
-                if (planar.isNotEmpty()) {
-                    recentHands = planar
-                    handMisses = 0
-                } else if (arm != null) {
-                    recentHands = listOf(HandTrack.fromArmBox(arm, width, height))
-                    handMisses = 0
-                } else if (handPass.boxes.isNotEmpty()) {
+                recentArms = if (arm != null) listOf(HandTrack.armMarker(arm)) else emptyList()
+                if (handPass.boxes.isNotEmpty()) {
                     recentHands = handPass.boxes
                     handMisses = 0
                 } else {
                     handMisses += 1
-                    val keepPointing = recentHands.any { hand ->
-                        !hand.held && IndexPoint.extended(hand, width, height) != null
-                    }
-                    recentHands = if (keepPointing && recentHands.isNotEmpty() &&
-                        handMisses <= HAND_STALE_FRAMES
-                    ) {
-                        recentHands.map { it.copy(held = false) }
-                    } else {
-                        emptyList()
-                    }
+                    recentHands = emptyList()
                 }
                 lastHandMs = handPass.modelMs
                 handInferences += 1
@@ -253,6 +239,7 @@ class VisionPipeline(
             if (runObjects) frameNumber++
             if (scannedOptional && !optionalFailed) lastOptionalFault = null
             observed += recentHands
+            observed += recentArms
             observed += recentFaces
             val tracked = tracks.update(HandPriority.apply(observed, width, height))
                 .filter { box -> !box.held || box.kind == "hand" }

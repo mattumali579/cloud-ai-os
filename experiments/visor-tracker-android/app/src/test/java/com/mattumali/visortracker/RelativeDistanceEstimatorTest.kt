@@ -38,8 +38,9 @@ class RelativeDistanceEstimatorTest {
     @Test fun pointingAtCenterLocksThatTrack() {
         val estimator = RelativeDistanceEstimator()
         val target = at(4, 150f)
-        assertNull(estimator.observe(frame(target)))
-        val locked = estimator.observe(frame(target))
+        val picture = frame(target, pointingHand(140f, 150f))
+        assertNull(estimator.observe(picture))
+        val locked = estimator.observe(picture)
         assertTrue(locked!!.contains("Locked #4"))
         assertEquals(4, estimator.selectedTrackId())
         assertTrue(estimator.calibrate(frame(target), 6f).contains("#4"))
@@ -51,14 +52,15 @@ class RelativeDistanceEstimatorTest {
         val pointed = at(4, 150f)
         val left = at(1, 40f)
         val right = at(2, 260f)
-        assertNull(estimator.observe(frame(left, right, pointed)))
-        val locked = estimator.observe(frame(left, right, pointed))
+        val picture = frame(left, right, pointed, pointingHand(140f, 150f))
+        assertNull(estimator.observe(picture))
+        val locked = estimator.observe(picture)
         assertTrue(locked!!.contains("Locked #4"))
         assertEquals(4, estimator.selectedTrackId())
         assertTrue(estimator.calibrate(frame(left, right, pointed), 6f).contains("#4"))
         val sameSizeNeighbor = at(8, 150f)
         repeat(4) {
-            assertNull(estimator.observe(frame(sameSizeNeighbor, pointed, left)))
+            assertNull(estimator.observe(frame(sameSizeNeighbor, pointed, left, pointingHand(140f, 150f))))
         }
         assertEquals(4, estimator.selectedTrackId())
         assertEquals(6f, estimator.estimate(300, pointed)!!, 0.05f)
@@ -66,7 +68,7 @@ class RelativeDistanceEstimatorTest {
         val aside = at(4, 40f)
         val next = at(8, 150f)
         repeat(6) {
-            assertNull(estimator.observe(frame(aside, next, right)))
+            assertNull(estimator.observe(frame(aside, next, right, pointingHand(80f, 150f))))
         }
         assertEquals(4, estimator.selectedTrackId())
         assertEquals(6f, estimator.estimate(300, pointed)!!, 0.05f)
@@ -196,26 +198,31 @@ class RelativeDistanceEstimatorTest {
         assertTrue(estimator.banner(listOf(box(height = 120f))).contains("6.0"))
     }
 
-    @Test fun knownReplacementSwitchesOnTheDetectionThatShowsIt() {
+    @Test fun aVisibleNeighborDoesNotReplaceALostPoint() {
         val estimator = RelativeDistanceEstimator()
         val locked = at(4, 150f)
         val other = at(2, 260f)
-        assertNull(estimator.observe(frame(locked, other)))
-        assertTrue(estimator.observe(frame(locked, other))!!.contains("Locked #4"))
-        val switched = estimator.observe(frame(other))
-        assertEquals(2, estimator.selectedTrackId())
-        assertTrue(switched!!.contains("Locked #2"))
-    }
-
-    @Test fun anUnseenReplacementStillWaitsAFrame() {
-        val estimator = RelativeDistanceEstimator()
-        val locked = at(4, 150f)
-        val other = at(2, 260f)
-        assertNull(estimator.observe(frame(locked)))
-        assertNotNull(estimator.observe(frame(locked)))
+        val picture = frame(locked, other, pointingHand(140f, 150f))
+        assertNull(estimator.observe(picture))
+        assertTrue(estimator.observe(picture)!!.contains("Locked #4"))
         assertNull(estimator.observe(frame(other)))
         assertEquals(4, estimator.selectedTrackId())
-        assertNotNull(estimator.observe(frame(other)))
-        assertEquals(2, estimator.selectedTrackId())
+        assertNull(estimator.observe(frame(other)))
+        val released = estimator.observe(frame(other))
+        assertTrue(released!!.contains("Lock released"))
+        assertNull(estimator.selectedTrackId())
+    }
+
+    @Test fun anUnseenNeighborDoesNotBecomeTheLock() {
+        val estimator = RelativeDistanceEstimator()
+        val locked = at(4, 150f)
+        val other = at(2, 260f)
+        val picture = frame(locked, pointingHand(140f, 150f))
+        assertNull(estimator.observe(picture))
+        assertNotNull(estimator.observe(picture))
+        assertNull(estimator.observe(frame(other)))
+        assertEquals(4, estimator.selectedTrackId())
+        assertNull(estimator.observe(frame(other)))
+        assertEquals(4, estimator.selectedTrackId())
     }
 }

@@ -262,7 +262,11 @@ class TrackingOverlayView(context: Context) : View(context) {
             }
             val current = CoverGeometry.project(frame.width, frame.height, width, height, observation)
                 .let { RectF(it.left, it.top, it.right, it.bottom) }
-            val color = if (observation.kind == "face") 0xFF00D9FF.toInt() else 0xFF80F45D.toInt()
+            val color = when (observation.kind) {
+                "face" -> 0xFF00D9FF.toInt()
+                "arm" -> 0x66FFB020.toInt()
+                else -> 0xFF80F45D.toInt()
+            }
             val locked = observation.trackId == distanceEstimator.selectedTrackId() ||
                 observation.trackId == aimed?.trackId
             stroke.color = if (locked) Color.WHITE else color

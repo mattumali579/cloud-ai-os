@@ -29,11 +29,11 @@ object KnownReplacement {
 }
 
 /**
- * Locks the object under the middle of the picture.
- * The first box is drawn before this confirms. One more steady frame locks it.
- * Switching takes the same short hold, so one jittery frame does not swap targets.
- * A lock that still covers the aim point stays put unless a clearly smaller
- * object is the one under that point.
+ * Locks only while a confirmed pointing hand stays on one object.
+ * An arm box, an open palm, and the middle of the picture do not acquire.
+ * One steady extra frame confirms. Switching takes a longer hold.
+ * When the point disappears, the lock is held briefly and then cleared.
+ * It is not given to whatever box is left in the picture.
  */
 class AimLock(
     private val acquireFrames: Int = 2,
@@ -111,72 +111,46 @@ class AimLock(
             IndexPoint.pointable(box, frame.width, frame.height)
         }
         val current = lockedId
-        val aimedRay = IndexPoint.aimed(frame, preferId = current, minScore = minHandScore)
-        val ray = aimedRay?.ray
-        val visible = current != null && objects.any { it.trackId == current }
-        val measuredHand = frame.boxes.any { box ->
-            box.kind == "hand" && !box.synthetic && box.points.size >= 21 && box.score >= minHandScore
-        }
-        val inferredOnly = !measuredHand && frame.boxes.any { it.kind == "hand" && it.synthetic }
-        if (current != null && !visible) {
-            val next = if (inferredOnly) {
-                null
-            } else if (aimedRay?.hit != null) {
-                aimedRay.hit.trackId
-            } else {
-                IndexPoint.replacement(objects, current)?.trackId
-            }
-            if (next != null) {
-                // The replacement is already in this frame. Do not wait out the
-                // occlusion hold and then acquire again.
-                lostFrames = 0
-                val decision = commit(next, current, knownReplacementFrames)
-                if (ray != null && decision.changed && decision.lockedId == next) fingerLocked = true
-                return decision
-            }
-            pendingId = null
-            pendingCount = 0
-            lostFrames += 1
-            if (lostFrames < lostFramesLimit) return AimDecision(current, changed = false)
-            lockedId = null
-            fingerLocked = false
-            lostFrames = 0
-            return AimDecision(null, changed = true)
+        val gesture = GestureStates.classify(frame)
+        val aimedRay = if (gesture == GestureState.POINTING_CONFIRMED) {
+            IndexPoint.aimed(frame, preferId = current, minScore = minHandScore)
+        } else {
+            null
         }
         val rayTarget = aimedRay?.hit?.trackId
-        val inferredHand = frame.boxes.any { box -> box.kind == "hand" && box.synthetic }
-        val liveHand = measuredHand || inferredHand
-        if (inferredHand && !measuredHand) {
-            // Side-on pointing has no landmarks. Lock only the box the ray
-            // keeps hitting, and wait longer than a measured fingertip.
-            val required = if (current == null) acquireFrames + 2 else switchFrames
-            if (rayTarget == null) {
-                lostFrames += 1
-                if (!visible || lostFrames >= lostFramesLimit) {
-                    pendingId = null
-                    pendingCount = 0
-                    if (current == null) return AimDecision(null, changed = false)
-                    lockedId = null
-                    fingerLocked = false
-                    lostFrames = 0
-                    return AimDecision(null, changed = true)
-                }
-                return AimDecision(current, changed = false)
-            }
-            lostFrames = 0
-            val decision = commit(rayTarget, current, required)
-            if (decision.lockedId != null && decision.lockedId == rayTarget) fingerLocked = true
-            return decision
+        val visible = current != null && objects.any { it.trackId == current }
+        if (gesture == GestureState.ARM_VISIBLE) {
+            return dropLock()
+        }
+        if (gesture == GestureState.HAND_VISIBLE) {
+            val openPalm = frame.boxes.filter { it.kind == "hand" && !it.synthetic && it.points.size >= 21 }
+                .none { IndexPoint.releaseGesture(it, frame.width, frame.height) }
+            if (openPalm) return dropLock()
+            if (current == null) return AimDecision(null, changed = false)
+            return AimDecision(current, changed = false)
+        }
+        if (gesture != GestureState.POINTING_CONFIRMED) {
+            // Detection missed. Hold the existing lock briefly. Do not pick a
+            // center box or the highest score.
+            if (current == null) return AimDecision(null, changed = false)
+            lostFrames += 1
+            if (lostFrames < lostFramesLimit) return AimDecision(current, changed = false)
+            return dropLock()
         }
         lostFrames = 0
-        val aimed = when {
-            rayTarget != null -> rayTarget
-            current != null -> current
-            liveHand -> null
-            else -> pointedObject(frame.width, frame.height, frame.boxes, preferId = current)?.trackId
+        if (current != null && !visible) {
+            lostFrames += 1
+            if (lostFrames < lostFramesLimit) return AimDecision(current, changed = false)
+            return dropLock()
         }
-        val decision = commit(aimed, current, if (current == null) acquireFrames else switchFrames)
-        if (ray != null && decision.lockedId != null && decision.lockedId == rayTarget) fingerLocked = true
+        if (rayTarget == null) {
+            if (current == null) return AimDecision(null, changed = false)
+            lostFrames += 1
+            if (lostFrames < lostFramesLimit) return AimDecision(current, changed = false)
+            return dropLock()
+        }
+        val decision = commit(rayTarget, current, if (current == null) acquireFrames else switchFrames)
+        if (decision.lockedId != null && decision.lockedId == rayTarget) fingerLocked = true
         return decision
     }
 
@@ -196,6 +170,16 @@ class AimLock(
         pendingCount = 0
         lostFrames = 0
         return AimDecision(aimed, changed = true)
+    }
+
+    private fun dropLock(): AimDecision {
+        val changed = lockedId != null
+        lockedId = null
+        fingerLocked = false
+        pendingId = null
+        pendingCount = 0
+        lostFrames = 0
+        return AimDecision(null, changed = changed)
     }
 
     private fun releaseLock(): AimDecision {

@@ -19,33 +19,47 @@ Uses the production EfficientDet Lite0 and Hand Landmarker models from
 This is a screen recording with the shipped HUD baked in. The harness masks
 that HUD before inference and does not claim raw camera input.
 
+Python only runs EfficientDet Lite0 and the Hand Landmarker. Gesture, ray,
+and lock come from `ProductionTracker` (the Kotlin classes the overlay uses).
+An arm box is drawn as an arm. It has no landmarks and cannot acquire a lock.
+
 ## Gates (issue #39)
 
-A passing local run must report `composited_screen_recording` and:
+A passing local run must report `composited_screen_recording` and
+`decision_source: ProductionTracker`. The script exits 1 when lock frames are
+zero, lock recall is zero, phone steal on other targets is above 0.08, or at
+least six targets have 0% lock recall. Phone steal of zero is not a pass.
 
-- `hand_recall_while_pointing` ≥ 0.70
-- `phone_steal_rate` ≤ 0.25
-- `person_fp_rate` ≤ 0.35
+`hand_recall_while_pointing` counts a real hand (`POINTING_CONFIRMED` or
+`HAND_VISIBLE`). An arm marker is not a hand. Do not tag a new APK from this
+replay. It is a composited screen recording, not glasses, heat, or on-device
+proof.
 
-Synthetic Kotlin boxes are not a ship gate. Do not tag a new APK until this
-command has been run on the owner’s `10917.mp4`.
+## Latest local run (2026-11-20, confirmed-finger only)
 
-## Latest local run (2026-11-20, zero-lock follow-up)
+Same 424-frame composited clip. The previous run manufactured a fingertip
+from the forearm box. This run does not. The script exited 1: all seven
+targets have 0% lock recall. 23 frames held a lock and none of those locks
+sat in the labeled region. 17 of those were open-palm frames where MediaPipe
+landmarks still counted as pointing.
 
-Same 424-frame composited clip. A forearm guess may lock again, but only the
-box its ray keeps entering, and it aims across the middle of the frame instead
-of up at the chair. A run with zero locks fails even if phone steal is zero.
-
-| metric | zero-lock run | this run | denominator |
+| metric | forearm-ray run | confirmed finger | denominator |
 | --- | --- | --- | --- |
-| lock recall | 0.000 | 0.059 | 341 pointing frames |
-| lock precision | n/a (0 locks) | 0.235 | frames with a lock while pointing |
-| phone steal, other targets | 0.000 | 0.000 | non-phone pointing frames |
-| phone lock recall | 0.000 | 0.000 | 87 phone frames |
-| cylinder lock recall | 0.000 | 0.351 | 57 tune frames |
-| geometric ray hit | 0.405 | 0.481 | 341 |
-| no-target false lock | low | 0.301 | 83 open-palm frames, mostly MediaPipe |
-| holdout chair/optics lock recall | 0 | 0 | 104, not used to tune |
+| lock recall | 0.059 | 0.000 | 342 pointing frames |
+| lock frames in the labeled region | 20 of 110 | 0 of 23 | locks anywhere |
+| phone lock recall | 0/87 | 0/88 | phone frames |
+| phone proposal / ray hit | not split | 0.818 / 0.011 | 88 phone frames |
+| cylinder lock recall | 0.351 | 0.000 | 57 |
+| cylinder proposal / ray hit | not split | 0.912 / 0.018 | 57 |
+| geometric ray hit | 0.481 | 0.085 | 342 |
+| confirmed pointing | not split | 52 | 342 ground-truth pointing frames |
+| open-palm false lock | 0.301 of 83 | 0.207 of 82 | all 17 still `POINTING_CONFIRMED` |
+| phone steal, other targets | 0.000 | 0.000 | not a pass |
+
+Confirmed pointing is 52 frames. On those frames the ray sometimes enters the
+labeled region (phone 1/7, cylinder 1/1, barrel 6/9) and the lock still does
+not land in that region. Holster has a box in the region on 2 of 32 frames.
+Lite2 was not retried.
 
 ## Previous run (2026-11-20, issue #39 follow-up)
 
