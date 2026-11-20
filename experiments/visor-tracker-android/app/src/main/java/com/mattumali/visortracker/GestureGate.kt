@@ -34,7 +34,9 @@ class GestureGate(
             box.kind == "hand" && !box.held && box.points.size >= 21 && box.score >= IndexPoint.MIN_SCORE
         }
         if (hands.isEmpty()) return HandGesture.ABSENT
-        if (IndexPoint.ray(frame) != null) return HandGesture.POINTING
+        if (hands.any { IndexPoint.extended(it, frame.width, frame.height) != null }) {
+            return HandGesture.POINTING
+        }
         if (hands.any { IndexPoint.releaseGesture(it, frame.width, frame.height) }) return HandGesture.CLOSED
         return HandGesture.OTHER
     }

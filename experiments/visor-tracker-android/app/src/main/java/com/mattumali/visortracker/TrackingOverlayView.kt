@@ -151,7 +151,8 @@ class TrackingOverlayView(context: Context) : View(context) {
      * so a held point at a new center can switch the lock.
      */
     fun observeCandidates(frame: FrameDetections): String? {
-        aimRay = IndexPoint.ray(frame)
+        val aimed = IndexPoint.aimed(frame, preferId = distanceEstimator.selectedTrackId())
+        aimRay = aimed?.ray
         val note = distanceEstimator.observe(frame)
         invalidate()
         return note
@@ -160,16 +161,15 @@ class TrackingOverlayView(context: Context) : View(context) {
     fun updateFrame(frame: FrameDetections): String? {
         val previous = latest
         val lockedId = distanceEstimator.selectedTrackId()
-        val aimId = aimRay?.let { ray ->
-            IndexPoint.alongRay(ray, frame.boxes, lockedId, frameWidth = frame.width, frameHeight = frame.height)?.trackId
-        }
+        val incomingHands = HandTrack.forDisplay(frame.boxes)
+        val aimed = if (incomingHands.isEmpty()) null else IndexPoint.aimed(frame, preferId = lockedId)
+        aimRay = aimed?.ray
+        val aimId = aimed?.hit?.trackId
         val incomingObjects = if (frame.boxes.isEmpty()) {
             emptyList()
         } else {
             nearby.select(frame.width, frame.height, frame.boxes, lockedId, aimId)
         }
-        val incomingHands = HandTrack.forDisplay(frame.boxes)
-        aimRay = if (incomingHands.isEmpty()) null else IndexPoint.ray(frame)
         val incoming = HandTrack.compose(incomingObjects, incomingHands)
         val now = SystemClock.elapsedRealtime()
         val accepted = OverlayDiagnostics.acceptFrame(
@@ -234,7 +234,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         draws.incrementAndGet()
         val frame = latest
         val hud = frame?.let {
-            TrainingHud.status(it, distanceEstimator.selectedTrackId())
+            TrainingHud.status(it, distanceEstimator.selectedTrackId(), aimRay)
         }
         drawHud(canvas, hud)
         drawProbe(canvas)
@@ -247,7 +247,7 @@ class TrackingOverlayView(context: Context) : View(context) {
             }
             return
         }
-        val liveRay = IndexPoint.ray(frame) ?: aimRay
+        val liveRay = aimRay
         val aimed = liveRay?.let {
             IndexPoint.alongRay(
                 it, frame.boxes, distanceEstimator.selectedTrackId(),

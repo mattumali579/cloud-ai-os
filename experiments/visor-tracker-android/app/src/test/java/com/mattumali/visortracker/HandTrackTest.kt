@@ -46,6 +46,15 @@ class HandTrackTest {
         assertTrue(hull.size >= 3)
     }
 
+    @Test fun pinToArmSlidesTheWristIntoTheArmBox() {
+        val hand = pointingHand(150f, 100f)
+        val arm = BoxObservation("object", "person", 0.9f, 200f, 80f, 280f, 140f, trackId = 3)
+        val pinned = HandTrack.pinToArm(hand, arm)
+        val wrist = pinned.points[IndexPoint.WRIST]
+        assertTrue(wrist.first in 200f..280f)
+        assertTrue(wrist.second in 80f..140f)
+    }
+
     @Test fun displayOmitsAHeldSkeletonAfterTheHandLeaves() {
         val live = pointingHand(90f, 50f).copy(trackId = 7)
         val held = pointingHand(40f, 40f).copy(trackId = 7, held = true, score = 0.5f)

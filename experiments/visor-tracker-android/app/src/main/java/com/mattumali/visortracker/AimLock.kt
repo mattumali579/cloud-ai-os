@@ -110,15 +110,13 @@ class AimLock(
         val objects = frame.boxes.filter { box ->
             IndexPoint.pointable(box, frame.width, frame.height)
         }
-        val ray = IndexPoint.ray(frame, minHandScore)
         val current = lockedId
+        val aimedRay = IndexPoint.aimed(frame, preferId = current, minScore = minHandScore)
+        val ray = aimedRay?.ray
         val visible = current != null && objects.any { it.trackId == current }
         if (current != null && !visible) {
-            val next = if (ray != null) {
-                IndexPoint.alongRay(
-                    ray, objects, preferId = null, hysteresis = rayHysteresis,
-                    frameWidth = frame.width, frameHeight = frame.height,
-                )?.trackId
+            val next = if (aimedRay?.hit != null) {
+                aimedRay.hit.trackId
             } else {
                 IndexPoint.replacement(objects, current)?.trackId
             }
@@ -140,17 +138,14 @@ class AimLock(
             return AimDecision(null, changed = true)
         }
         lostFrames = 0
-        val rayTarget = if (ray != null) {
-            IndexPoint.alongRay(
-                ray, objects, current, rayHysteresis,
-                frameWidth = frame.width, frameHeight = frame.height,
-            )?.trackId
-        } else {
-            null
+        val rayTarget = aimedRay?.hit?.trackId
+        val liveHand = frame.boxes.any { box ->
+            box.kind == "hand" && box.points.size >= 21 && box.score >= minHandScore
         }
         val aimed = when {
             rayTarget != null -> rayTarget
             current != null -> current
+            liveHand -> null
             else -> pointedObject(frame.width, frame.height, frame.boxes, preferId = current)?.trackId
         }
         val decision = commit(aimed, current, if (current == null) acquireFrames else switchFrames)

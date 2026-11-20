@@ -20,9 +20,8 @@ object TrainingHud {
         val score: Float?,
     )
 
-    fun status(frame: FrameDetections, lockedId: Int?): Status {
+    fun status(frame: FrameDetections, lockedId: Int?, ray: PointingRay? = IndexPoint.ray(frame)): Status {
         val hands = frame.boxes.filter { it.kind == "hand" && !it.held && it.points.size >= 21 }
-        val ray = IndexPoint.ray(frame)
         val pointing = ray != null
         val primary = hands.firstOrNull { IndexPoint.extended(it, frame.width, frame.height) != null }
             ?: hands.maxByOrNull { it.score }

@@ -18,6 +18,27 @@ object HandTrack {
         return tip
     }
 
+    /**
+     * When MediaPipe drops a side-on point, EfficientDet still has the arm.
+     * Slide the last skeleton so the wrist stays inside that box instead of
+     * freezing at the last palm pose.
+     */
+    fun pinToArm(hand: BoxObservation, arm: BoxObservation): BoxObservation {
+        val wrist = hand.points.getOrNull(IndexPoint.WRIST) ?: return hand
+        val x = wrist.first.coerceIn(arm.left, arm.right)
+        val y = wrist.second.coerceIn(arm.top, arm.bottom)
+        val dx = x - wrist.first
+        val dy = y - wrist.second
+        if (dx == 0f && dy == 0f) return hand
+        return hand.copy(
+            left = hand.left + dx,
+            top = hand.top + dy,
+            right = hand.right + dx,
+            bottom = hand.bottom + dy,
+            points = hand.points.map { it.first + dx to it.second + dy },
+        )
+    }
+
     fun forDisplay(boxes: List<BoxObservation>): List<BoxObservation> {
         val live = boxes.filter { box ->
             box.kind == "hand" && !box.held && paintable(box)

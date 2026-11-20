@@ -20,6 +20,8 @@ data class PointingRay(
     val reach: Float,
     val joints: List<Pair<Float, Float>>,
     val depthDominant: Boolean = false,
+    /** True when 2D index is collapsed; the opposite 2D direction may be the real aim. */
+    val reversible: Boolean = false,
 )
 
 /**
@@ -32,13 +34,12 @@ object IndexPoint {
     const val INDEX_PIP = 6
     const val INDEX_DIP = 7
     const val INDEX_TIP = 8
-    const val MIN_SCORE = 0.28f
+    const val MIN_SCORE = 0.18f
     const val MAX_POINTABLE_FRAME_FRACTION = 0.40f
     const val LIMITATION =
         "Hand z recognizes depth-angled pointing, but object boxes have no measured depth. " +
             "Depth-angled aim uses the fingertip position; overlapping objects stay ambiguous."
 
-    private val OTHER_TIPS = intArrayOf(12, 16, 20)
     private val FINGERS = listOf(
         Finger(INDEX_TIP, INDEX_MCP, INDEX_PIP, INDEX_DIP),
         Finger(12, 9, 10, 11),
@@ -46,21 +47,34 @@ object IndexPoint {
         Finger(20, 17, 18, 19),
     )
 
-    fun ray(frame: FrameDetections, minScore: Float = MIN_SCORE): PointingRay? {
+    data class Aimed(
+        val ray: PointingRay,
+        val hit: BoxObservation?,
+    )
+
+    fun ray(frame: FrameDetections, minScore: Float = MIN_SCORE): PointingRay? =
+        aimed(frame, preferId = null, minScore = minScore)?.ray
+
+    /**
+     * One pass: pick a hand, flip a reversed index if needed, and return the
+     * object on that ray. Overlay, lock, and HUD should reuse this instead of
+     * scoring the same boxes again.
+     */
+    fun aimed(
+        frame: FrameDetections,
+        preferId: Int? = null,
+        minScore: Float = MIN_SCORE,
+    ): Aimed? {
         if (frame.width <= 0 || frame.height <= 0) return null
-        val hands = frame.boxes.filter { it.kind == "hand" && it.score >= minScore }
         val objects = frame.boxes.filter { pointable(it, frame.width, frame.height) }
-        val rays = hands.mapNotNull { hand ->
-            extended(hand, frame.width, frame.height, minScore)?.let { ray ->
-                oriented(ray, objects, frame.width, frame.height)
-            }
+        var best: Aimed? = null
+        for (hand in frame.boxes) {
+            if (hand.kind != "hand" || hand.score < minScore) continue
+            val raw = extended(hand, frame.width, frame.height, minScore) ?: continue
+            val candidate = orientedAimed(raw, objects, preferId, frame.width, frame.height)
+            best = better(best, candidate)
         }
-        if (rays.isEmpty()) return null
-        return rays.maxWith(
-            compareBy<PointingRay> {
-                alongRay(it, objects, null, frameWidth = frame.width, frameHeight = frame.height) != null
-            }.thenBy { it.reach },
-        )
+        return best
     }
 
     /** MediaPipe often inverts a side-on index. Keep the direction that hits an object. */
@@ -69,15 +83,29 @@ object IndexPoint {
         objects: List<BoxObservation>,
         frameWidth: Int,
         frameHeight: Int,
-    ): PointingRay {
-        if (alongRay(ray, objects, null, frameWidth = frameWidth, frameHeight = frameHeight) != null) {
-            return ray
-        }
+    ): PointingRay = orientedAimed(ray, objects, null, frameWidth, frameHeight).ray
+
+    private fun orientedAimed(
+        ray: PointingRay,
+        objects: List<BoxObservation>,
+        preferId: Int?,
+        frameWidth: Int,
+        frameHeight: Int,
+    ): Aimed {
+        val forward = alongRay(ray, objects, preferId, frameWidth = frameWidth, frameHeight = frameHeight)
+        if (forward != null) return Aimed(ray, forward)
+        if (!ray.reversible) return Aimed(ray, null)
         val flipped = ray.copy(dirX = -ray.dirX, dirY = -ray.dirY)
-        if (alongRay(flipped, objects, null, frameWidth = frameWidth, frameHeight = frameHeight) != null) {
-            return flipped
-        }
-        return ray
+        val backward = alongRay(flipped, objects, preferId, frameWidth = frameWidth, frameHeight = frameHeight)
+        return if (backward != null) Aimed(flipped, backward) else Aimed(ray, null)
+    }
+
+    private fun better(current: Aimed?, next: Aimed): Aimed {
+        if (current == null) return next
+        val currentHit = if (current.hit != null) 1 else 0
+        val nextHit = if (next.hit != null) 1 else 0
+        if (nextHit != currentHit) return if (nextHit > currentHit) next else current
+        return if (next.ray.reach >= current.ray.reach) next else current
     }
 
     fun extended(
@@ -164,7 +192,8 @@ object IndexPoint {
         val dirZ = if (segmentLength > 1e-3f) dz / segmentLength else 0f
         val tipZ = if (hasDepth) hand.depths[INDEX_TIP] else 0f
         return PointingRay(
-            repaired.first, repaired.second, dirX, dirY, dirZ, tipZ, reach, joints, depthDominant,
+            repaired.first, repaired.second, dirX, dirY, dirZ, tipZ, reach, joints,
+            depthDominant, reversible = sideOnPoint || depthDominant || planarAim < 8f,
         )
     }
 

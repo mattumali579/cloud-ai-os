@@ -74,6 +74,14 @@ class AimLockTest {
         assertFalse(once.changed)
     }
 
+    @Test fun aLiveHandDoesNotLockTheScreenCenterWhenTheRayMisses() {
+        val aim = AimLock()
+        val center = BoxObservation("object", "book", 0.95f, 40f, 40f, 60f, 60f, trackId = 1)
+        val picture = frame(center, pointingHand(90f, 50f))
+        aim.observe(picture)
+        assertNull(aim.observe(picture).lockedId)
+    }
+
     @Test fun selectsThePointedObjectAmongSeveralCandidates() {
         val aim = AimLock()
         val pointed = BoxObservation("object", "table", 0.9f, 10f, 20f, 60f, 90f, trackId = 7)

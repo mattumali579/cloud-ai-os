@@ -4,6 +4,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.38: 10917 path cost and lock steal
+
+Version code 39. v38 scored the same ray many times per frame, including on the one-object overlay so a flip could not see the real target, and a visible hand still let the screen center steal the lock. This build computes aim once from the full frame, keeps a missed skeleton pinned inside the arm box, and will not center-lock while a real hand is in view. Not a new glasses pass.
+
 ## Version 0.37: 10917 side-on pointing
 
 Version code 38. Live View clip `10917.mp4` is v0.36.0 #37. Open palms lock a charger once; a side-on point drops the hand, labels the forearm `person`, and draws a 2D ray the wrong way from knuckle 8. This build drops a wearer-arm `person` box even with no landmarks, keeps the last skeleton while that arm is still in the picture, aims a collapsed index along the forearm and flips the ray if the opposite direction hits an object, and never locks `person`. Not a new glasses pass.

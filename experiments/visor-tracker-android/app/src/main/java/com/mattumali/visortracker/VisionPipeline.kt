@@ -206,14 +206,17 @@ class VisionPipeline(
                     handMisses = 0
                 } else {
                     handMisses += 1
-                    val armVisible = HandPriority.wearerArmPresent(observed, width, height)
+                    val arm = observed.firstOrNull { HandPriority.wearerArm(it, width, height) }
                     val keepPointing = recentHands.any { hand ->
                         !hand.held && IndexPoint.extended(hand, width, height) != null
                     }
                     if (recentHands.isNotEmpty() &&
-                        (armVisible || (keepPointing && handMisses <= HAND_STALE_FRAMES))
+                        (arm != null || (keepPointing && handMisses <= HAND_STALE_FRAMES))
                     ) {
-                        recentHands = recentHands.map { it.copy(held = false) }
+                        recentHands = recentHands.map { hand ->
+                            val pinned = if (arm != null) HandTrack.pinToArm(hand, arm) else hand
+                            pinned.copy(held = false)
+                        }
                     } else {
                         recentHands = emptyList()
                     }
