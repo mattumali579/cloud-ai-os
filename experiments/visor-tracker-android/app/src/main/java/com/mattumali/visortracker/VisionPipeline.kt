@@ -18,6 +18,7 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 data class FrameDetections(
     val width: Int,
@@ -38,9 +39,8 @@ data class FrameDetections(
  *
  * The hand landmarker tries the GPU delegate once when [attemptGpu] is true. If that
  * create or the first detect does not return, later frames use the CPU landmarker.
- * A second GPU attempt is not started. LIVE_STREAM and VIDEO are not enabled: this
- * tree has no repeated-detect probe that survived those modes, and the same mode is
- * not tried again. A hands-only pass reuses the last object boxes.
+ * A second GPU attempt is not started. Hands run in VIDEO mode with monotonic
+ * timestamps. LIVE_STREAM is not used. A hands-only pass reuses the last object boxes.
  */
 class VisionPipeline(
     context: Context,
@@ -210,15 +210,12 @@ class VisionPipeline(
                     val keepPointing = recentHands.any { hand ->
                         !hand.held && IndexPoint.extended(hand, width, height) != null
                     }
-                    if (recentHands.isNotEmpty() &&
-                        (arm != null || (keepPointing && handMisses <= HAND_STALE_FRAMES))
-                    ) {
-                        recentHands = recentHands.map { hand ->
-                            val pinned = if (arm != null) HandTrack.pinToArm(hand, arm) else hand
-                            pinned.copy(held = false)
-                        }
-                    } else {
-                        recentHands = emptyList()
+                    recentHands = when {
+                        arm != null -> listOf(HandTrack.fromArmBox(arm, width, height))
+                        keepPointing && recentHands.isNotEmpty() &&
+                            handMisses <= HAND_STALE_FRAMES ->
+                            recentHands.map { it.copy(held = false) }
+                        else -> emptyList()
                     }
                 }
                 lastHandMs = handPass.modelMs
@@ -374,6 +371,7 @@ class VisionPipeline(
         var abandonBitmap: Boolean = false
         @Volatile var lastModelMs: Long = 0L
         private var retryCpu = false
+        private val lastVideoTs = AtomicLong(-1L)
         private var marker: HandLandmarker? = null
         private var executor = newExecutor()
         private var gpuProbed = false
@@ -433,7 +431,11 @@ class VisionPipeline(
                     val started = android.os.SystemClock.elapsedRealtime()
                     val image = BitmapImageBuilder(owned).build()
                     try {
-                        val marked = current.detect(image)
+                        var ts = android.os.SystemClock.elapsedRealtime()
+                        val previousTs = lastVideoTs.get()
+                        if (ts <= previousTs) ts = previousTs + 1L
+                        lastVideoTs.set(ts)
+                        val marked = current.detectForVideo(image, ts)
                         val elapsed = android.os.SystemClock.elapsedRealtime() - started
                         val boxes = handsToBoxes(marked, frameWidth, frameHeight)
                         if (ticket.get() == mine) {
@@ -514,7 +516,7 @@ class VisionPipeline(
                             .setDelegate(delegate)
                             .build()
                     )
-                    .setRunningMode(RunningMode.IMAGE)
+                    .setRunningMode(RunningMode.VIDEO)
                     .setNumHands(numHands)
                     .setMinHandDetectionConfidence(HAND_DETECT)
                     .setMinHandPresenceConfidence(HAND_DETECT)
@@ -566,7 +568,7 @@ class VisionPipeline(
          */
         internal const val HAND_COUNT = 2
         /** Keep a pointing skeleton only while the arm is still in view. */
-        internal const val HAND_STALE_FRAMES = 3
+        internal const val HAND_STALE_FRAMES = 8
         internal const val HAND_DETECT = 0.15f
         private const val CREATE_TIMEOUT_MS = 3_000L
         private const val PROBE_TIMEOUT_MS = 2_500L

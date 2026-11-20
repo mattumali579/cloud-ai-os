@@ -562,10 +562,10 @@ class DetectorOverlaySimulationTest {
                 "stageNote=bitmap is the scale step. yuv is not in this replay. wall is model time and is lower than object+hand when the models overlap.",
             )
             report.appendLine(
-                "runningMode=IMAGE numHands=${VisionPipeline.HAND_COUNT} handLongSide=${VisionPipeline.HAND_FRAME} " +
+                "runningMode=VIDEO numHands=${VisionPipeline.HAND_COUNT} handLongSide=${VisionPipeline.HAND_FRAME} " +
                     "overlap=${pipeline.overlapModels}",
             )
-            report.appendLine("videoMode=not-retried no surviving repeated LIVE_STREAM or VIDEO probe; IMAGE stays")
+            report.appendLine("videoMode=production RunningMode.VIDEO with monotonic timestamps")
             report.appendLine("gpuNote=one GPU attempt on the production pipeline. Probes below stay on CPU.")
             report.appendLine("objectFrames=$objectFrames invalidFrames=$invalidFrames recovered=$recovered")
             report.appendLine("droppedFrames=$invalidFrames")
@@ -712,7 +712,7 @@ class DetectorOverlaySimulationTest {
             }
         }
         report.appendLine(
-            "productionHandLongSide=${VisionPipeline.HAND_FRAME} numHands=${VisionPipeline.HAND_COUNT} runningMode=IMAGE",
+            "productionHandLongSide=${VisionPipeline.HAND_FRAME} numHands=${VisionPipeline.HAND_COUNT} runningMode=VIDEO",
         )
         report.appendLine(
             "handSizeNote=probes are one CPU detect each. Production stays at ${VisionPipeline.HAND_FRAME}px and " +
