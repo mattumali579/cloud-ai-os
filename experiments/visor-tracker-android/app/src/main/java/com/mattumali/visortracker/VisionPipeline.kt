@@ -230,7 +230,7 @@ class VisionPipeline(
             if (scannedOptional && !optionalFailed) lastOptionalFault = null
             observed += recentHands
             observed += recentFaces
-            val tracked = tracks.update(observed).filter { !it.held }
+            val tracked = tracks.update(HandPriority.apply(observed)).filter { !it.held }
             return FrameDetections(width, height, tracked.map { it.copy(points = it.points.toList()) })
         } catch (error: Exception) {
             handRuntime?.invalidateInFlight()
@@ -313,12 +313,13 @@ class VisionPipeline(
             )
             if (needed.any { joint -> !landmarkReliable(hand[joint]) }) return@mapIndexedNotNull null
             val coords = hand.map { it.x() * width to it.y() * height }
-            BoxObservation(
+            val observation = BoxObservation(
                 kind = "hand", label = "hand", score = score,
                 left = coords.minOf { it.first }, top = coords.minOf { it.second },
                 right = coords.maxOf { it.first }, bottom = coords.maxOf { it.second },
                 points = coords,
             )
+            observation.copy(label = HandPriority.label(observation, width, height))
         }
     }
 

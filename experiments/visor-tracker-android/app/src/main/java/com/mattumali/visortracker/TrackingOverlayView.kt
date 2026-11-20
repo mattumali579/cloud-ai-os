@@ -40,6 +40,11 @@ class TrackingOverlayView(context: Context) : View(context) {
         color = 0xCC141414.toInt()
     }
     private val point = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val handLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2f)
+        strokeCap = Paint.Cap.ROUND
+    }
     private var latest: FrameDetections? = null
     private var receivedAt = 0L
     private var shownSequence = Long.MIN_VALUE
@@ -225,9 +230,21 @@ class TrackingOverlayView(context: Context) : View(context) {
             canvas.drawText(label, current.left + dp(6f), labelTop + dp(16f), text)
             if (observation.kind == "hand") {
                 point.color = color
+                handLine.color = color
                 val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
                 val ox = (width - frame.width * scale) / 2f
                 val oy = (height - frame.height * scale) / 2f
+                HandSkeleton.connections.forEach { (from, to) ->
+                    val start = observation.points.getOrNull(from) ?: return@forEach
+                    val end = observation.points.getOrNull(to) ?: return@forEach
+                    canvas.drawLine(
+                        ox + start.first * scale,
+                        oy + start.second * scale,
+                        ox + end.first * scale,
+                        oy + end.second * scale,
+                        handLine,
+                    )
+                }
                 observation.points.forEach { (x, y) ->
                     canvas.drawCircle(ox + x * scale, oy + y * scale, dp(2.5f), point)
                 }

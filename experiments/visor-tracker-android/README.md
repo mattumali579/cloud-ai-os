@@ -4,6 +4,12 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.29: hand landmarks win over a false person label
+
+Version code 30. Same package `com.mattumali.visortracker.stable` and the same protected signing path.
+
+MediaPipe's 21-point hand result is now authoritative when EfficientDet labels the same hand-sized region as `person`. A genuine full-body person box remains; only a strongly overlapping, hand-sized false positive is hidden. An extended index is labeled `pointing hand`, and the overlay connects the 21 landmarks into the standard hand skeleton so hand movement and pointing are visible instead of being covered by a generic object label. The 2D pointing ray and one-object lock behavior are unchanged. JVM tests and a local debug build cover the merge policy; physical S22 Ultra and Visor Live View behavior still require the signed update and an on-device test.
+
 ## Version 0.27: reuse a known replacement, and keep the ray 2D
 
 Version code 27. Same package `com.mattumali.visortracker.stable` and the same signing certificate.

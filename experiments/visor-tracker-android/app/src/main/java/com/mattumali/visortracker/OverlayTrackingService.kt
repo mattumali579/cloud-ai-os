@@ -628,7 +628,7 @@ class OverlayTrackingService : Service() {
         val partial = FrameDetections(
             width = base?.width ?: 1,
             height = base?.height ?: 1,
-            boxes = objects + hands,
+            boxes = HandPriority.apply(objects + hands),
             sequence = frame.sequence,
             capturedAtMs = frame.capturedAtMs,
         )
