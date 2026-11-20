@@ -12,8 +12,8 @@ android {
         applicationId = "com.mattumali.visortracker.stable"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7.0"
+        versionCode = 31
+        versionName = "0.30.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -39,6 +39,27 @@ android {
         buildTypes.getByName("debug") {
             signingConfig = signingConfigs.getByName("persistent")
         }
+        buildTypes.getByName("release") {
+            signingConfig = signingConfigs.getByName("persistent")
+        }
+    }
+
+    buildTypes.getByName("release") {
+        isMinifyEnabled = false
+        isDebuggable = false
+        // The signed phone APK stays arm64. Debug and androidTest keep the
+        // emulator ABIs that ship inside MediaPipe so a real detector test can run.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    // Samsung's installer reports only "App not installed" for a debuggable APK
+    // whose native libraries are stored uncompressed. Compress them.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/visionAssets").get().asFile)
@@ -53,7 +74,11 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.35")
     implementation("com.macedonga.visor:kit:0.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("androidx.core:core-ktx:1.15.0")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }
 
 val visionModels = mapOf(

@@ -13,17 +13,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.pm.PackageInstaller
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.ConnectivityManager
 import android.os.Build
-import android.os.SystemClock
-import android.provider.Settings
-import android.util.Log
+import androidx.core.content.FileProvider
 import java.io.File
+import android.util.Log
 import java.net.HttpURLConnection
 import java.net.URL
-import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONArray
 
@@ -32,13 +29,9 @@ import org.json.JSONArray
  *
  * GitHub Actions publishes a release named visor-tracker-v<versionCode>
  * containing a permanently signed asset named Visor-Fast-Tracking.apk.
- * Download directly from that public GitHub release over HTTPS, verify the
- * release digest (when available), verify APK package and version, then stream
- * into Android PackageInstaller. No developer token, USB, computer, root, or
- * new Android application/package is needed after the one-time signer migration.
- *
- * On Android 12+, self-updates MAY be silent when the system's conditions are
- * met. The system can always request user confirmation; never bypass it.
+ * The app does not install packages itself. Play Protect treats a sideloaded
+ * installer as harmful and gets stuck scanning it. A newer release opens in
+ * the browser instead.
  */
 object TrackerUpdater {
     const val PREF_AUTO_UPDATE = "auto_updates"
@@ -83,7 +76,8 @@ object TrackerUpdater {
     fun checkInBackground(
         context: Context,
         allowMetered: Boolean = false,
-        onStatus: (String) -> Unit = {}
+        onStatus: (String) -> Unit = {},
+        onOffer: (UpdateOffer?) -> Unit = {}
     ) {
         if (!busy.compareAndSet(false, true)) return
         Thread {
@@ -91,17 +85,22 @@ object TrackerUpdater {
                 val network = context.getSystemService(ConnectivityManager::class.java)
                 if (!allowMetered && network.isActiveNetworkMetered) {
                     onStatus("Automatic updates are waiting for unmetered Wi-Fi")
+                    onOffer(null)
                 } else {
-                    installNewest(context.applicationContext, onStatus)
+                    onOffer(installNewest(context.applicationContext, onStatus))
                 }
             } catch (error: Exception) {
                 Log.w(TAG, "Update check failed", error)
                 onStatus("Update check failed: " + (error.message ?: "unknown"))
+                onOffer(null)
             } finally {
                 busy.set(false)
             }
         }.apply { name = "visor-tracker-updates"; isDaemon = true }.start()
     }
+
+    /** A signed release newer than the installed app. The screen button opens [url]. */
+    data class UpdateOffer(val version: Long, val url: String)
 
     private data class Release(
         val version: Long,
@@ -166,99 +165,21 @@ object TrackerUpdater {
         }
     }
 
-    private fun installNewest(context: Context, status: (String) -> Unit) {
+    private fun installNewest(context: Context, status: (String) -> Unit): UpdateOffer? {
         val release = fetchRelease()
         if (release == null || release.version <= currentVersion(context)) {
             status("Tracker is up to date")
-            return
+            return null
         }
-        if (OverlayTrackingService.active) {
-            status("Update available; will retry when tracking is stopped")
-            return
-        }
-        if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
-            notifySettings(context)
-            status("One-time permission needed: Allow from this source")
-            return
-        }
-        status("Downloading Tracker update " + release.version)
-        val apk = File(context.cacheDir, "visor-self-update.apk")
-        val connection = URL(release.url).openConnection() as HttpURLConnection
-        connection.instanceFollowRedirects = true
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 60_000
-        val md = MessageDigest.getInstance("SHA-256")
-        try {
-            if (connection.responseCode !in 200..299) {
-                throw IllegalStateException("APK download HTTP " + connection.responseCode)
-            }
-            var downloaded = 0L
-            connection.inputStream.use { input ->
-                apk.outputStream().use { output ->
-                    val chunk = ByteArray(64 * 1024)
-                    while (true) {
-                        val n = input.read(chunk)
-                        if (n < 0) break
-                        downloaded += n
-                        if (downloaded > MAX_APK_BYTES) throw IllegalStateException("APK too large")
-                        md.update(chunk, 0, n)
-                        output.write(chunk, 0, n)
-                    }
-                }
-            }
-            if (downloaded != release.bytes) {
-                throw IllegalStateException("APK size does not match published release")
-            }
-            val hash = md.digest().joinToString("") { "%02x".format(it) }
-            if (release.sha256 != null && hash != release.sha256) {
-                throw IllegalStateException("APK release checksum mismatch")
-            }
-            @Suppress("DEPRECATION")
-            val info = context.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)
-                ?: throw IllegalStateException("APK cannot be parsed")
-            if (info.packageName != context.packageName) {
-                throw IllegalStateException("Update has a different package ID")
-            }
-            if (info.longVersionCode != release.version) {
-                throw IllegalStateException("APK version does not match release tag")
-            }
-            status("Installing signed update " + release.version)
-            val installer = context.packageManager.packageInstaller
-            val params = PackageInstaller.SessionParams(
-                PackageInstaller.SessionParams.MODE_FULL_INSTALL
-            ).apply {
-                setAppPackageName(context.packageName)
-                setSize(apk.length())
-                if (Build.VERSION.SDK_INT >= 31) {
-                    setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
-                }
-            }
-            val sessionId = installer.createSession(params)
-            try {
-                installer.openSession(sessionId).use { session ->
-                    session.openWrite("base.apk", 0, apk.length()).use { output ->
-                        apk.inputStream().use { it.copyTo(output) }
-                        session.fsync(output)
-                    }
-                    val intent = Intent(context, TrackerUpdateReceiver::class.java).apply {
-                        action = TrackerUpdateReceiver.ACTION_RESULT
-                    }
-                    // PackageInstaller populates a mutable callback intent with the result.
-                    val pending = PendingIntent.getBroadcast(
-                        context, sessionId, intent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-                    )
-                    session.commit(pending.intentSender)
-                }
-            } catch (error: Exception) {
-                installer.abandonSession(sessionId)
-                throw error
-            }
-            status("Installer accepted update " + release.version)
-        } finally {
-            connection.disconnect()
-            if (apk.exists()) apk.delete()
-        }
+        status("Version " + release.version + " is downloading. Confirm Update. Do not uninstall.")
+        val view = Intent(Intent.ACTION_VIEW, Uri.parse(release.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        notifyAction(
+            context,
+            "Tracker update " + release.version,
+            "Tap INSTALL UPDATE on the Tracker screen.",
+            view
+        )
+        return UpdateOffer(release.version, release.url)
     }
 
     private fun channel(context: Context): NotificationManager {
@@ -271,12 +192,35 @@ object TrackerUpdater {
         return manager
     }
 
-    fun notifySettings(context: Context) {
-        val intent = Intent(
-            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-            Uri.parse("package:" + context.packageName)
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        notifyAction(context, "Allow Tracker self-updates", "Enable Allow from this source once.", intent)
+    /** Saves the signed APK and opens Android's update screen for this same package. */
+    fun downloadUpdate(context: Context, offer: UpdateOffer): File {
+        val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val dest = File(dir, "Visor-Fast-Tracking.apk")
+        val connection = URL(offer.url).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = true
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 120_000
+        connection.setRequestProperty("User-Agent", "Visor-Fast-Tracking-Android-Updater")
+        connection.setRequestProperty("Accept", "application/octet-stream")
+        try {
+            if (connection.responseCode !in 200..299) {
+                throw IllegalStateException("Download failed: " + connection.responseCode)
+            }
+            connection.inputStream.use { input ->
+                dest.outputStream().use { output -> input.copyTo(output) }
+            }
+        } finally {
+            connection.disconnect()
+        }
+        if (dest.length() < 1_000_000L) throw IllegalStateException("Downloaded update was empty")
+        return dest
+    }
+
+    fun installIntent(context: Context, apk: File): Intent {
+        val uri = FileProvider.getUriForFile(context, context.packageName + ".files", apk)
+        return Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
     fun notifyAction(context: Context, title: String, detail: String, action: Intent) {

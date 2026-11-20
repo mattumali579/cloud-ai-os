@@ -1,0 +1,6 @@
+{
+  "note": "Sample intervals only. This page does not run MediaPipe, and these numbers are not a phone measurement.",
+  "handMs": 66,
+  "objectMs": 250,
+  "delayMs": 80
+}

@@ -1,0 +1,9 @@
+{
+  "name": "visor-tracker-sim",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "npx --yes serve -l 4173 .",
+    "test": "node --test policy.test.js"
+  }
+}

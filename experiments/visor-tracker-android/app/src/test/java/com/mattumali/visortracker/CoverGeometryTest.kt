@@ -1,6 +1,8 @@
 package com.mattumali.visortracker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CoverGeometryTest {
@@ -27,5 +29,22 @@ class CoverGeometryTest {
         assertEquals(0f, result.top, 0.01f)
         assertEquals(1820f, result.right, 0.01f)
         assertEquals(1920f, result.bottom, 0.01f)
+    }
+
+    @Test fun centeredObjectLandsOnThePortraitScreen() {
+        val cup = box(412f, 284f, 612f, 484f)
+        val projected = CoverGeometry.project(1024, 768, 1080, 1920, cup)
+        val centerX = (projected.left + projected.right) / 2f
+        val centerY = (projected.top + projected.bottom) / 2f
+        assertEquals(540f, centerX, 0.01f)
+        assertEquals(960f, centerY, 0.01f)
+        assertTrue(CoverGeometry.isVisible(1024, 768, 1080, 1920, cup))
+    }
+
+    @Test fun aBoxInTheCoverCropIsNotCountedAsDrawn() {
+        val cropped = box(0f, 300f, 40f, 468f)
+        assertFalse(CoverGeometry.isVisible(1024, 768, 1080, 1920, cropped))
+        assertFalse(CoverGeometry.isVisible(1024, 768, 1080, 1920, box(512f, 384f, 512f, 384f)))
+        assertFalse(CoverGeometry.isVisible(0, 768, 1080, 1920, box(10f, 10f, 40f, 40f)))
     }
 }

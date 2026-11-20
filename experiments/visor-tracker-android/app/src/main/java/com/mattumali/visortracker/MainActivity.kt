@@ -2,8 +2,11 @@ package com.mattumali.visortracker
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import androidx.core.content.FileProvider
+import java.io.File
 import android.text.InputType
 import android.widget.EditText
 import android.widget.Button
@@ -21,6 +24,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var includeAll: CheckBox
     private lateinit var accurate: CheckBox
     private lateinit var status: TextView
+    private lateinit var installUpdate: Button
 
     private val grantCamera = registerForActivityResult(RequestScopes()) { grants ->
         status.text = if (Scope.CAMERA in grants) {
@@ -39,9 +43,17 @@ class MainActivity : ComponentActivity() {
             setPadding(pad, pad, pad, pad)
         }
         val scroll = ScrollView(this).apply { addView(root) }
+        val identity = installedIdentity()
         root.addView(TextView(this).apply {
-            text = "Visor Fast Tracking"
+            text = "Visor Fast Tracking ${identity.versionName}"
             textSize = 24f
+        })
+        root.addView(TextView(this).apply {
+            text = identity.line + "\nIf this screen does not show ${identity.versionName} and " +
+                "com.mattumali.visortracker.stable, this is the old Tracker. " +
+                "The old 0.1.0 app has no Check for updates button. Leave it installed."
+            textSize = 15f
+            setPadding(0, dp(8), 0, dp(8))
         })
         root.addView(TextView(this).apply {
             text = "Uses Visor's VDK camera.live hardware video stream " +
@@ -71,7 +83,7 @@ class MainActivity : ComponentActivity() {
             }
         })
         includeAll = CheckBox(this).apply {
-            text = "Also detect hands and faces (slower)"
+            text = "Also detect faces (slower). The pointing hand stays on."
             isChecked = prefs.getBoolean(OverlayTrackingService.PREF_HANDS_FACES, false)
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean(OverlayTrackingService.PREF_HANDS_FACES, checked).apply()
@@ -92,11 +104,27 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(accurate)
         root.addView(TextView(this).apply {
-            text = "OFFLINE DISTANCE (approximate, same object only): measure how far " +
-                "the object is from your glasses, enter that starting distance in feet, " +
-                "then aim at its center and choose Calibrate. The labeled distance changes " +
-                "as you or the object moves. Requires the FULL object in view. " +
-                "Does not measure arbitrary objects without calibration."
+            text = "One object. An extended index finger locks the object on that 2D ray. " +
+                "The ray is on the camera image and cannot measure depth. " +
+                "The lock stays after the hand drops, and follows the object until it leaves. " +
+                "A closed fist or a fully curled index does not switch it. Holding that gesture " +
+                "releases the lock and does not send a command. If the locked object leaves and " +
+                "another object was already visible, the next detection can take it without a " +
+                "second model pass. With no hand, the center of the picture still locks. " +
+                "Motion does not swap the lock every frame. Fast mode stays " +
+                "EfficientDet-Lite0. An unsure name is shown as object."
+            textSize = 14f
+            setPadding(0, dp(10), 0, dp(4))
+        })
+        root.addView(TextView(this).apply {
+            text = "ONE OBJECT DISTANCE: measure the object from the glasses, enter that " +
+                "distance in feet, aim so the object is centered and fully visible, then " +
+                "tap Calibrate. The notification Calibrate action works during Live View " +
+                "and confirms the reference feet. Only that track then shows approximate " +
+                "feet, D = D0 × (h0 / h), as its apparent height changes. Same object, " +
+                "roughly the same orientation. Tilt, rotation, and occlusion can miss by " +
+                "more than 25%. There is no depth sensor. If that track disappears, the " +
+                "overlay says distance unavailable instead of moving the feet to another object."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(4))
         })
@@ -140,31 +168,31 @@ class MainActivity : ComponentActivity() {
             }
         })
         root.addView(CheckBox(this).apply {
-            text = "Automatic signed updates (Wi-Fi, no USB or manual APK downloads)"
+            text = "Tell me when a signed update is published"
             isChecked = TrackerUpdater.enabled(this@MainActivity)
             setOnCheckedChangeListener { _, enabled ->
                 TrackerUpdater.configure(this@MainActivity, enabled)
-                if (enabled && android.os.Build.VERSION.SDK_INT >= 26 &&
-                    !packageManager.canRequestPackageInstalls()) {
-                    startActivity(Intent(
-                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:" + packageName)
-                    ))
-                }
             }
         })
-        root.addView(Button(this).apply {
-            text = "CHECK FOR UPDATES NOW"
-            setOnClickListener {
-                status.text = "Checking signed GitHub releases..."
-                TrackerUpdater.checkInBackground(this@MainActivity, allowMetered = true) { message ->
-                    runOnUiThread { if (::status.isInitialized) status.text = message }
-                }
+        installUpdate = Button(this).apply {
+            text = "UPDATE THIS APP"
+            setOnClickListener { updateThisApp() }
+        }
+        root.addView(installUpdate)
+        root.addView(CheckBox(this).apply {
+            text = "Show the Live View proof mark"
+            isChecked = prefs.getBoolean(OverlayTrackingService.PREF_PROBE, true)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(OverlayTrackingService.PREF_PROBE, checked).apply()
             }
         })
         root.addView(Button(this).apply {
             text = "3. START FAST OVERLAY"
             setOnClickListener { startOverlay() }
+        })
+        root.addView(Button(this).apply {
+            text = "EXPORT DIAGNOSTICS"
+            setOnClickListener { exportDiagnostics() }
         })
         root.addView(Button(this).apply {
             text = "STOP OVERLAY"
@@ -180,13 +208,25 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(status)
         root.addView(TextView(this).apply {
-            text = "Automatic updates use the same signed app, with Android approval if required. " +
+            text = "Updates open the signed GitHub release. The app does not install packages by itself. " +
                 "For fewer app switches: add the Visor Tracker Quick Settings tile " +
                 "(swipe down twice > Edit > add Visor Tracker). Open Live View first, " +
                 "then toggle tracking from Quick Settings. " +
                 "The selected accuracy mode takes effect on the next start. " +
                 "After START, switch to Visor and keep Live View fully expanded. " +
-                "The system notification shows measured VIDEO FPS and DETECTION FPS. " +
+                "A small green corner mark reading this version is the proof that Android " +
+                "is drawing over Live View, before any object box exists. " +
+                "Its second line is the first failed hop: OVERLAY BLOCKED, " +
+                "NO CAMERA FRAMES, or 0 OBJECTS DETECTED. " +
+                "The same line is in the ongoing notification. " +
+                "EXPORT DIAGNOSTICS writes that history on this phone. " +
+                "It stays there when Live View switches Wi-Fi. USB debugging is not required. " +
+                "Turn the mark off with the checkbox above when you no longer need it. " +
+                "The notification shows decoded video FPS, detector FPS, motion-tracker FPS, " +
+                "changed-box FPS, draw FPS, tracker interval and box age as p50/p95/p99 milliseconds, " +
+                "dropped frames, and median milliseconds for grayscale, " +
+                "YUV conversion, inference, motion, and detection age. " +
+                "Changed-box FPS does not count a redraw of the same rectangle. " +
                 "For best speed, leave hands/faces unchecked. " +
                 "Tracking is on your PHONE; ordinary Ray-Ban Meta glasses have no display. " +
                 "For distance calibration without leaving Live View, first set the " +
@@ -198,20 +238,98 @@ class MainActivity : ComponentActivity() {
         setContentView(scroll)
         TrackerUpdater.schedule(this)
         if (TrackerUpdater.enabled(this)) {
-            TrackerUpdater.checkInBackground(this) { message ->
-                runOnUiThread {
-                    if (::status.isInitialized) status.text = message
-                }
-            }
+            TrackerUpdater.checkInBackground(
+                this,
+                onStatus = { message ->
+                    runOnUiThread { if (::status.isInitialized) status.text = message }
+                },
+                onOffer = { _ -> },
+            )
         }
     }
 
     override fun onResume() {
         super.onResume()
         if (::status.isInitialized) {
-            status.text = if (OverlayTrackingService.active) OverlayTrackingService.lastStatus
-            else if (!Settings.canDrawOverlays(this)) "Overlay permission not granted"
-            else "Overlay permission granted. Grant Visor camera access, then Start."
+            val known = OverlayTrackingService.lastStatus
+            status.text = when {
+                OverlayTrackingService.active -> known
+                known != "Overlay not started" -> known
+                !Settings.canDrawOverlays(this) ->
+                    "OVERLAY BLOCKED | Display over other apps is denied"
+                else -> "Overlay permission granted. Grant Visor camera access, then Start."
+            }
+        }
+    }
+
+    private data class InstallIdentity(val versionName: String, val line: String)
+
+    @Suppress("DEPRECATION")
+    private fun installedIdentity(): InstallIdentity {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val versionName = info.versionName ?: "?"
+        val versionCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+        return InstallIdentity(versionName, "$packageName  $versionName ($versionCode)")
+    }
+
+    private fun updateThisApp() {
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            status.text = "Allow this app to install updates, then tap UPDATE THIS APP again."
+            startActivity(Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName")
+            ))
+            return
+        }
+        status.text = "Checking for an update..."
+        installUpdate.isEnabled = false
+        TrackerUpdater.checkInBackground(
+            this,
+            allowMetered = true,
+            onStatus = { message ->
+                runOnUiThread { if (::status.isInitialized) status.text = message }
+            },
+            onOffer = { offer ->
+                if (offer == null) {
+                    runOnUiThread { installUpdate.isEnabled = true }
+                    return@checkInBackground
+                }
+                try {
+                    val apk = TrackerUpdater.downloadUpdate(applicationContext, offer)
+                    runOnUiThread {
+                        installUpdate.isEnabled = true
+                        startActivity(TrackerUpdater.installIntent(this, apk))
+                        status.text = "Tap Update. Do not uninstall."
+                    }
+                } catch (error: Exception) {
+                    runOnUiThread {
+                        installUpdate.isEnabled = true
+                        status.text = "Update failed: " + (error.message ?: "unknown")
+                    }
+                }
+            },
+        )
+    }
+
+    private fun exportDiagnostics() {
+        val text = TrackerLog.read(filesDir)
+        if (text.isBlank()) {
+            status.text = "No diagnostics yet. Start the overlay, open Live View, then export."
+            return
+        }
+        val tail = text.takeLast(1200)
+        status.text = tail
+        val file = File(filesDir, TrackerLog.FILE_NAME)
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+            val share = Intent(Intent.ACTION_SEND)
+                .setType("text/plain")
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .putExtra(Intent.EXTRA_SUBJECT, "Visor Tracker diagnostics")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(share, "Export Visor Tracker diagnostics"))
+        } catch (error: Exception) {
+            status.text = tail + "\nExport sheet failed: " + (error.message ?: "unknown")
         }
     }
 

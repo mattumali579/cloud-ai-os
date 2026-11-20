@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Visor tracker simulator</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #121418; color: #f2f4f8; font: 14px/1.4 Segoe UI, sans-serif; }
+    #view { display: block; width: 100%; height: 100%; }
+    #banner {
+      position: fixed; left: 0; right: 0; top: 0; z-index: 2;
+      padding: 10px 16px; background: #8f1d1d; color: #fff; font-weight: 700;
+    }
+    #hud {
+      position: fixed; left: 12px; top: 174px; z-index: 2;
+      background: rgba(12, 14, 18, 0.82); padding: 10px 12px; border-radius: 8px;
+      min-width: 240px;
+    }
+    button, input { font: inherit; margin: 0 6px 8px 0; }
+    label { display: block; margin-bottom: 6px; }
+    #panel {
+      position: fixed; right: 12px; top: 64px; z-index: 2; width: 280px;
+      background: rgba(12, 14, 18, 0.88); padding: 12px 14px; border-radius: 8px;
+    }
+    #reticle {
+      position: fixed; left: 50%; top: 50%; width: 18px; height: 18px;
+      margin: -9px 0 0 -9px; border: 2px solid #7dfff2; border-radius: 50%;
+      pointer-events: none; z-index: 2;
+    }
+    #finger-demo {
+      position: fixed; left: calc(50% - 112px); top: calc(50% + 28px); z-index: 2;
+      width: 110px; height: 10px; transform-origin: right center; pointer-events: none;
+    }
+    #finger-demo::before {
+      content: ""; position: absolute; inset: 3px 0; border-radius: 4px;
+      background: linear-gradient(90deg, #55aaff, #7dfff2);
+      box-shadow: 0 0 8px #55aaff;
+    }
+    #finger-demo::after {
+      content: ""; position: absolute; right: -6px; top: -2px; width: 14px; height: 14px;
+      border-radius: 50%; background: #7dfff2; box-shadow: 0 0 10px #7dfff2;
+    }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    p { margin: 0 0 8px; }
+    code { font-family: Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <div id="banner">Depth lab: v31 preserves hand z to recognize angled pointing. Object depth is still not measured.</div>
+  <div id="reticle"></div>
+  <div id="finger-demo"></div>
+  <canvas id="view"></canvas>
+  <div id="hud">
+    <div id="fps">Render FPS —</div>
+    <div id="detect">Detector FPS —</div>
+    <div id="age">Frame age —</div>
+    <div id="lock">Lock —</div>
+    <div id="switch">Last switch —</div>
+    <div id="depth-angle">Finger depth angle —</div>
+    <div id="legacy-pointer">v30 pointer —</div>
+    <div id="depth-pointer">v31 pointer —</div>
+  </div>
+  <aside id="panel">
+    <h1>Simulator controls</h1>
+    <p>
+      <button id="mode-ideal" type="button">Ideal</button>
+      <button id="mode-realistic" type="button">Realistic</button>
+    </p>
+    <p>Ideal applies the ray on the render frame. Realistic keeps the render loop separate from hand and object updates, delays each result, and drops a result older than the newest camera tick. This page does not run MediaPipe.</p>
+    <label>Finger depth angle <input id="depth-slider" type="range" value="0" min="0" max="90" step="1"> <output id="depth-value">0°</output></label>
+    <p>Move the slider toward 90° to point into the camera. The blue finger shortens like a foreshortened finger. v30 eventually loses it; v31 changes to a fingertip cursor. This models the decision rule—it is not a camera test.</p>
+    <label>Inference delay ms <input id="delay-ms" type="number" value="80" min="0" max="2000"></label>
+    <label>Hand interval ms <input id="hand-ms" type="number" value="66" min="0" max="2000"></label>
+    <label>Object interval ms <input id="object-ms" type="number" value="250" min="0" max="2000"></label>
+    <p>
+      <button id="load-sample" type="button">Load sample timings</button>
+      <input id="stage-file" type="file" accept="application/json,.json">
+    </p>
+    <p id="stage-note">No Android stage file loaded.</p>
+    <p>Click the view, then look with the mouse. WASD moves. Keys 1 and 2 select the mode. The center ray is a simulated finger, not the glasses ray.</p>
+    <p><code>H</code> hide the locked object. <code>R</code> restore it. <code>M</code> start or stop object motion. Arrow keys slide the objects.</p>
+    <p>If the locked object is hidden or leaves the view, the next lock is the visible object closest to the screen center. That is this page's rule. It is not the Kotlin finger ray.</p>
+    <p>Known replacement: 2 ticks when another object is already visible. Nothing visible: hold 3 ticks. A finger lock stays when the ray hits nothing. Kotlin and this page do not share an executable.</p>
+    <p id="status">Click the view to look around.</p>
+  </aside>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -7,14 +7,19 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.os.SystemClock
 import android.view.View
-import kotlin.math.abs
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Transparent, touch-through window over Visor's expanded Live View.
- * Native Live View remains at its own frame rate. Detector results are
- * updated by the existing VDK pipeline; this view only draws boxes/labels.
+ * Native Live View remains at its own frame rate. Each accepted frame draws the
+ * measured box coordinates once. This view does not repaint unchanged boxes.
  */
 class TrackingOverlayView(context: Context) : View(context) {
+    init {
+        // A View with no background can skip onDraw. The proof mark has to draw
+        // before any detection exists.
+        setWillNotDraw(false)
+    }
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dp(2.5f)
@@ -25,15 +30,53 @@ class TrackingOverlayView(context: Context) : View(context) {
         textSize = dp(13f)
         isFakeBoldText = true
     }
+    private val note = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+        textSize = dp(11f)
+    }
     private val background = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = 0xCC141414.toInt()
     }
     private val point = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val handLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2f)
+        strokeCap = Paint.Cap.ROUND
+    }
     private var latest: FrameDetections? = null
     private var receivedAt = 0L
-    private val smoothBoxes = mutableMapOf<Int, RectF>()
+    private var shownSequence = Long.MIN_VALUE
+    private val boxUpdates = AtomicInteger(0)
+    private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
+    private val nearby = NearbyCandidates()
+    private var aimRay: PointingRay? = null
+    private val rayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(3f)
+        color = 0xFF00E5FF.toInt()
+    }
+    private var probeLines: List<String> = emptyList()
+    @Volatile var frameAgeMs: Int = 0
+        private set
+
+    private val expire = Runnable {
+        latest = null
+        frameAgeMs = 0
+        invalidate()
+    }
+
+    fun consumeBoxUpdates(): Int = boxUpdates.getAndSet(0)
+    fun consumeDraws(): Int = draws.getAndSet(0)
+
+    /** Corner text that stays visible when there are no boxes. Empty hides it. */
+    fun setProbe(lines: List<String>) {
+        if (lines == probeLines) return
+        probeLines = lines
+        invalidate()
+    }
 
     /** Calibrate only the physical object currently nearest the camera center. */
     fun calibrateDistance(feet: Float): String {
@@ -51,50 +94,129 @@ class TrackingOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun updateFrame(frame: FrameDetections) {
-        latest = frame
-        receivedAt = SystemClock.elapsedRealtime()
-        val ids = frame.boxes.map { it.trackId }.toSet()
-        smoothBoxes.keys.retainAll(ids)
+    fun selectedTrackId(): Int? = distanceEstimator.selectedTrackId()
+
+    fun notificationDistance(): String = distanceEstimator.shortStatus(latest?.boxes.orEmpty())
+
+    fun drawnBoxCount(): Int {
+        val frame = latest ?: return 0
+        val boxes = frame.boxes
+        if (boxes.isEmpty()) return 0
+        // Before the window is measured, keep the stored count. Once the view has
+        // a size, a box that cover-crops entirely off screen is not drawn.
+        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return boxes.size
+        return boxes.count { CoverGeometry.isVisible(frame.width, frame.height, width, height, it) }
+    }
+
+    /**
+     * Sees every detector object, including ones that are not the drawn box,
+     * so a held point at a new center can switch the lock.
+     */
+    fun observeCandidates(frame: FrameDetections): String? {
+        aimRay = IndexPoint.ray(frame)
+        val note = distanceEstimator.observe(frame)
+        invalidate()
+        return note
+    }
+
+    fun updateFrame(frame: FrameDetections): String? {
+        val previous = latest
+        val lockedId = distanceEstimator.selectedTrackId()
+        val aimId = aimRay?.let { ray ->
+            IndexPoint.alongRay(ray, frame.boxes, lockedId)?.trackId
+        }
+        val incoming = if (frame.boxes.isEmpty()) {
+            emptyList()
+        } else {
+            nearby.select(frame.width, frame.height, frame.boxes, lockedId, aimId)
+        }
+        val now = SystemClock.elapsedRealtime()
+        val accepted = OverlayDiagnostics.acceptFrame(
+            frameSequence = frame.sequence,
+            shownSequence = shownSequence,
+            incomingBoxes = incoming.size,
+            showingTrackId = previous?.boxes?.firstOrNull()?.trackId,
+            incomingTrackId = incoming.firstOrNull()?.trackId,
+            lockedId = lockedId,
+            captureIsRecent = OverlayDiagnostics.captureIsRecent(now, frame.capturedAtMs, BoxHold.HOLD_MS),
+        )
+        if (!accepted) return null
+        shownSequence = OverlayDiagnostics.nextShownSequence(shownSequence, frame.sequence, accepted = true)
+        val ageMs = if (receivedAt == 0L) Long.MAX_VALUE else now - receivedAt
+        val kept = BoxHold.keep(previous?.boxes.orEmpty(), incoming, ageMs)
+        val display = OverlayDiagnostics.frameToDraw(frame, previous, incoming.size, kept)
+        latest = display
+        if (incoming.isNotEmpty()) receivedAt = now
+        frameAgeMs = if (display.boxes.isEmpty()) 0 else OverlayDiagnostics.ageMs(now, display.capturedAtMs)
+        val previousBoxes = previous?.boxes.orEmpty()
+        val moved = BoxMotion.positionsChanged(previousBoxes, display.boxes)
+        val cleared = display.boxes.isEmpty() && previousBoxes.isNotEmpty()
+        if (moved) boxUpdates.incrementAndGet()
+        removeCallbacks(expire)
+        if (display.boxes.isNotEmpty()) postDelayed(expire, BoxHold.HOLD_MS)
+        if (moved || cleared || previous == null || kept.isNotEmpty()) invalidate()
+        return null
+    }
+
+    /** Drops boxes when motion expires, without letting an older clear beat a newer frame. */
+    fun clearUpTo(sequence: Long) {
+        if (sequence < shownSequence) return
+        shownSequence = sequence
+        latest = null
+        frameAgeMs = 0
+        removeCallbacks(expire)
         invalidate()
     }
 
     fun clear() {
         latest = null
-        smoothBoxes.clear()
+        shownSequence = Long.MIN_VALUE
+        frameAgeMs = 0
+        removeCallbacks(expire)
         // A restarted camera session must be calibrated again.
         distanceEstimator.clear()
+        aimRay = null
         invalidate()
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w > 0 && h > 0 && latest?.boxes?.isNotEmpty() == true) invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        draws.incrementAndGet()
+        drawProbe(canvas)
         val frame = latest ?: return
-        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
-        // Fail closed: don't leave stale boxes floating over other apps.
-        if (SystemClock.elapsedRealtime() - receivedAt > 1300L) {
-            clear()
+        canvas.drawText(NearbyCandidates.CAPTION, dp(12f), dp(18f), text)
+        canvas.drawText(distanceEstimator.banner(frame.boxes), dp(12f), dp(34f), text)
+        canvas.drawText(RelativeDistanceEstimator.LIMITATION, dp(12f), dp(48f), note)
+        drawAim(canvas, frame)
+        if (frame.boxes.isEmpty()) return
+        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) {
+            // A draw before layout used to return here and never run again.
+            if (width <= 0 || height <= 0) {
+                post {
+                    if (width > 0 && height > 0 && latest?.boxes?.isNotEmpty() == true) invalidate()
+                }
+            }
             return
         }
         for (observation in frame.boxes) {
-            val desired = CoverGeometry.project(frame.width, frame.height, width, height, observation)
-            val current = smoothBoxes.getOrPut(observation.trackId) {
-                RectF(desired.left, desired.top, desired.right, desired.bottom)
-            }
-            // Visual interpolation reduces jumps; it does NOT create new detections.
-            current.left += (desired.left - current.left) * 0.40f
-            current.top += (desired.top - current.top) * 0.40f
-            current.right += (desired.right - current.right) * 0.40f
-            current.bottom += (desired.bottom - current.bottom) * 0.40f
+            val current = CoverGeometry.project(frame.width, frame.height, width, height, observation)
+                .let { RectF(it.left, it.top, it.right, it.bottom) }
 
             val color = when (observation.kind) {
                 "hand" -> 0xFFFFB300.toInt()
                 "face" -> 0xFF00D9FF.toInt()
                 else -> 0xFF80F45D.toInt()
             }
-            stroke.color = color
+            val locked = observation.trackId == distanceEstimator.selectedTrackId()
+            stroke.color = if (locked) Color.WHITE else color
+            stroke.strokeWidth = if (locked) dp(5f) else dp(2.5f)
             canvas.drawRoundRect(current, dp(7f), dp(7f), stroke)
-            val feet = distanceEstimator.estimate(frame.height, observation)
+            val feet = distanceEstimator.estimate(frame.height, observation, frame.sequence)
             val distanceLabel = if (feet == null) "" else " ~%.1f ft".format(
                 java.util.Locale.US, feet
             )
@@ -108,16 +230,62 @@ class TrackingOverlayView(context: Context) : View(context) {
             canvas.drawText(label, current.left + dp(6f), labelTop + dp(16f), text)
             if (observation.kind == "hand") {
                 point.color = color
+                handLine.color = color
                 val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
                 val ox = (width - frame.width * scale) / 2f
                 val oy = (height - frame.height * scale) / 2f
+                HandSkeleton.connections.forEach { (from, to) ->
+                    val start = observation.points.getOrNull(from) ?: return@forEach
+                    val end = observation.points.getOrNull(to) ?: return@forEach
+                    canvas.drawLine(
+                        ox + start.first * scale,
+                        oy + start.second * scale,
+                        ox + end.first * scale,
+                        oy + end.second * scale,
+                        handLine,
+                    )
+                }
                 observation.points.forEach { (x, y) ->
                     canvas.drawCircle(ox + x * scale, oy + y * scale, dp(2.5f), point)
                 }
             }
         }
-        // Smooth drawing on the display even while the detector processes its next frame.
-        postInvalidateDelayed(16L)
+    }
+
+    private fun drawAim(canvas: Canvas, frame: FrameDetections) {
+        val ray = aimRay ?: return
+        if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
+        val ox = (width - frame.width * scale) / 2f
+        val oy = (height - frame.height * scale) / 2f
+        fun px(x: Float, y: Float) = ox + x * scale to oy + y * scale
+        val start = px(ray.tipX, ray.tipY)
+        val end = px(ray.tipX + ray.dirX * ray.reach, ray.tipY + ray.dirY * ray.reach)
+        canvas.drawLine(start.first, start.second, end.first, end.second, rayPaint)
+        ray.joints.forEach { (x, y) ->
+            val at = px(x, y)
+            canvas.drawCircle(at.first, at.second, dp(4f), rayPaint)
+        }
+    }
+
+    private fun drawProbe(canvas: Canvas) {
+        val lines = probeLines
+        if (lines.isEmpty() || width <= 0) return
+        val left = dp(12f)
+        val top = dp(52f)
+        val lineH = dp(16f)
+        val pad = dp(8f)
+        var maxW = dp(120f)
+        for (line in lines) maxW = maxOf(maxW, text.measureText(line))
+        val right = (left + maxW + pad * 2).coerceAtMost(width - dp(12f))
+        val bottom = top + pad * 2 + lineH * lines.size
+        val box = RectF(left, top, right, bottom)
+        canvas.drawRoundRect(box, dp(6f), dp(6f), background)
+        stroke.color = 0xFF80F45D.toInt()
+        canvas.drawRoundRect(box, dp(6f), dp(6f), stroke)
+        lines.forEachIndexed { index, line ->
+            canvas.drawText(line, left + pad, top + pad + lineH * (index + 1) - dp(3f), text)
+        }
     }
 
     private fun dp(value: Float) = value * resources.displayMetrics.density

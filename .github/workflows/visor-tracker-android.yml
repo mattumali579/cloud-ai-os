@@ -2,8 +2,13 @@ name: Visor Tracker Android
 
 on:
   push:
+    branches:
+      - "**"
     tags:
       - "visor-tracker-v*"
+    paths:
+      - "experiments/visor-tracker-android/**"
+      - ".github/workflows/visor-tracker-android.yml"
   pull_request:
     paths:
       - "experiments/visor-tracker-android/**"
@@ -70,22 +75,30 @@ jobs:
           VISOR_SIGNING_STORE_PASSWORD: ${{ secrets.VISOR_TRACKER_STORE_PASSWORD }}
           VISOR_SIGNING_KEY_ALIAS: ${{ secrets.VISOR_TRACKER_KEY_ALIAS }}
           VISOR_SIGNING_KEY_PASSWORD: ${{ secrets.VISOR_TRACKER_KEY_PASSWORD }}
-        run: gradle --no-daemon assembleDebug testDebugUnitTest
+        run: |
+          gradle --no-daemon assembleRelease testDebugUnitTest
+          xml="app/build/test-results/testDebugUnitTest/TEST-com.mattumali.visortracker.PipelineReplayTest.xml"
+          test -f "$xml"
+          grep -q 'failures="0"' "$xml"
+          grep -q 'errors="0"' "$xml"
+      - name: Verify the stable signing certificate
+        if: steps.stable_signing.outputs.file != ''
+        working-directory: experiments/visor-tracker-android
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          digest=$("${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --print-certs "$apk" \
+            | sed -n 's/.*SHA-256 digest: *//p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          test "$digest" = "afb36d6baa0eb0b14e038ea7b141bc92662350bdfdf9be30151bb7d759a02308"
+          actual="$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -1)"
+          test "$actual" -gt 23
+          echo "Stable signer SHA-256 matches the installed Tracker certificate"
+          echo "versionCode $actual can replace published v23 without a new package id"
       - uses: actions/upload-artifact@v4
         with:
-          name: visor-tracker-debug-apk
-          path: experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk
+          name: visor-tracker-apk
+          path: experiments/visor-tracker-android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-      - name: Publish stable signed update to GitHub Releases
-        if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cp experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/Visor-Fast-Tracking.apk"
-          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/Visor-Fast-Tracking.apk" \
-            --title "Visor Fast Tracking ${GITHUB_REF_NAME#visor-tracker-v}" \
-            --notes "Signed same-package update for com.mattumali.visortracker.stable. Downloaded by the app's built-in updater."
-          echo "Published signed Tracker APK as a public GitHub Release" >> "$GITHUB_STEP_SUMMARY"
 
   validate-windows-migration-script:
     runs-on: windows-latest
@@ -115,7 +128,7 @@ jobs:
       - name: Download the freshly built stable replacement
         uses: actions/download-artifact@v4
         with:
-          name: visor-tracker-debug-apk
+          name: visor-tracker-apk
           path: /tmp/new-tracker
       - name: Download v0.5 legacy-package APK for conflict regression test
         env:
@@ -145,7 +158,123 @@ jobs:
             adb wait-for-device
             adb install /tmp/Visor-Fast-Tracking.apk
             adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
-            adb install /tmp/new-tracker/app-debug.apk
-            adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'
-            adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=7'
-            echo "PASS: same-package v0.7 Tracker installs alongside legacy on Android 16, no signing conflict"
+            if unzip -l /tmp/new-tracker/app-release.apk | grep -q 'lib/x86_64/'; then adb install /tmp/new-tracker/app-release.apk; adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'; adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=[1-9]'; else echo "INSTALL CHECK ONLY: release APK is arm64 and was not installed or executed on this x86_64 emulator. This job does not test object detection."; unzip -l /tmp/new-tracker/app-release.apk | grep 'lib/arm64-v8a/'; fi
+            echo "INSTALL CHECK ONLY: legacy package installed. Object detection was not run."
+
+  detector-simulation:
+    name: Real EfficientDet and overlay simulation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+      - name: Install Android SDK platform
+        run: sdkmanager --channel=3 --install "platforms;android-37.0" "build-tools;36.0.0"
+      - name: Build the emulator test APKs
+        working-directory: experiments/visor-tracker-android
+        run: gradle --no-daemon assembleDebug assembleDebugAndroidTest
+      - name: Refuse to skip when the test APK cannot run on this emulator
+        working-directory: experiments/visor-tracker-android
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          unzip -l "$apk" | grep -q 'lib/x86_64/' || {
+            echo "Detector simulation APK has no x86_64 MediaPipe library. Refusing to report a skipped run as success."
+            exit 1
+          }
+      - name: Enable KVM for detector emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=1"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run EfficientDet and overlay tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 3072M
+          heap-size: 512M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          emulator-boot-timeout: 900
+          script: bash experiments/visor-tracker-android/scripts/run-detector-simulation.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: visor-detector-simulation
+          path: ${{ runner.temp }}/detector-sim
+          if-no-files-found: warn
+
+  publish-release:
+    name: Publish signed release after tests and emulator check
+    if: startsWith(github.ref, 'refs/tags/visor-tracker-v') || github.ref == 'refs/heads/feat/visor-overlay-phase1'
+    needs: [build-and-test, install-android16-with-legacy-present, detector-simulation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the tested release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: visor-tracker-apk
+          path: /tmp/new-tracker
+      - name: Publish stable signed update to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY}"
+          TAG="${GITHUB_REF_NAME}"
+          # Publish the v0.28.1 (versionCode 29) hotfix once so the existing
+          # in-app release updater can discover it. Never replace that release
+          # automatically on later branch pushes.
+          if [[ "${GITHUB_REF}" == refs/heads/feat/visor-overlay-phase1 ]]; then
+            grep -Fq 'versionCode = 29' experiments/visor-tracker-android/app/build.gradle.kts
+            TAG="visor-tracker-v29"
+            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+              echo "Hotfix release already exists; not replacing it."
+              exit 0
+            fi
+          fi
+          APK="${RUNNER_TEMP}/Visor-Fast-Tracking.apk"
+          test -f /tmp/new-tracker/app-release.apk
+          cp /tmp/new-tracker/app-release.apk "$APK"
+          # Run 44105775371 built and tested v11, then `gh release create` failed
+          # because that job had no git checkout. Attach that artifact to the
+          # existing tag. Do not move or delete visor-tracker-v11.
+          if ! gh release view visor-tracker-v11 --repo "$REPO" >/dev/null 2>&1; then
+            if gh run download 44105775371 --repo "$REPO" -n visor-tracker-apk -D "${RUNNER_TEMP}/v11"; then
+              v11apk=$(find "${RUNNER_TEMP}/v11" -name '*.apk' | head -1)
+              if [ -n "${v11apk:-}" ]; then
+                mkdir -p "${RUNNER_TEMP}/v11-publish"
+                cp "$v11apk" "${RUNNER_TEMP}/v11-publish/Visor-Fast-Tracking.apk"
+                gh release create visor-tracker-v11 "${RUNNER_TEMP}/v11-publish/Visor-Fast-Tracking.apk" \
+                  --repo "$REPO" \
+                  --title "Visor Fast Tracking 11" \
+                  --notes "Signed arm64 build tested in Actions run 44105775371. Publishing failed because gh had no git checkout. This attaches that artifact to the existing tag and does not move the tag." \
+                  || echo "Could not attach the existing v11 artifact; continuing with ${TAG}"
+              fi
+            else
+              echo "v11 artifact is no longer downloadable; tag visor-tracker-v11 stays without a Release asset"
+            fi
+          fi
+          NOTES="Signed arm64 release for the S22 Ultra. Same package com.mattumali.visortracker.stable and the same signing certificate. One selected object box follows the chosen target. Calibrated distance is approximate and uses no depth sensor. It does not install other packages."
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" "$APK" --repo "$REPO" --target "$GITHUB_SHA" \
+              --title "Visor Fast Tracking ${TAG#visor-tracker-v}" \
+              --notes "$NOTES"
+          fi
+          echo "Published signed Tracker APK as a public GitHub Release" >> "$GITHUB_STEP_SUMMARY"
