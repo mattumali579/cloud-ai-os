@@ -28,6 +28,8 @@
 - Live Test C: Codex probe returned `AVAILABLE_SUBSCRIPTION` with `chatgpt_subscription`; the glasses host path ran for 42.9 seconds and correctly reported the branch, bridge entrypoint, and dirty files.
 - Live Test D: one multi-step request opened Calculator and Clock; both processes/windows were independently observed. Spoken delivery remains a physical-glasses test.
 - Related tests: `96 passed` for glasses/audit/vision; combined glasses/audit/vision/worker run had `113 passed` plus one expected isolated-worktree live-auth failure; rerunning the live phone suite with the existing secret loaded from the ignored main `.env` passed (`1 passed`, one pytest return-value warning). Compile checks passed.
+- Full repository run: `766 passed, 121 skipped`; four failures and thirteen setup errors were confined to job-agent tests whose intentionally untracked `data/applicant-profile.yaml` and `data/application_answers.yaml` are absent from the clean worktree. No glasses, worker, API, or recovered-code test failed.
+- Running installation: `CloudAIOS-JarvisGlasses` was restarted after the repair. It is `Running` with one launcher/child interpreter tree, connected/authenticated to Visor, offering the Jarvis computer tool, and executing `C:\Users\Admin\cloud-ai-os\scripts\jarvis_glasses.py`. Physical input is still blocked by the folded/not-Bluetooth-headset state.
 
 ## Patch review / repairs this session
 Preserved prior correct patches (PS 5.1 `Continue`, sanitized audit, session routing, Bluetooth 30s backoff, correlation IDs, Credential Manager audit URL). Operator voice timeout raised 120s → **900s** (2026-11-13 ~01:51) so Codex is not killed mid-task.
