@@ -54,6 +54,9 @@ def test_private_hotword_accepts_hey_jarvis_or_bare_jarvis_at_start():
     assert voice_request_phrases("jarvis") == ["Hey Jarvis", "Jarvis", "hey jarvis", "jarvis"]
     assert command_body("hey jarvis hey jarvis try again", "jarvis") == "try again"
     assert command_body("Jarvis open Chrome", "jarvis") == "open chrome"
+    assert command_body("type GLASSES-JARVIS-TEST and save it", "jarvis") == (
+        "type glasses-jarvis-test and save it"
+    )
 
 
 def test_bare_jarvis_only_arms_and_never_starts_empty_job(tmp_path: Path):
@@ -419,12 +422,16 @@ def test_notepad_document_workflow_is_classified_natively():
 def test_notepad_document_workflow_writes_verified_desktop_file(monkeypatch, tmp_path: Path):
     desktop = tmp_path / "Desktop"
     desktop.mkdir()
-    monkeypatch.setattr(jarvis_module.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(jarvis_module, "_user_folder", lambda name: desktop)
     monkeypatch.setattr(jarvis_module, "_open_target", lambda target: None)
     monkeypatch.setattr(jarvis_module, "_process_running", lambda name: name == "Notepad.exe")
-    monkeypatch.setattr(jarvis_module, "_window_visible", lambda name: True)
-    monkeypatch.setattr(jarvis_module, "_type_into_notepad", lambda text: None)
-    monkeypatch.setattr(jarvis_module, "_save_notepad_document", lambda path: None)
+    monkeypatch.setattr(jarvis_module, "_window_visible", lambda name: name == "jarvis-glasses-test.txt")
+    monkeypatch.setattr(
+        jarvis_module,
+        "_type_into_notepad",
+        lambda text, title_hint=None: (desktop / "jarvis-glasses-test.txt").write_text(text, encoding="utf-8"),
+    )
+    monkeypatch.setattr(jarvis_module, "_save_notepad_document", lambda path, title_hint=None: None)
     monkeypatch.setattr(jarvis_module.time, "sleep", lambda seconds: None)
 
     config = BridgeConfig("ws://127.0.0.1:7333/rpc", (tmp_path,))
@@ -436,6 +443,27 @@ def test_notepad_document_workflow_writes_verified_desktop_file(monkeypatch, tmp
     assert path.is_file()
     assert path.read_text(encoding="utf-8") == "GLASSES-JARVIS-TEST"
     assert answer == f"Confirmed Notepad saved GLASSES-JARVIS-TEST to {path}."
+
+
+def test_notepad_followup_uses_verified_default_acceptance_path(tmp_path: Path):
+    session = {
+        "active": True,
+        "last_actions": [
+            {
+                "command": "open notepad",
+                "classification": "open",
+                "result": "Confirmed Notepad is running.",
+            }
+        ],
+    }
+    assert jarvis_module.resolve_session_followup(
+        "type GLASSES-JARVIS-TEST and save it",
+        "jarvis",
+        session,
+    ) == (
+        "open Notepad, type GLASSES-JARVIS-TEST, save it to Desktop as "
+        "jarvis-glasses-test.txt"
+    )
 
 
 def test_claim_command_deduplicates_request_and_transcript_with_correlation_ids(tmp_path: Path):

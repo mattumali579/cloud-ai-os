@@ -1,5 +1,5 @@
 # Jarvis Glasses — Cursor Implementation Contract
-Status: **LOCAL IMPLEMENTATION IN PROGRESS; DESKTOP PATH PROVEN; NOT HARDWARE-VERIFIED** as of 2026-11-12. See JARVIS_GLASSES_PROGRESS.md.
+Status: **RECOVERED AND PC-VERIFIED; PHYSICAL GLASSES INPUT/OUTPUT STILL BLOCKED** as of 2026-11-19. See JARVIS_GLASSES_PROGRESS.md.
 Canonical tracking issue: https://github.com/mattumali579/cloud-ai-os/issues/22
 
 ## User's actual goal

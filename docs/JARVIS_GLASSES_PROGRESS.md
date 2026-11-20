@@ -1,21 +1,33 @@
 # Jarvis Glasses — Implementation Progress / Cursor Resume Ledger
 
-**Updated:** 2026-11-13 23:50:00Z (local 2026-11-13 17:50 America/Chicago)
-**Current status:** `BLOCKED` (hardware Cap2 still needs spoken E2E; software expanded — close apps native)
+**Updated:** 2026-11-20 02:24:00Z (local 2026-11-19 20:24 America/Chicago)
+**Current status:** `BLOCKED` on physical input/output proof; recovery branch is software-verified and the live Visor bridge is authenticated.
 
 **Issue #25 vision:** see [JARVIS_GLASSES_VISION_PROGRESS.md](JARVIS_GLASSES_VISION_PROGRESS.md). Software pipeline + 16 vision tests landed in worktree `cursor/issue-25-glasses-vision` and synced additively into this dirty checkout; **bridge not restarted**; camera hardware **not** verified. Preservation manifest: `_preservation/issue25_2026-11-13_17-33-46/`.
 
-**Failing hop:** Cap2 spoken proof not yet observed this session. Software path ready: bridge Running, Visor connected; Chrome close is native (not Codex).
+**Current failing hop:** the authenticated bridge reaches Visor, but `glasses.status` reports `worn=False`, `folded=True`, and the live bridge log repeatedly reports that the glasses are not the phone's Bluetooth headset. No current private transcript can reach the router in that state. The reported phrases “close the call” and “you haven't given me access to the computer” do not appear in the Jarvis bridge log, so they are upstream Visor/Meta-session responses rather than confirmed Jarvis errors. All required Visor methods, including `assistant.tools`, `assistant.tools.answer`, `voice.requests`, `voice.reply`, `voice.speak`, and `voice.transcripts`, are currently supported/granted.
 
 **Minimum user action:**
-1. Keep Ray-Ban Meta glasses worn; Visor open on the Samsung phone.
-2. Speak: “Hey Jarvis, open Chrome.” Then during listen: “Now search LSU construction management admissions.”
-3. Confirm Chrome opens, LSU search runs, both spoken replies hear through glasses, same `conversation_id` in `logs/jarvis-glasses.log` and `ops_audit.activity_log`.
+1. Unfold and wear the glasses, confirm they are the Samsung phone's active Bluetooth headset, and keep Visor visible.
+2. Speak the four acceptance commands in this document while the bridge log is being correlated.
+3. Confirm the actual Windows actions and both spoken replies; retain the same `conversation_id` for the follow-up.
 
 ## Sources of truth
 - Implementation contract: [JARVIS_GLASSES_IMPLEMENTATION.md](JARVIS_GLASSES_IMPLEMENTATION.md)
 - Acceptance issue: https://github.com/mattumali579/cloud-ai-os/issues/22 (open; do not close until hardware E2E)
 - Local code authoritative: `src/cloudos/glasses/`, `scripts/jarvis_glasses.py`, `scripts/run-jarvis-glasses.ps1`
+
+## 2026-11-19 recovery and verification
+
+- Preserved the previously untracked local implementation in Git recovery commit `2848dcb`, then integrated it on `codex/jarvis-glasses-recovery` from current `origin/master`.
+- Fixed a real false-completion defect found by PC Test B. “Type GLASSES-JARVIS-TEST and save it” previously reported `Saved with Ctrl+S` without creating a file and could target an unrelated Notepad tab. The workflow now resolves redirected Windows folders, opens and targets only the named tab, refuses unrelated overwrites, saves through Notepad, and reads the file back before reporting success.
+- Fixed `command_body()` treating the `JARVIS` substring inside `GLASSES-JARVIS-TEST` as an embedded wake word. Embedded routing now matches only a leading Jarvis/Hey Meta Ask Jarvis form.
+- Added two-turn Notepad session routing: after “open Notepad,” the canonical marker follow-up maps to the verified Desktop acceptance file.
+- Live PC Test A: `Confirmed Notepad is running.`
+- Live PC Test B: created `C:\Users\Admin\OneDrive\Desktop\jarvis-glasses-test.txt`; filesystem and visible Notepad tab both showed exactly `GLASSES-JARVIS-TEST` (19 bytes).
+- Live Test C: Codex probe returned `AVAILABLE_SUBSCRIPTION` with `chatgpt_subscription`; the glasses host path ran for 42.9 seconds and correctly reported the branch, bridge entrypoint, and dirty files.
+- Live Test D: one multi-step request opened Calculator and Clock; both processes/windows were independently observed. Spoken delivery remains a physical-glasses test.
+- Related tests: `96 passed` for glasses/audit/vision; combined glasses/audit/vision/worker run had `113 passed` plus one expected isolated-worktree live-auth failure; rerunning the live phone suite with the existing secret loaded from the ignored main `.env` passed (`1 passed`, one pytest return-value warning). Compile checks passed.
 
 ## Patch review / repairs this session
 Preserved prior correct patches (PS 5.1 `Continue`, sanitized audit, session routing, Bluetooth 30s backoff, correlation IDs, Credential Manager audit URL). Operator voice timeout raised 120s → **900s** (2026-11-13 ~01:51) so Codex is not killed mid-task.

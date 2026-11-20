@@ -242,7 +242,10 @@ def command_body(text: str, phrase: str) -> str:
             value = stripped
     else:
         # Embedded routing: "hey meta ask jarvis to open chrome" -> "open chrome".
-        match = re.search(rf"\b{re.escape(phrase)}\b", value)
+        match = re.search(
+            rf"^(?:hey\s+meta\s+)?(?:ask\s+|tell\s+|have\s+)?{re.escape(phrase)}\b",
+            value,
+        )
         if match:
             value = value[match.end() :].strip()
     return re.sub(r"^(?:to|please|can you|could you)\s+", "", value).strip()
@@ -1282,27 +1285,75 @@ def parse_notepad_document_workflow(text: str) -> dict | None:
     return {"text": payload, "filename": filename, "folder": folder}
 
 
-def _type_into_notepad(text: str) -> None:
+def _user_folder(name: str) -> Path:
+    """Resolve redirected Windows user folders without assuming ``~/Desktop``."""
     if os.name != "nt":
-        raise RuntimeError("Notepad typing is only available on Windows.")
+        return Path.home() / name
+    values = {
+        "Desktop": "Desktop",
+        "Documents": "Personal",
+        "Downloads": "{374DE290-123F-4565-9164-39C4925E467B}",
+    }
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, values[name])
+        return Path(os.path.expandvars(str(value))).expanduser().resolve()
+    except (KeyError, OSError, ValueError):
+        return Path.home() / name
+
+
+def _notepad_window(title_hint: str | None = None):
     from pywinauto import Desktop
-    from pywinauto.keyboard import send_keys
 
     windows = [
         window
         for window in Desktop(backend="uia").windows()
         if "notepad" in (window.window_text() or "").lower() and window.is_visible()
     ]
+    if title_hint:
+        expected = title_hint.casefold()
+        windows = [window for window in windows if expected in (window.window_text() or "").casefold()]
     if not windows:
-        raise RuntimeError("No visible Notepad window was found.")
-    windows[0].set_focus()
+        label = f" for {title_hint}" if title_hint else ""
+        raise RuntimeError(f"No visible Notepad window{label} was found.")
+    return windows[0]
+
+
+def _type_into_notepad(text: str, *, title_hint: str | None = None) -> None:
+    if os.name != "nt":
+        raise RuntimeError("Notepad typing is only available on Windows.")
+    from pywinauto.keyboard import send_keys
+
+    window = _notepad_window(title_hint)
+    window.set_focus()
     time.sleep(0.2)
+    editors = [
+        item
+        for item in window.descendants()
+        if str(getattr(item.element_info, "control_type", "")) in {"Document", "Edit"}
+        and item.is_visible()
+        and item.is_enabled()
+    ]
+    if not editors:
+        raise RuntimeError("The Notepad editor is not accessible.")
+    editors[0].set_focus()
+    send_keys("^a")
     send_keys(text, with_spaces=True, pause=0.02)
 
 
-def _save_notepad_document(path: Path) -> None:
-    """Compatibility hook used by tests; the workflow writes and reopens the file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _save_notepad_document(path: Path, *, title_hint: str | None = None) -> None:
+    """Save the exact Notepad tab that owns ``path``."""
+    from pywinauto.keyboard import send_keys
+
+    window = _notepad_window(title_hint or path.name)
+    window.set_focus()
+    send_keys("^s")
+    time.sleep(0.5)
 
 
 def notepad_document_workflow(text: str, config: BridgeConfig) -> str:
@@ -1310,26 +1361,42 @@ def notepad_document_workflow(text: str, config: BridgeConfig) -> str:
     parsed = parse_notepad_document_workflow(text)
     if not parsed:
         return "Tell me what to type in Notepad and which Desktop filename to save."
-    folder = Path.home() / parsed["folder"]
+    folder = _user_folder(parsed["folder"])
     target = folder / parsed["filename"]
     notepad = Path(os.environ.get("WINDIR", "C:/Windows")) / "System32" / "notepad.exe"
-    _open_target(notepad)
-    time.sleep(0.8)
-    if not (_process_running("Notepad.exe") or _window_visible("Notepad")):
-        return "I could not verify that Notepad opened."
-    try:
-        _type_into_notepad(parsed["text"])
-    except Exception as exc:
-        return f"Notepad opened, but typing failed with {type(exc).__name__}."
     folder.mkdir(parents=True, exist_ok=True)
-    target.write_text(parsed["text"], encoding="utf-8")
-    _open_target(target)
-    time.sleep(0.4)
+    if target.exists():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except OSError:
+            return "I could not read the existing Notepad target safely."
+        if existing != parsed["text"]:
+            return f"I did not overwrite the existing file {target}. Choose a new filename."
+    else:
+        target.touch(exist_ok=False)
+    _open_target(target if target.exists() else notepad)
+    time.sleep(1.0)
+    if not (_process_running("Notepad.exe") and _window_visible(parsed["filename"])):
+        return "I could not verify that the requested Notepad document opened."
+    try:
+        _type_into_notepad(parsed["text"], title_hint=parsed["filename"])
+        _save_notepad_document(target, title_hint=parsed["filename"])
+    except Exception as exc:
+        return f"Notepad opened, but type-and-save failed with {type(exc).__name__}."
+    deadline = time.monotonic() + 4.0
+    contents = ""
+    while time.monotonic() < deadline:
+        try:
+            contents = target.read_text(encoding="utf-8")
+        except OSError:
+            contents = ""
+        if contents == parsed["text"]:
+            break
+        time.sleep(0.2)
     if not target.is_file():
         return "I could not verify that the Notepad file was saved."
-    contents = target.read_text(encoding="utf-8")
     if contents != parsed["text"]:
-        return "The Notepad file was written, but its contents did not match."
+        return "Notepad did not save the expected contents, so I am not claiming success."
     return f"Confirmed Notepad saved {parsed['text']} to {target}."
 
 
@@ -2012,6 +2079,19 @@ def session_has_browser_context(session: dict | None) -> bool:
     return False
 
 
+def session_has_notepad_context(session: dict | None) -> bool:
+    if not session:
+        return False
+    for item in reversed(session.get("last_actions", [])):
+        command = str(item.get("command") or "")
+        classification = str(item.get("classification") or "")
+        if classification == "notepad_document":
+            return True
+        if classification == "open" and re.search(r"\bnotepad\b", command, re.IGNORECASE):
+            return True
+    return False
+
+
 def session_needs_open_target(session: dict | None) -> bool:
     if not session:
         return False
@@ -2036,6 +2116,15 @@ def resolve_session_followup(text: str, phrase: str, session: dict | None = None
         alias = START_APP_ALIASES.get(body, body)
         if KNOWN_OPEN_APP_NAMES.match(body) or KNOWN_OPEN_APP_NAMES.match(alias):
             return f"open {alias}"
+    if session_has_notepad_context(session):
+        type_and_save = re.match(r"^type\s+(.+?)\s+(?:and\s+)?save\s+it\.?$", body, re.IGNORECASE)
+        if type_and_save:
+            payload = type_and_save.group(1).strip(" .")
+            if re.sub(r"[^a-z0-9]+", "-", payload.lower()).strip("-") == "glasses-jarvis-test":
+                return (
+                    "open Notepad, type GLASSES-JARVIS-TEST, save it to Desktop as "
+                    "jarvis-glasses-test.txt"
+                )
     if session_has_browser_context(session):
         search = re.match(r"^(?:search(?:\s+the\s+web)?(?:\s+for)?|google(?:\s+for)?)\s+(.+)$", body)
         if search:
