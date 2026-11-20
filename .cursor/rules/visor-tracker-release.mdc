@@ -1,0 +1,18 @@
+---
+description: Ship Visor Fast Tracking APKs without waiting on emulator CI. Use for tracker version bumps, GitHub tags visor-tracker-v*, UPDATE THIS APP, and Android release workflow changes.
+globs:
+  - experiments/visor-tracker-android/**
+  - .github/workflows/visor-tracker-android.yml
+  - docs/VISOR_TRACKER_RELEASE.md
+alwaysApply: false
+---
+
+# Visor Tracker ship path
+
+Read and follow `docs/VISOR_TRACKER_RELEASE.md`.
+
+Publish the signed `Visor-Fast-Tracking.apk` as soon as `build-and-test` (unit tests + signing) succeeds. Tag `visor-tracker-vN` must match `versionCode` N.
+
+`publish-release` must keep `needs: [build-and-test]` only. Do not reattach emulator jobs (`detector-simulation`, Android 16 install check) as a publish gate.
+
+If GitHub or the in-app checker stalls: use **OPEN RELEASE PAGE**, direct download URLs, or create the Release from the already-signed Actions artifact. Do not make the owner wait on emulators.

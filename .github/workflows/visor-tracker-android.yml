@@ -1,5 +1,9 @@
 name: Visor Tracker Android
 
+# Ship rule: publish-release must depend only on build-and-test.
+# Emulator jobs are extra checks and must not gate UPDATE THIS APP.
+# See docs/VISOR_TRACKER_RELEASE.md.
+
 on:
   push:
     branches:
@@ -219,6 +223,7 @@ jobs:
   publish-release:
     name: Publish signed release after the unit-tested APK
     if: startsWith(github.ref, 'refs/tags/visor-tracker-v') || github.ref == 'refs/heads/feat/visor-overlay-phase1'
+    # Do not add emulator jobs here. Phone updates must not wait on them.
     needs: [build-and-test]
     runs-on: ubuntu-latest
     steps:

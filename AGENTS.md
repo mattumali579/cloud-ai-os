@@ -13,6 +13,12 @@
 - Preserve zero-unapproved-paid-inference behavior.
 - Prefer minimal patches over new architecture.
 
+## Visor Fast Tracking releases
+
+When shipping the Android Tracker APK, follow `docs/VISOR_TRACKER_RELEASE.md`.
+
+Publish the signed GitHub Release as soon as unit tests and signing succeed. Emulator jobs must not block the phone update. Keep a fallback (direct APK URLs and **OPEN RELEASE PAGE**) when GitHub stalls. Tag `visor-tracker-vN` must match `versionCode` N. Do not uninstall the installed app.
+
 ## Creative and outreach rules
 
 For any advertising, social creative, product creative, affiliate creative, or static-ad task, you MUST read and follow `docs/CREATIVE_QUALITY_STANDARD.md` before planning or producing assets.
