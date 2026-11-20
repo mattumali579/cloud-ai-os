@@ -1,5 +1,5 @@
-"""``task.run`` handler — executes a real task via the subscription-authenticated
-Claude Code CLI.
+"""``task.run`` handler — executes a real task via a subscription-authenticated
+Claude Code or Codex CLI.
 
 Runs on the HOST worker only: the CLI and its subscription credentials live in the
 user profile, not in a container image. The containerised worker never sees this
@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -55,6 +56,25 @@ DEFAULT_TIMEOUT_S = 900
 MAX_TIMEOUT_S = 3600
 OUTPUT_CAP = 60_000  # keep a runaway transcript out of the jobs table
 
+CODEX_VOICE_PROMPT = """You are the host-side operator for Jarvis on Matt's Windows 11 mini PC.
+Execute the user's task using the existing cloud-ai-os repository and installed tools. Reuse
+working integrations and verify the outcome. Do not send messages, publish, purchase, expose
+secrets, weaken security, delete user data, or alter credentials. If one of those is required,
+stop and say exactly what approval or manual step is needed. Do not attempt to control an
+elevated window; explain that Jarvis intentionally runs at standard-user integrity instead.
+Finish with a two-sentence plain English result suitable for text-to-speech; do not use Markdown.
+
+USER TASK:
+"""
+
+UNATTENDED_BLOCKED = re.compile(
+    r"\b(?:delete|remove|erase|wipe|format|send|email|message|post|publish|"
+    r"buy|purchase|pay|transfer|change\s+(?:a\s+)?password|"
+    r"(?:change|modify|remove|add)\s+(?:my\s+|an?\s+|the\s+)?account|"
+    r"(?:disable|weaken|bypass|change|modify)\s+(?:windows\s+)?(?:security|firewall|antivirus|uac))\b",
+    re.IGNORECASE,
+)
+
 
 def _workspace_root() -> Path:
     return Path(os.environ.get("TASK_WORKSPACE_ROOT") or DEFAULT_WORKSPACE_ROOT)
@@ -81,6 +101,69 @@ def _child_env() -> dict:
     return env
 
 
+def _run_codex(task: str, workspace: Path, timeout_s: int) -> dict:
+    """Run Codex with subscription auth and bounded writable directories."""
+    if UNATTENDED_BLOCKED.search(task):
+        raise CloudOSError(
+            ErrorCode.PRIVACY_BLOCKED,
+            "unattended Codex operator refused a high-risk action; use a purpose-built confirmed workflow",
+        )
+
+    from cloudos.contracts import ProviderState
+    from cloudos.router.providers import base, codex_cli
+
+    status = codex_cli.probe()
+    if status.state is not ProviderState.AVAILABLE_SUBSCRIPTION:
+        code = {
+            ProviderState.AUTH_REQUIRED: ErrorCode.AUTH_REQUIRED,
+            ProviderState.QUOTA_EXHAUSTED: ErrorCode.QUOTA_EXHAUSTED,
+            ProviderState.BILLING_RISK: ErrorCode.BILLING_RISK,
+        }.get(status.state, ErrorCode.DEPENDENCY_UNAVAILABLE)
+        raise CloudOSError(code, status.detail)
+
+    settings = __import__("cloudos.config", fromlist=["get_settings"]).get_settings()
+    binary = base.which(settings.codex_cli_bin) or settings.codex_cli_bin
+    result_file = workspace / "CODEX_RESULT.txt"
+    # The general router may use a separate Second Brain workspace. Jarvis PC
+    # operations must execute in the repository that owns this worker.
+    repo = Path(os.environ.get("CLOUDOS_ROOT") or Path(__file__).resolve().parents[3]).resolve()
+    argv = [
+        binary,
+        "exec",
+        "--ephemeral",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--color",
+        "never",
+        "-C",
+        str(repo),
+        "--output-last-message",
+        str(result_file),
+        CODEX_VOICE_PROMPT + task,
+    ]
+    started = datetime.now(timezone.utc)
+    result = base.RUNNER(argv, timeout=timeout_s, cwd=str(repo))
+    duration_s = round((datetime.now(timezone.utc) - started).total_seconds(), 1)
+    combined = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    if result.returncode != 0 or result.timed_out:
+        raise CloudOSError(
+            ErrorCode.DEPENDENCY_UNAVAILABLE,
+            ("Codex task timed out" if result.timed_out else f"Codex task failed with exit {result.returncode}"),
+            {"detail": combined[-400:]},
+        )
+    output = result_file.read_text(encoding="utf-8").strip() if result_file.is_file() else (result.stdout or "").strip()
+    if not output:
+        raise CloudOSError(ErrorCode.DEPENDENCY_UNAVAILABLE, "Codex returned no final result")
+    return {
+        "output": output[:OUTPUT_CAP],
+        "truncated": len(output) > OUTPUT_CAP,
+        "workspace": str(workspace),
+        "files_created": sorted(p.name for p in workspace.iterdir() if p.name != "TASK.txt"),
+        "duration_s": duration_s,
+        "provider": "codex",
+        "auth_mode": status.auth_mode,
+    }
+
+
 def handle_task_run(payload: dict) -> dict:
     payload = payload or {}
     task = (payload.get("task") or "").strip()
@@ -99,6 +182,12 @@ def handle_task_run(payload: dict) -> dict:
     workspace = _workspace_root() / f"{stamp}-{uuid.uuid4().hex[:6]}"
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "TASK.txt").write_text(task, encoding="utf-8")
+
+    provider = str(payload.get("provider") or "claude").strip().lower()
+    if provider == "codex":
+        return _run_codex(task, workspace, timeout_s)
+    if provider != "claude":
+        raise CloudOSError(ErrorCode.VALIDATION_ERROR, "provider must be 'claude' or 'codex'")
 
     cli = _find_cli()
     argv = [

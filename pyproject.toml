@@ -16,7 +16,9 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "dnspython>=2.6",
+    "visor-kit[network]>=0.1.1,<0.2",
     "playwright>=1.55,<2",
+    "pywinauto>=0.6.9,<0.7",
     "reportlab>=4.2,<5",
 ]
 
