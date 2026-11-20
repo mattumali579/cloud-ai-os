@@ -1278,13 +1278,13 @@ async def serve_once(config: BridgeConfig, token: str, *, status_only: bool = Fa
         if visor.supports("voice.transcripts"):
             workers.append(serve_private_hotword(visor, config, session))
             print(
-                "Jarvis session follow-ups: voice.reply listen follows session.active; "
-                "private transcripts enabled for active-session routing.",
+                "Jarvis session follow-ups: short replies keep listen active; operator jobs release the Visor call; "
+                "private transcripts enabled for named routing.",
                 flush=True,
             )
         else:
             print(
-                "Jarvis session follow-ups: voice.reply listen follows session.active; "
+                "Jarvis session follow-ups: short replies keep listen active; operator jobs release the Visor call; "
                 "voice.transcripts unavailable on this Visor session.",
                 flush=True,
             )
