@@ -1,0 +1,18 @@
+{
+  "video": "10917.mp4",
+  "source": "composited Live View screen recording, not raw camera",
+  "hud_version": "0.36.0 #37",
+  "notes": "Private owner footage. Labels are time ranges from watching 10917.mp4.",
+  "segments": [
+    {"t0": 0.0, "t1": 4.4, "hand": "open_palm", "target": "none", "note": "two open palms over the table"},
+    {"t0": 4.4, "t1": 12.0, "hand": "pointing", "target": "charger", "region": [0.30, 0.42, 0.58, 0.62], "note": "index at charger and cables"},
+    {"t0": 12.0, "t1": 24.5, "hand": "pointing", "target": "phone", "region": [0.48, 0.62, 0.92, 0.96], "note": "index at the phone"},
+    {"t0": 24.5, "t1": 29.0, "hand": "pointing", "target": "barrel", "region": [0.00, 0.36, 0.32, 0.62], "note": "index at the barrel"},
+    {"t0": 29.0, "t1": 41.0, "hand": "open_palm", "target": "none", "note": "open palm over the table"},
+    {"t0": 41.0, "t1": 47.5, "hand": "pointing", "target": "holster", "region": [0.42, 0.34, 0.72, 0.54], "note": "index at the holster"},
+    {"t0": 47.5, "t1": 52.5, "hand": "pointing", "target": "phone", "region": [0.48, 0.62, 0.92, 0.96], "note": "index at the phone again"},
+    {"t0": 52.5, "t1": 60.0, "hand": "pointing", "target": "chair", "region": [0.22, 0.06, 0.72, 0.38], "holdout": true, "note": "index at the chair"},
+    {"t0": 60.0, "t1": 71.5, "hand": "pointing", "target": "cylinder", "region": [0.32, 0.30, 0.58, 0.58], "note": "index at the small cylinder"},
+    {"t0": 71.5, "t1": 84.6, "hand": "pointing", "target": "optics", "region": [0.02, 0.52, 0.48, 0.88], "holdout": true, "note": "index at the optics"}
+  ]
+}

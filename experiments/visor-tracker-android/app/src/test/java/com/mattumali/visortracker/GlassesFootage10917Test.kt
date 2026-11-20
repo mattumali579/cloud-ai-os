@@ -42,10 +42,11 @@ class GlassesFootage10917Test {
         val hand = HandTrack.fromArmBox(arm(), width, height)
         val kept = HandPriority.apply(listOf(arm(), barrel(), phone(), hand), width, height)
         val frame = FrameDetections(width, height, kept)
+        assertEquals(112, IndexPoint.aimed(frame)!!.hit!!.trackId)
         val aim = AimLock()
         aim.observe(frame)
         val locked = aim.observe(frame)
-        assertEquals(112, locked.lockedId)
+        assertEquals(null, locked.lockedId)
     }
 
     @Test fun aPersonBoxIsNeverTheLock() {

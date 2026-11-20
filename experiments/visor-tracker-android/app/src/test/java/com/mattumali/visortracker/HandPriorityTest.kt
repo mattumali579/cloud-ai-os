@@ -84,6 +84,14 @@ class HandPriorityTest {
         assertTrue(visible.any { it.trackId == 7 })
     }
 
+    @Test fun anUncertainEdgeArmIsNotDrawnAsAnObject() {
+        val arm = BoxObservation("object", "object", 0.40f, 500f, 816f, 1080f, 1795f, trackId = 140)
+        val phone = BoxObservation("object", "book", 0.9f, 620f, 1550f, 950f, 2100f, trackId = 168)
+        val visible = HandPriority.apply(listOf(arm, phone), 1080, 2316)
+        assertFalse(visible.any { it.trackId == 140 })
+        assertTrue(visible.any { it.trackId == 168 })
+    }
+
     @Test fun aStandingPersonInTheSceneRemainsWithoutAHand() {
         val person = BoxObservation("object", "person", 0.9f, 40f, 0f, 120f, 180f, trackId = 4)
         val visible = HandPriority.apply(listOf(person), 200, 200)

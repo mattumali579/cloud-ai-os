@@ -201,21 +201,28 @@ class VisionPipeline(
                     optionalFailed = true
                     lastOptionalFault = it
                 }
-                if (handPass.boxes.isNotEmpty()) {
+                val arm = observed.firstOrNull { HandPriority.wearerArm(it, width, height) }
+                val planar = handPass.boxes.filter { IndexPoint.hasPlanarIndex(it) }
+                if (planar.isNotEmpty()) {
+                    recentHands = planar
+                    handMisses = 0
+                } else if (arm != null) {
+                    recentHands = listOf(HandTrack.fromArmBox(arm, width, height))
+                    handMisses = 0
+                } else if (handPass.boxes.isNotEmpty()) {
                     recentHands = handPass.boxes
                     handMisses = 0
                 } else {
                     handMisses += 1
-                    val arm = observed.firstOrNull { HandPriority.wearerArm(it, width, height) }
                     val keepPointing = recentHands.any { hand ->
                         !hand.held && IndexPoint.extended(hand, width, height) != null
                     }
-                    recentHands = when {
-                        arm != null -> listOf(HandTrack.fromArmBox(arm, width, height))
-                        keepPointing && recentHands.isNotEmpty() &&
-                            handMisses <= HAND_STALE_FRAMES ->
-                            recentHands.map { it.copy(held = false) }
-                        else -> emptyList()
+                    recentHands = if (keepPointing && recentHands.isNotEmpty() &&
+                        handMisses <= HAND_STALE_FRAMES
+                    ) {
+                        recentHands.map { it.copy(held = false) }
+                    } else {
+                        emptyList()
                     }
                 }
                 lastHandMs = handPass.modelMs

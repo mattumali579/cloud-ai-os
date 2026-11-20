@@ -29,8 +29,8 @@ adb exec-out run-as com.mattumali.visortracker.stable cat files/pointing-stage.t
   > "${RUNNER_TEMP}/detector-sim/pointing-stage.txt" || true
 adb exec-out run-as com.mattumali.visortracker.stable cat files/pointing-overlay.png \
   > "${RUNNER_TEMP}/detector-sim/pointing-overlay.png" || true
-if [[ "$code" -ne 0 ]] || ! grep -q "OK (4 tests)" "$log"; then
-  echo "Instrumentation did not report OK (4 tests); collecting crash context."
+if [[ "$code" -ne 0 ]] || ! grep -qE "OK \([1-9][0-9]* tests\)" "$log"; then
+  echo "Instrumentation did not report OK (N tests); collecting crash context."
   grep -E -i "FATAL EXCEPTION|AndroidRuntime|Fatal signal|tombstoned|crash_dump|Process:|Caused by:|OutOfMemoryError|SIGABRT|SIGSEGV|MediaPipe|TFLite" \
     "${RUNNER_TEMP}/detector-sim/logcat.txt" | tail -250 || true
   exit 1

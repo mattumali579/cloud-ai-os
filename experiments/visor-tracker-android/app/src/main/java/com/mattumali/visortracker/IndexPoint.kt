@@ -108,6 +108,18 @@ object IndexPoint {
         return if (next.ray.reach >= current.ray.reach) next else current
     }
 
+    /**
+     * True when the index is visibly stretched in the picture. A side-on
+     * MediaPipe blob is not this, and the forearm box is a better ray.
+     */
+    fun hasPlanarIndex(hand: BoxObservation): Boolean {
+        val points = hand.points
+        if (points.size < 21) return false
+        val palm = distance(points[INDEX_MCP], points[WRIST])
+        if (palm < 4f) return false
+        return distance(points[INDEX_TIP], points[INDEX_MCP]) >= palm * 0.50f
+    }
+
     fun extended(
         hand: BoxObservation,
         frameWidth: Int,
@@ -193,7 +205,7 @@ object IndexPoint {
         val tipZ = if (hasDepth) hand.depths[INDEX_TIP] else 0f
         return PointingRay(
             repaired.first, repaired.second, dirX, dirY, dirZ, tipZ, reach, joints,
-            depthDominant, reversible = sideOnPoint || depthDominant || planarAim < 8f,
+            depthDominant, reversible = !hand.synthetic && (sideOnPoint || depthDominant || planarAim < 8f),
         )
     }
 
@@ -273,12 +285,13 @@ object IndexPoint {
     }
 
     fun entered(ray: PointingRay, box: BoxObservation): Float? {
-        // Fingertip inside this box is a self-hit (arm labeled person, hand
-        // in front of a couch). 10912 locked those instead of the far object.
+        // A fingertip resting on a pointable object is that object. Callers
+        // already reject person, furniture, and frame-filling boxes, which is
+        // what 10912 was locking instead of the far target.
         if (ray.tipX >= box.left && ray.tipX <= box.right &&
             ray.tipY >= box.top && ray.tipY <= box.bottom
         ) {
-            return null
+            return 0f
         }
         var tMin = 0f
         var tMax = ray.reach
@@ -343,6 +356,11 @@ object IndexPoint {
             return false
         }
         if (box.label.equals("person", ignoreCase = true)) return false
+        val furniture = box.label.equals("dining table", ignoreCase = true) ||
+            box.label.equals("bed", ignoreCase = true) ||
+            box.label.equals("couch", ignoreCase = true) ||
+            box.label.equals("bench", ignoreCase = true)
+        if (furniture) return false
         if (frameWidth > 0 && frameHeight > 0) {
             val limit = frameWidth.toFloat() * frameHeight.toFloat() * MAX_POINTABLE_FRAME_FRACTION
             if (box.area() > limit) return false

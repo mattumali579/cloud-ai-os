@@ -2,6 +2,7 @@ package com.mattumali.visortracker
 
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Whole-hand identity uses the MediaPipe index fingertip as the primary
@@ -29,24 +30,29 @@ object HandTrack {
      */
     fun fromArmBox(arm: BoxObservation, frameWidth: Int, frameHeight: Int): BoxObservation {
         val margin = max(12f, kotlin.math.min(frameWidth, frameHeight) * 0.03f)
-        val midX = (arm.left + arm.right) * 0.5f
-        val midY = (arm.top + arm.bottom) * 0.5f
         val fromRight = frameWidth - arm.right <= margin
         val fromLeft = arm.left <= margin
         val fromBottom = frameHeight - arm.bottom <= margin
+        val maxSpan = min(arm.right - arm.left, frameWidth * 0.38f)
+        val left = if (fromRight) max(arm.left, arm.right - maxSpan) else arm.left
+        val right = if (fromLeft && !fromRight) min(arm.right, arm.left + maxSpan) else arm.right
+        val midX = (left + right) * 0.5f
+        val midY = (arm.top + arm.bottom) * 0.5f
+        val clipped = arm.copy(left = left, right = right)
         val wrist = when {
-            fromRight && (!fromLeft || arm.right - midX >= midX - arm.left) -> arm.right to midY
-            fromLeft -> arm.left to midY
-            fromBottom -> midX to arm.bottom
+            fromRight && (!fromLeft || clipped.right - midX >= midX - clipped.left) ->
+                clipped.right to midY
+            fromLeft -> clipped.left to midY
+            fromBottom -> midX to clipped.bottom
             else -> midX to midY
         }
         // Glasses Live View looks down at the table: the index is the far
         // top of the forearm box, not the floor-side corner.
-        val aimY = (arm.top + midY) * 0.5f
+        val aimY = (clipped.top + midY) * 0.5f
         val tip = when {
-            fromRight -> arm.left to aimY
-            fromLeft -> arm.right to aimY
-            else -> midX to arm.top
+            fromRight -> clipped.left to aimY
+            fromLeft -> clipped.right to aimY
+            else -> midX to clipped.top
         }
         fun along(t: Float) = wrist.first + (tip.first - wrist.first) * t to
             wrist.second + (tip.second - wrist.second) * t
@@ -75,6 +81,7 @@ object HandTrack {
             bottom = ys.maxOrNull() ?: arm.bottom,
             points = points,
             trackId = 0,
+            synthetic = true,
         )
     }
 

@@ -114,8 +114,14 @@ class AimLock(
         val aimedRay = IndexPoint.aimed(frame, preferId = current, minScore = minHandScore)
         val ray = aimedRay?.ray
         val visible = current != null && objects.any { it.trackId == current }
+        val measuredHand = frame.boxes.any { box ->
+            box.kind == "hand" && !box.synthetic && box.points.size >= 21 && box.score >= minHandScore
+        }
+        val inferredOnly = !measuredHand && frame.boxes.any { it.kind == "hand" && it.synthetic }
         if (current != null && !visible) {
-            val next = if (aimedRay?.hit != null) {
+            val next = if (inferredOnly) {
+                null
+            } else if (aimedRay?.hit != null) {
                 aimedRay.hit.trackId
             } else {
                 IndexPoint.replacement(objects, current)?.trackId
@@ -139,8 +145,20 @@ class AimLock(
         }
         lostFrames = 0
         val rayTarget = aimedRay?.hit?.trackId
-        val liveHand = frame.boxes.any { box ->
-            box.kind == "hand" && box.points.size >= 21 && box.score >= minHandScore
+        val inferredHand = frame.boxes.any { box -> box.kind == "hand" && box.synthetic }
+        val liveHand = measuredHand || inferredHand
+        // An arm-box skeleton is a guess. Draw it, but do not acquire or switch
+        // a lock from it. A visible lock stays until a measured hand moves it.
+        if (inferredHand && !measuredHand) {
+            // A forearm guess may keep a lock it still hits. It must not acquire,
+            // switch, or hold a target after the guess leaves that box.
+            if (current != null && rayTarget == current) return AimDecision(current, changed = false)
+            pendingId = null
+            pendingCount = 0
+            if (current == null) return AimDecision(null, changed = false)
+            lockedId = null
+            fingerLocked = false
+            return AimDecision(null, changed = true)
         }
         val aimed = when {
             rayTarget != null -> rayTarget

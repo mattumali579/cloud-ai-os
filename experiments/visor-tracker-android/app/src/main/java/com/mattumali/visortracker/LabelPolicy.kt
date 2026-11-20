@@ -43,6 +43,9 @@ object LabelPolicy {
             .sortedByDescending { it.score }
             .toList()
         val top = ranked.firstOrNull() ?: return null
+        // Keep "person" so HandPriority can drop a wearer arm. Rewriting it to
+        // "object" made 10917 lock the forearm as a table item.
+        if (top.name.equals("person", ignoreCase = true)) return top
         if (top.score < (strictFloor[top.name] ?: 0.45f)) return CategoryScore(UNCERTAIN, top.score)
         val rival = ranked.getOrNull(1)
         if (rival != null && top.score - rival.score < AMBIGUITY_MARGIN) {

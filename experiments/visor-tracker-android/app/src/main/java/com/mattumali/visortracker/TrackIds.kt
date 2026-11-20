@@ -17,6 +17,8 @@ data class BoxObservation(
     var trackId: Int = 0,
     /** True when this box is a remembered miss, not a measurement on this frame. */
     val held: Boolean = false,
+    /** True when the skeleton was built from an EfficientDet arm box, not MediaPipe. */
+    val synthetic: Boolean = false,
 ) {
     fun area(): Float = max(0f, right - left) * max(0f, bottom - top)
 }

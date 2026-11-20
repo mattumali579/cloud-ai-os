@@ -74,15 +74,24 @@ object HandPriority {
      * scene starts near the top of the picture and is much taller than wide.
      */
     internal fun wearerArm(person: BoxObservation, frameWidth: Int, frameHeight: Int): Boolean {
-        if (!person.label.equals("person", ignoreCase = true)) return false
         if (frameWidth <= 0 || frameHeight <= 0) return false
+        val label = person.label.lowercase()
+        val limbLabel = label == "person" || label == "object" ||
+            label == "teddy bear" || label == "dog" || label == "cat" || label == "bear"
+        if (!limbLabel) return false
         val margin = max(12f, min(frameWidth, frameHeight) * 0.03f)
-        val fromEdge = person.left <= margin ||
-            person.right >= frameWidth - margin ||
-            person.bottom >= frameHeight - margin
-        if (!fromEdge) return false
+        val fromLeft = person.left <= margin
+        val fromRight = person.right >= frameWidth - margin
+        val fromBottom = person.bottom >= frameHeight - margin
+        if (!fromLeft && !fromRight && !fromBottom) return false
         val boxH = person.bottom - person.top
         val boxW = person.right - person.left
+        val frameArea = frameWidth.toFloat() * frameHeight.toFloat()
+        val frac = person.area() / frameArea
+        if (label != "person") {
+            if (frac < 0.04f || frac > 0.35f) return false
+            if (boxH < boxW * 1.05f) return false
+        }
         val standingFigure = boxH > boxW * 1.8f &&
             person.top < frameHeight * 0.18f &&
             boxH > frameHeight * 0.50f

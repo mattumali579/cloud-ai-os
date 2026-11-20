@@ -74,6 +74,26 @@ class AimLockTest {
         assertFalse(once.changed)
     }
 
+    @Test fun anArmBoxGuessDoesNotAcquireOrStealALock() {
+        val phone = BoxObservation("object", "book", 0.9f, 60f, 20f, 95f, 50f, trackId = 4)
+        val guess = HandTrack.fromArmBox(
+            BoxObservation("object", "person", 0.8f, 0f, 10f, 100f, 80f, trackId = 8),
+            100,
+            100,
+        )
+        val fresh = AimLock()
+        fresh.observe(frame(phone, guess))
+        assertNull(fresh.observe(frame(phone, guess)).lockedId)
+        val aim = AimLock()
+        val cup = BoxObservation("object", "cup", 0.9f, 70f, 30f, 120f, 80f, trackId = 2)
+        val measured = pointingHand(90f, 50f)
+        val wide = { boxes: List<BoxObservation> -> FrameDetections(220, 160, boxes) }
+        aim.observe(wide(listOf(cup, phone, measured)))
+        assertEquals(2, aim.observe(wide(listOf(cup, phone, measured))).lockedId)
+        val sameGuess = measured.copy(synthetic = true)
+        assertEquals(2, aim.observe(wide(listOf(cup, phone, sameGuess))).lockedId)
+    }
+
     @Test fun aLiveHandDoesNotLockTheScreenCenterWhenTheRayMisses() {
         val aim = AimLock()
         val center = BoxObservation("object", "book", 0.95f, 40f, 40f, 60f, 60f, trackId = 1)

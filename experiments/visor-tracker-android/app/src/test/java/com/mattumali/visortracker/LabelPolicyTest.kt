@@ -19,7 +19,7 @@ class LabelPolicyTest {
         assertNotNull(shown)
         assertEquals("object", shown!!.name)
         assertEquals(DetectionPreset.FAST.scoreThreshold, shown.score, 0.001f)
-        assertNotNull(LabelPolicy.resolve(listOf(CategoryScore("person", 0.26f))))
+        assertEquals("person", LabelPolicy.resolve(listOf(CategoryScore("person", 0.26f))))
     }
 
     @Test fun aBlankOrNanScoreCannotReplaceTheRealCategoryScore() {

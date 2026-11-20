@@ -89,6 +89,13 @@ class IndexPointTest {
         assertNull(IndexPoint.extended(hand, 200, 200))
     }
 
+    @Test fun aFingertipRestingOnASmallObjectSelectsThatObject() {
+        val touched = BoxObservation("object", "cup", 0.8f, 70f, 40f, 110f, 80f, trackId = 9)
+        val beyond = BoxObservation("object", "book", 0.9f, 140f, 30f, 190f, 70f, trackId = 3)
+        val frame = FrameDetections(200, 200, listOf(touched, beyond, pointingHand(90f, 50f)))
+        assertEquals(9, IndexPoint.aimed(frame)!!.hit!!.trackId)
+    }
+
     @Test fun aBoxContainingTheFingertipIsNotTheAimTarget() {
         val sofa = BoxObservation("object", "couch", 0.9f, 40f, 20f, 190f, 160f, trackId = 144)
         val bottle = BoxObservation("object", "bottle", 0.8f, 120f, 30f, 170f, 70f, trackId = 7)
