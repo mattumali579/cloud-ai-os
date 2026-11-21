@@ -161,11 +161,12 @@ class IndexPointTest {
         val hand = pointingHand(90f, 50f).let { original ->
             val points = original.points.toMutableList()
             val mcp = points[IndexPoint.INDEX_MCP]
-            points[IndexPoint.INDEX_DIP] = points[IndexPoint.INDEX_PIP]
-            points[IndexPoint.INDEX_TIP] = mcp
-            points[12] = mcp.first + 2f to mcp.second + 3f
-            points[16] = mcp.first - 1f to mcp.second + 3f
-            points[20] = mcp.first - 2f to mcp.second + 2f
+            points[IndexPoint.INDEX_PIP] = mcp.first + 5f to mcp.second
+            points[IndexPoint.INDEX_DIP] = mcp.first + 7f to mcp.second
+            points[IndexPoint.INDEX_TIP] = mcp.first + 8f to mcp.second
+            points[12] = mcp.first - 5f to mcp.second + 10f
+            points[16] = mcp.first - 7f to mcp.second + 10f
+            points[20] = mcp.first - 10f to mcp.second + 10f
             original.copy(points = points)
         }
         val ray = IndexPoint.extended(hand, 200, 200)
@@ -174,16 +175,7 @@ class IndexPointTest {
         assertTrue(ray.tipX > hand.points[IndexPoint.INDEX_MCP].first)
     }
 
-    @Test fun aimedReturnsTheHitWithoutASecondPass() {
-        val cup = BoxObservation("object", "cup", 0.9f, 120f, 30f, 170f, 70f, trackId = 2)
-        val frame = FrameDetections(200, 200, listOf(cup, pointingHand(90f, 50f)))
-        val aimed = IndexPoint.aimed(frame)
-        assertEquals(2, aimed!!.hit!!.trackId)
-        assertTrue(aimed.ray.dirX > 0.5f)
-    }
-
-    @Test fun anInvertedSideOnRayFlipsToHitTheObject() {
-        val cup = BoxObservation("object", "cup", 0.9f, 10f, 40f, 40f, 70f, trackId = 7)
+    @Test fun aCurledFistNeverQualifiesAsSideOnPointing() {
         val hand = pointingHand(90f, 50f).let { original ->
             val points = original.points.toMutableList()
             val mcp = points[IndexPoint.INDEX_MCP]
@@ -194,11 +186,53 @@ class IndexPointTest {
             points[20] = mcp.first - 2f to mcp.second + 2f
             original.copy(points = points)
         }
+        val ray = IndexPoint.extended(hand, 200, 200)
+        assertNull(ray)
+    }
+
+    @Test fun flatHandWithMultipleExtendedFingersIsRejectedAsOpenPalm() {
+        val hand = pointingHand(90f, 50f).let { original ->
+            val points = original.points.toMutableList()
+            points[9] = 30f to 60f
+            points[10] = 50f to 60f
+            points[11] = 70f to 60f
+            points[12] = 85f to 60f
+            points[13] = 30f to 70f
+            points[14] = 50f to 70f
+            points[15] = 70f to 70f
+            points[16] = 85f to 70f
+            original.copy(points = points)
+        }
+        assertNull(IndexPoint.extended(hand, 200, 200))
+    }
+
+    @Test fun aimedReturnsTheHitWithoutASecondPass() {
+        val cup = BoxObservation("object", "cup", 0.9f, 120f, 30f, 170f, 70f, trackId = 2)
+        val frame = FrameDetections(200, 200, listOf(cup, pointingHand(90f, 50f)))
+        val aimed = IndexPoint.aimed(frame)
+        assertEquals(2, aimed!!.hit!!.trackId)
+        assertTrue(aimed.ray.dirX > 0.5f)
+    }
+
+    @Test fun aSideOnRayDoesNotReverseTowardObjectsBehind() {
+        val cup = BoxObservation("object", "cup", 0.9f, 10f, 40f, 40f, 70f, trackId = 7)
+        val hand = pointingHand(90f, 50f).let { original ->
+            val points = original.points.toMutableList()
+            val mcp = points[IndexPoint.INDEX_MCP]
+            points[IndexPoint.INDEX_PIP] = mcp.first + 5f to mcp.second
+            points[IndexPoint.INDEX_DIP] = mcp.first + 7f to mcp.second
+            points[IndexPoint.INDEX_TIP] = mcp.first + 8f to mcp.second
+            points[12] = mcp.first - 5f to mcp.second + 10f
+            points[16] = mcp.first - 7f to mcp.second + 10f
+            points[20] = mcp.first - 10f to mcp.second + 10f
+            original.copy(points = points)
+        }
         val raw = IndexPoint.extended(hand, 200, 200)!!
-        assertTrue(raw.reversible)
+        assertTrue(!raw.reversible)
         val oriented = IndexPoint.oriented(raw, listOf(cup), 200, 200)
-        assertTrue(oriented.dirX < 0f)
-        assertEquals(7, IndexPoint.alongRay(oriented, listOf(cup), null, frameWidth = 200, frameHeight = 200)!!.trackId)
+        assertTrue(oriented.dirX > 0f)
+        val hit = IndexPoint.alongRay(oriented, listOf(cup), null, frameWidth = 200, frameHeight = 200)
+        assertNull(hit)
     }
 
     @Test fun aPersonBoxIsNeverAPointableTarget() {
