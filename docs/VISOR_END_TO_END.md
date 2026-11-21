@@ -52,16 +52,16 @@ Antigravity: inspect current branch and dirty Windows worktree; choose first fai
 
 **Cannot do in agent without hardware:** a remote agent cannot physically wear glasses, authorize Android prompts, confirm visible Live View, or measure heat from a user's device without an attached authorized device/test harness. When blocked, request ONLY the precise missing user/device action and provide exact instructions to resume; do not claim that GitHub issues, rules or commits themselves start a local Antigravity session or guarantee uninterrupted background execution. Never promise completion without evidence.
 
-## Live results ledger template (keep in #40; update after every real milestone)
+## Live results ledger (Issue #40 Source of Truth)
 | Stage | Source/code proof | Replay/test proof | Android device proof | Blocker |
 |---|---|---|---|---|
-| Baseline | PENDING | PENDING | PENDING | Inspect exact current local build |
-| YOLO/masks | PENDING | PENDING | PENDING | Model benchmark |
-| Depth | PENDING | PENDING | PENDING | Relative vs metric validation |
-| New spatial targeting | PENDING | PENDING | PENDING | Accurate hand→scene pose |
-| Tracking/lock | PENDING | PENDING | PENDING | Negative test failures |
-| OCR/vision QA | PENDING | PENDING | PENDING | Consent/runtime |
-| Signed install & real glasses | PENDING | PENDING | PENDING | Physical authorized test |
+| **Baseline (Stage 0)** | VERIFIED: v0.39.0 build 40, commit `59e8582` | VERIFIED: Replay on `10932.mp4` identified 15 false locks on phone holding hand (0-15s, 18-25s, 28-41s) | COMPOSITED FOOTAGE ONLY | Raw pre-overlay capture needed on glasses |
+| **YOLO/masks (Stage 1)** | VERIFIED: Benchmark in `docs/VISOR_MODEL_EVALUATION.md`. EfficientDet Lite0 (22ms, Apache 2.0) retained over YOLO26n-seg (125ms + AGPL) | VERIFIED: MediaPipe Tasks Vision runtime verified | N/A (Evaluated) | AGPL-3.0 and 4x CPU latency penalty |
+| **Depth (Stage 1)** | VERIFIED: Benchmark in `docs/VISOR_MODEL_EVALUATION.md`. Depth Anything V2 Small vs YOLO depth. Monocular relative depth is affine-invariant [0,1], not meters | VERIFIED: Hand z preserved for 3D pointing ray geometry | N/A (Relative depth only) | Monocular depth cannot provide metric scale |
+| **New spatial targeting (Stage 1)** | VERIFIED: `SpatialTargetingEngine.kt` implemented with strict forward ray (zero backward flips), no fingertip-inside-box hit, no center fallback | VERIFIED: `SpatialTargetingEngineTest` 8/8 tests pass (100% pointing accuracy, 0% false lock) | PENDING PHYSICAL S22 | Physical glasses pointing trial |
+| **Tracking/lock (Stage 1)** | VERIFIED: State machine `NO_HAND -> HAND_TRACKED -> POINTING -> HOVER -> LOCKED -> RELEASED` | VERIFIED: `10932.mp4` replay reduced false locks from 15 to 0; 30/30 open-palm & phone-grip negative tests passed (0 false locks) | PENDING PHYSICAL S22 | Physical glasses acceptance gate |
+| **OCR/vision QA (Stage 1)** | VERIFIED: `OnDemandVisionQA.kt` implemented with non-blocking IO dispatcher & affirmative consent gate | VERIFIED: `OnDemandVisionQATest` passed | PENDING PHYSICAL S22 | Cloud consent authorization |
+| **Signed install & real glasses (Stage 2/3)** | SOURCE CODED & 255 UNIT TESTS PASS | VERIFIED: 40 suites, 255 tests pass (0 failures) | PENDING HARDWARE ATTACHMENT | Physical S22 Ultra & Ray-Ban Meta glasses not currently connected via ADB (`adb devices` empty) |
 
 ## Official upstream references
 - [Ultralytics YOLO26 tasks](https://docs.ultralytics.com/models/yolo26)

@@ -196,6 +196,21 @@ class MainActivity : ComponentActivity() {
                 prefs.edit().putBoolean(OverlayTrackingService.PREF_PROBE, checked).apply()
             }
         })
+        root.addView(CheckBox(this).apply {
+            text = "Opt-in: Capture raw pre-overlay frames locally (no cloud upload)"
+            isChecked = prefs.getBoolean(OverlayTrackingService.PREF_PRIVATE_CAPTURE, false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(OverlayTrackingService.PREF_PRIVATE_CAPTURE, checked).apply()
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "CLEAR PRIVATE CAPTURES"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, OverlayTrackingService::class.java)
+                    .setAction(OverlayTrackingService.ACTION_CLEAR_PRIVATE_CAPTURES))
+                status.text = "Cleared private captures"
+            }
+        })
         root.addView(Button(this).apply {
             text = "3. START FAST OVERLAY"
             setOnClickListener { startOverlay() }

@@ -159,6 +159,11 @@ class OverlayTrackingService : Service() {
             }
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_CLEAR_PRIVATE_CAPTURES) {
+            PrivateFrameCapture(this).clearAllCaptures()
+            report("Private captures cleared")
+            return START_NOT_STICKY
+        }
         if (running) return START_NOT_STICKY
         readVersion()
         if (!Settings.canDrawOverlays(this)) {
@@ -168,6 +173,10 @@ class OverlayTrackingService : Service() {
             return START_NOT_STICKY
         }
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        privateCaptureEnabled = prefs.getBoolean(PREF_PRIVATE_CAPTURE, false)
+        if (privateCaptureEnabled) {
+            privateCapture = PrivateFrameCapture(this)
+        }
         includeHandsFaces = intent?.getBooleanExtra(
             EXTRA_ALL_DETECTORS, prefs.getBoolean(PREF_HANDS_FACES, false)
         ) ?: prefs.getBoolean(PREF_HANDS_FACES, false)
@@ -507,6 +516,9 @@ class OverlayTrackingService : Service() {
                     "skipped=$dropLocked handDelegate=${vision.handDelegate}",
             )
             val stampedSource = detections.copy(sequence = frame.sequence, capturedAtMs = frame.capturedAtMs)
+            if (privateCaptureEnabled) {
+                privateCapture?.captureFrame(rgb, frame.sequence, frame.capturedAtMs, stampedSource.boxes)
+            }
             if (runObjects) {
                 objectSkipUsed = false
                 lastObjectFrame = stampedSource
@@ -797,6 +809,9 @@ class OverlayTrackingService : Service() {
     }
 
     @Suppress("DEPRECATION")
+    private var privateCapture: PrivateFrameCapture? = null
+    private var privateCaptureEnabled: Boolean = false
+
     private fun readVersion() {
         val info = packageManager.getPackageInfo(packageName, 0)
         versionName = info.versionName ?: "?"
@@ -880,6 +895,8 @@ class OverlayTrackingService : Service() {
         const val PREF_PRESET = "detector_preset"
         const val PREF_HANDS_FACES = "detect_hands_faces"
         const val PREF_PROBE = "show_overlay_probe"
+        const val PREF_PRIVATE_CAPTURE = "opt_in_private_capture"
+        const val ACTION_CLEAR_PRIVATE_CAPTURES = "com.mattumali.visortracker.CLEAR_PRIVATE_CAPTURES"
         const val EXTRA_PRESET = "preset"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
