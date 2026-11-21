@@ -24,4 +24,15 @@ class DetectionPresetTest {
         assertEquals("efficientdet_lite0.tflite", DetectionPreset.FAST.modelAsset)
         assertTrue(DetectionPreset.FAST.scoreThreshold <= LabelPolicy.MIN_SCORE)
     }
+
+    @Test fun yolo26SegPresetConfiguredCorrectly() {
+        assertEquals(DetectionPreset.YOLO26_SEG, DetectionPreset.read("YOLO26_SEG"))
+        assertEquals("yolo26n-seg.onnx", DetectionPreset.YOLO26_SEG.modelAsset)
+        assertEquals(640, DetectionPreset.YOLO26_SEG.maxFrameWidth)
+        assertEquals(0.25f, DetectionPreset.YOLO26_SEG.scoreThreshold, 0.001f)
+        assertEquals(8, DetectionPreset.YOLO26_SEG.maxResults)
+        assertTrue(DetectionPreset.YOLO26_SEG.isYolo)
+        org.junit.Assert.assertFalse(DetectionPreset.FAST.isYolo)
+        org.junit.Assert.assertFalse(DetectionPreset.ACCURATE.isYolo)
+    }
 }

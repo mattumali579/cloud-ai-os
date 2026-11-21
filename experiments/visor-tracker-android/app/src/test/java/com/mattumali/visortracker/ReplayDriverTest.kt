@@ -178,7 +178,7 @@ class ReplayDriverTest {
             }
             """{"kind":${quote(box.kind)},"label":${quote(box.label)},"score":${box.score},"left":${box.left},"top":${box.top},"right":${box.right},"bottom":${box.bottom},"track_id":${box.trackId}$points}"""
         }
-        return """{"state":${quote(step.state.name)},"lock_id":${jsonId(step.lockId)},"hit_id":${jsonId(step.hitId)},"ray":${step.ray},"tip_x":${step.tipX},"tip_y":${step.tipY},"dir_x":${step.dirX},"dir_y":${step.dirY},"reach":${step.reach},"boxes":[$boxes]}"""
+        return """{"state":${quote(step.state.name)},"targeting_state":${quote(step.targetingState.name)},"lock_id":${jsonId(step.lockId)},"hit_id":${jsonId(step.hitId)},"ray":${step.ray},"tip_x":${step.tipX},"tip_y":${step.tipY},"dir_x":${step.dirX},"dir_y":${step.dirY},"reach":${step.reach},"boxes":[$boxes]}"""
     }
 
     private fun jsonId(id: Int?): String = id?.toString() ?: "null"

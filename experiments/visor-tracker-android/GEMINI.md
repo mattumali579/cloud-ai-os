@@ -1,0 +1,5 @@
+# Antigravity — Visor Android workspace instruction
+
+This is the EXISTING Visor Android project, NOT a new app. The **only current tracker/vision mission** is [GitHub #40](https://github.com/mattumali579/cloud-ai-os/issues/40) and `../../docs/VISOR_END_TO_END.md`. If this module was copied into a standalone Windows checkout and the relative document is absent, read [the authoritative specification on GitHub](https://github.com/mattumali579/cloud-ai-os/blob/feat/visor-computer-vision-e2e/docs/VISOR_END_TO_END.md) before touching code.
+
+Implement the complete camera→object+depth+hands→new spatial target engine→automatic lock→HUD path, plus on-demand OCR/scene Q&A, while preserving Visor Live View, stable package ID/signing and local changes. No voice/pinch confirmation, no new project/server and no endless `IndexPoint.kt` threshold tweaking. Unit tests and synthetic video aren't device proof. Continue iteration through a measured physical-glasses acceptance test; **do not publish a new APK** until the specified device gate passes. Report blocking hardware actions honestly. This file points to ONE canonical spec; it is not a second competing specification.

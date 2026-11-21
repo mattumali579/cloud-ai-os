@@ -95,7 +95,9 @@ class OverlayTrackingService : Service() {
     private var streamJob: Job? = null
     private var running = false
     private var includeHandsFaces = false
-    private var preset = DetectionPreset.FAST
+    private var preset = DetectionPreset.YOLO26_SEG
+    private var enableDepth = true
+    private var depthBackendName = DepthEstimator.DepthBackend.YOLO26_DEPTH.name
     private var lastObjectOfferedAtMs = 0L
     private var lastHandOfferedAtMs = 0L
     @Volatile private var lastObjectFrame: FrameDetections? = null
@@ -159,6 +161,11 @@ class OverlayTrackingService : Service() {
             }
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_CLEAR_PRIVATE_CAPTURES) {
+            PrivateFrameCapture(this).clearAllCaptures()
+            report("Private captures cleared")
+            return START_NOT_STICKY
+        }
         if (running) return START_NOT_STICKY
         readVersion()
         if (!Settings.canDrawOverlays(this)) {
@@ -168,12 +175,21 @@ class OverlayTrackingService : Service() {
             return START_NOT_STICKY
         }
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        privateCaptureEnabled = prefs.getBoolean(PREF_PRIVATE_CAPTURE, false)
+        if (privateCaptureEnabled) {
+            privateCapture = PrivateFrameCapture(this)
+        }
         includeHandsFaces = intent?.getBooleanExtra(
             EXTRA_ALL_DETECTORS, prefs.getBoolean(PREF_HANDS_FACES, false)
         ) ?: prefs.getBoolean(PREF_HANDS_FACES, false)
         preset = DetectionPreset.read(
-            intent?.getStringExtra(EXTRA_PRESET) ?: prefs.getString(PREF_PRESET, null)
+            intent?.getStringExtra(EXTRA_PRESET) ?: prefs.getString(PREF_PRESET, DetectionPreset.YOLO26_SEG.name)
         )
+        enableDepth = intent?.getBooleanExtra(
+            EXTRA_ENABLE_DEPTH, prefs.getBoolean(PREF_ENABLE_DEPTH, true)
+        ) ?: prefs.getBoolean(PREF_ENABLE_DEPTH, true)
+        depthBackendName = intent?.getStringExtra(EXTRA_DEPTH_BACKEND)
+            ?: (prefs.getString(PREF_DEPTH_BACKEND, DepthEstimator.DepthBackend.YOLO26_DEPTH.name) ?: DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
 
         createChannel()
         startForeground(NOTIFICATION_ID, notification("Attaching the Live View proof mark"))
@@ -197,7 +213,12 @@ class OverlayTrackingService : Service() {
         refreshTile()
         mainHandler.removeCallbacks(diagnosticTick)
         mainHandler.post(diagnosticTick)
-        report("Loading " + preset.name.lowercase() + " detector (VDK video up to 30 FPS)")
+        val depthBackend = try {
+            DepthEstimator.DepthBackend.valueOf(depthBackendName ?: DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
+        } catch (_: Exception) {
+            DepthEstimator.DepthBackend.YOLO26_DEPTH
+        }
+        report("Loading " + preset.name.lowercase() + " detector with " + (if (enableDepth) depthBackend.name else "no depth") + " (VDK video up to 30 FPS)")
         worker.execute {
             try {
                 val ready = VisionPipeline(
@@ -205,13 +226,11 @@ class OverlayTrackingService : Service() {
                     includeFaces = includeHandsFaces,
                     preset = preset,
                     includeHands = true,
-                    // v0.28 phone stability hotfix: the original build starts
-                    // the GPU hand delegate and two native model calls at once.
-                    // Keep finger locking, object detection and the newer lock
-                    // logic, but use CPU and serialized inference until real
-                    // Android 16/Visor camera-stream testing proves overlap safe.
                     attemptGpu = false,
                     overlapModels = false,
+                    objectBackend = if (preset == DetectionPreset.YOLO26_SEG) VisionPipeline.ObjectBackend.YOLO26_SEG else VisionPipeline.ObjectBackend.EFFICIENT_DET,
+                    enableDepth = enableDepth,
+                    depthBackend = depthBackend,
                 )
                 mainHandler.post {
                     if (!running) {
@@ -506,7 +525,24 @@ class OverlayTrackingService : Service() {
                 "objects=$objectCount seq=${frame.sequence} objectsRan=$runObjects hands=$runHands " +
                     "skipped=$dropLocked handDelegate=${vision.handDelegate}",
             )
+            val currentPreset = preset
+            val currentDepth = if (enableDepth) depthBackendName else "OFF"
+            val currentObjMs = vision.lastObjectMs
+            val currentDepthMs = vision.lastDepthMs
+            val currentHandMs = vision.lastHandMs
+            mainHandler.post {
+                overlay?.setPipelineInfo(
+                    detector = if (currentPreset == DetectionPreset.YOLO26_SEG) "YOLO26n-seg" else currentPreset.name,
+                    depthBackend = currentDepth,
+                    objectMs = currentObjMs,
+                    depthMs = currentDepthMs,
+                    handMs = currentHandMs,
+                )
+            }
             val stampedSource = detections.copy(sequence = frame.sequence, capturedAtMs = frame.capturedAtMs)
+            if (privateCaptureEnabled) {
+                privateCapture?.captureFrame(rgb, frame.sequence, frame.capturedAtMs, stampedSource.boxes)
+            }
             if (runObjects) {
                 objectSkipUsed = false
                 lastObjectFrame = stampedSource
@@ -797,6 +833,9 @@ class OverlayTrackingService : Service() {
     }
 
     @Suppress("DEPRECATION")
+    private var privateCapture: PrivateFrameCapture? = null
+    private var privateCaptureEnabled: Boolean = false
+
     private fun readVersion() {
         val info = packageManager.getPackageInfo(packageName, 0)
         versionName = info.versionName ?: "?"
@@ -878,9 +917,15 @@ class OverlayTrackingService : Service() {
     companion object {
         const val PREFS = "tracker"
         const val PREF_PRESET = "detector_preset"
+        const val PREF_DEPTH_BACKEND = "depth_backend"
+        const val PREF_ENABLE_DEPTH = "enable_depth"
         const val PREF_HANDS_FACES = "detect_hands_faces"
         const val PREF_PROBE = "show_overlay_probe"
+        const val PREF_PRIVATE_CAPTURE = "opt_in_private_capture"
+        const val ACTION_CLEAR_PRIVATE_CAPTURES = "com.mattumali.visortracker.CLEAR_PRIVATE_CAPTURES"
         const val EXTRA_PRESET = "preset"
+        const val EXTRA_DEPTH_BACKEND = "depth_backend"
+        const val EXTRA_ENABLE_DEPTH = "enable_depth"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
         const val ACTION_CALIBRATE = "com.mattumali.visortracker.CALIBRATE_DISTANCE"

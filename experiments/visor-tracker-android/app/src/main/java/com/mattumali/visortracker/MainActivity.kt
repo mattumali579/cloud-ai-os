@@ -25,6 +25,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var accurate: CheckBox
     private lateinit var status: TextView
     private lateinit var installUpdate: Button
+    private var currentPreset: DetectionPreset = DetectionPreset.YOLO26_SEG
+    private var currentDepthEnabled: Boolean = true
+    private var currentDepthBackend: DepthEstimator.DepthBackend = DepthEstimator.DepthBackend.YOLO26_DEPTH
+    private lateinit var detectorButton: Button
+    private lateinit var depthButton: Button
 
     private val grantCamera = registerForActivityResult(RequestScopes()) { grants ->
         status.text = if (Scope.CAMERA in grants) {
@@ -90,16 +95,77 @@ class MainActivity : ComponentActivity() {
             }
         }
         root.addView(includeAll)
+        val savedPreset = prefs.getString(OverlayTrackingService.PREF_PRESET, DetectionPreset.YOLO26_SEG.name)
+        currentPreset = when (savedPreset) {
+            DetectionPreset.ACCURATE.name -> DetectionPreset.ACCURATE
+            DetectionPreset.FAST.name -> DetectionPreset.FAST
+            else -> DetectionPreset.YOLO26_SEG
+        }
+        currentDepthEnabled = prefs.getBoolean(OverlayTrackingService.PREF_ENABLE_DEPTH, true)
+        val savedDepth = prefs.getString(OverlayTrackingService.PREF_DEPTH_BACKEND, DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
+        currentDepthBackend = try {
+            DepthEstimator.DepthBackend.valueOf(savedDepth ?: DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
+        } catch (_: Exception) {
+            DepthEstimator.DepthBackend.YOLO26_DEPTH
+        }
+
+        detectorButton = Button(this).apply {
+            fun updateText() {
+                text = when (currentPreset) {
+                    DetectionPreset.YOLO26_SEG -> "AI Detector: YOLO26n-seg (ONNX Seg & Box) [ACTIVE]"
+                    DetectionPreset.FAST -> "AI Detector: EfficientDet-Lite0 (Fast Box)"
+                    DetectionPreset.ACCURATE -> "AI Detector: EfficientDet-Lite2 (Accurate Box)"
+                }
+            }
+            updateText()
+            setOnClickListener {
+                currentPreset = when (currentPreset) {
+                    DetectionPreset.YOLO26_SEG -> DetectionPreset.FAST
+                    DetectionPreset.FAST -> DetectionPreset.ACCURATE
+                    DetectionPreset.ACCURATE -> DetectionPreset.YOLO26_SEG
+                }
+                updateText()
+                accurate.isChecked = (currentPreset == DetectionPreset.ACCURATE)
+                prefs.edit().putString(OverlayTrackingService.PREF_PRESET, currentPreset.name).apply()
+            }
+        }
+        root.addView(detectorButton)
+
+        depthButton = Button(this).apply {
+            fun updateText() {
+                text = if (!currentDepthEnabled) {
+                    "Depth Backend: OFF [Tap to enable]"
+                } else when (currentDepthBackend) {
+                    DepthEstimator.DepthBackend.YOLO26_DEPTH -> "Depth Backend: YOLO26-Depth (Metric 3.0s) [ACTIVE]"
+                    DepthEstimator.DepthBackend.DEPTH_ANYTHING_V2 -> "Depth Backend: Depth Anything V2 Small (Dense 24s)"
+                }
+            }
+            updateText()
+            setOnClickListener {
+                if (!currentDepthEnabled) {
+                    currentDepthEnabled = true
+                    currentDepthBackend = DepthEstimator.DepthBackend.YOLO26_DEPTH
+                } else if (currentDepthBackend == DepthEstimator.DepthBackend.YOLO26_DEPTH) {
+                    currentDepthBackend = DepthEstimator.DepthBackend.DEPTH_ANYTHING_V2
+                } else {
+                    currentDepthEnabled = false
+                }
+                updateText()
+                prefs.edit()
+                    .putBoolean(OverlayTrackingService.PREF_ENABLE_DEPTH, currentDepthEnabled)
+                    .putString(OverlayTrackingService.PREF_DEPTH_BACKEND, currentDepthBackend.name)
+                    .apply()
+            }
+        }
+        root.addView(depthButton)
+
         accurate = CheckBox(this).apply {
-            text = "Higher accuracy (EfficientDet-Lite2; more battery / lower AI FPS)"
-            isChecked = DetectionPreset.read(
-                prefs.getString(OverlayTrackingService.PREF_PRESET, null)
-            ) == DetectionPreset.ACCURATE
+            text = "Legacy toggle: EfficientDet-Lite2 (Higher battery)"
+            isChecked = (currentPreset == DetectionPreset.ACCURATE)
             setOnCheckedChangeListener { _, checked ->
-                prefs.edit().putString(
-                    OverlayTrackingService.PREF_PRESET,
-                    if (checked) DetectionPreset.ACCURATE.name else DetectionPreset.FAST.name
-                ).apply()
+                currentPreset = if (checked) DetectionPreset.ACCURATE else DetectionPreset.FAST
+                detectorButton.text = if (checked) "AI Detector: EfficientDet-Lite2 (Accurate Box)" else "AI Detector: EfficientDet-Lite0 (Fast Box)"
+                prefs.edit().putString(OverlayTrackingService.PREF_PRESET, currentPreset.name).apply()
             }
         }
         root.addView(accurate)
@@ -194,6 +260,21 @@ class MainActivity : ComponentActivity() {
             isChecked = prefs.getBoolean(OverlayTrackingService.PREF_PROBE, true)
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean(OverlayTrackingService.PREF_PROBE, checked).apply()
+            }
+        })
+        root.addView(CheckBox(this).apply {
+            text = "Opt-in: Capture raw pre-overlay frames locally (no cloud upload)"
+            isChecked = prefs.getBoolean(OverlayTrackingService.PREF_PRIVATE_CAPTURE, false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(OverlayTrackingService.PREF_PRIVATE_CAPTURE, checked).apply()
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "CLEAR PRIVATE CAPTURES"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, OverlayTrackingService::class.java)
+                    .setAction(OverlayTrackingService.ACTION_CLEAR_PRIVATE_CAPTURES))
+                status.text = "Cleared private captures"
             }
         })
         root.addView(Button(this).apply {
@@ -352,9 +433,10 @@ class MainActivity : ComponentActivity() {
             startForegroundService(Intent(this, OverlayTrackingService::class.java)
                 .setAction(OverlayTrackingService.ACTION_START)
                 .putExtra(OverlayTrackingService.EXTRA_ALL_DETECTORS, includeAll.isChecked)
-                .putExtra(OverlayTrackingService.EXTRA_PRESET,
-                    if (accurate.isChecked) DetectionPreset.ACCURATE.name else DetectionPreset.FAST.name))
-            status.text = "Starting fast overlay; open Visor Live View"
+                .putExtra(OverlayTrackingService.EXTRA_PRESET, currentPreset.name)
+                .putExtra(OverlayTrackingService.EXTRA_ENABLE_DEPTH, currentDepthEnabled)
+                .putExtra(OverlayTrackingService.EXTRA_DEPTH_BACKEND, currentDepthBackend.name))
+            status.text = "Starting overlay with ${currentPreset.name}; open Visor Live View"
         } catch (error: Exception) {
             status.text = "Could not start tracking: " + error.message
         }

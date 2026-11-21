@@ -11,13 +11,11 @@
 - Never call something cloud or 24/7 until it works with the Windows laptop powered off.
 - Keep secrets outside Git.
 - Preserve zero-unapproved-paid-inference behavior.
-- Prefer minimal patches over new architecture.
+- Prefer minimal patches over new architecture unless the owner explicitly chooses a different architecture.
 
-## Visor Fast Tracking releases
+## Visor Tracker and computer vision — one active instruction
 
-When shipping the Android Tracker APK, follow `docs/VISOR_TRACKER_RELEASE.md`.
-
-Publish the signed GitHub Release as soon as unit tests and signing succeed. Emulator jobs must not block the phone update. Keep a fallback (direct APK URLs and **OPEN RELEASE PAGE**) when GitHub stalls. Tag `visor-tracker-vN` must match `versionCode` N. Do not uninstall the installed app.
+Read **`docs/VISOR_END_TO_END.md`** and follow GitHub issue **#40** for all Ray-Ban Meta / Visor **computer vision, pointing, depth, object tracking, locking and overlay** tasks. It supersedes old Visor tracking release rules and issue-specific phase tasks (#25/#36/#39). Do not ship a signed APK merely because unit tests and signing succeed. Require the specified real-device acceptance evidence. Implement the new spatial engine rather than repeating endless IndexPoint threshold fixes. This instruction applies only to Visor tracking/vision and does not cancel separate Jarvis voice remote-control work.
 
 ## Creative and outreach rules
 
@@ -27,8 +25,8 @@ For outreach, lead-gen, email, SMS, or campaign execution, you MUST read and fol
 
 The professional 2026-09-22 GOOD reference is the baseline. The first flat/template batch is a negative example and should be rejected unless explicitly requested.
 
-## Jarvis glasses full-computer voice control
+## Jarvis glasses full-computer voice control (separate from CV tracking)
 
 When the request concerns Ray-Ban Meta glasses, Visor, Jarvis voice control, computer access, voice follow-ups or continuous multi-step Windows actions, first read `docs/JARVIS_GLASSES_IMPLEMENTATION.md` and `docs/JARVIS_GLASSES_PROGRESS.md`, then execute against the real local Windows workspace. The tracking/acceptance issue is https://github.com/mattumali579/cloud-ai-os/issues/22 and Cursor guidance is in `.cursor/rules/jarvis-glasses.mdc`.
 
-Treat the specification as an implementation task, not just an analysis request: inspect existing local-only files, identify the first broken hop, implement minimal fixes, test end-to-end, and update the progress ledger after every meaningful check. Preserve other changes and require approvals for destructive/sensitive operations. Do not claim the glasses control Jarvis until verified through actual physical glasses → phone → Windows action → spoken response.
+For **computer vision and tracking**, the Visor instruction above takes precedence over voice-control documents. Treat the specification as an implementation task, not just an analysis request: inspect existing local-only files, identify the first broken hop, implement minimal fixes, test end-to-end, and update the progress ledger after every meaningful check. Preserve other changes and require approvals for destructive/sensitive operations. Do not claim the glasses control Jarvis until verified through actual physical glasses → phone → Windows action → spoken response.
