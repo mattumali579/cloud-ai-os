@@ -156,7 +156,9 @@ def test_send_item_cancels_through_the_same_refusal_step(monkeypatch):
                           (13, {"body": lambda b: b.replace('"stop"', "no")}, "qa: no opt-out line")):
         item = lead(n, **kw)
         conn, mb = WriteConn([item]), Mailbox()
-        assert sender.send_item(conn, item["row"], mb, {}, from_email="x@y.test") == "cancelled"
+        monkeypatch.setenv("OUTREACH_PROSPECT_SEND_ENABLED", "true")
+        resumed = {"campaign": {"enabled": True}}
+        assert sender.send_item(conn, item["row"], mb, resumed, from_email="x@y.test") == "cancelled"
         assert conn.updates == [("cancelled", reason, n)] and mb.sent == 0
 
 

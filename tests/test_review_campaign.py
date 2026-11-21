@@ -141,7 +141,15 @@ def test_peer_query_is_the_top_two_listings_in_the_candidate_cities_only():
     assert params[1] == ["austin"]
 
 
+def _resume(monkeypatch):
+    monkeypatch.setenv("OUTREACH_PROSPECT_SEND_ENABLED", "true")
+
+
+_RESUME_CFG = {"campaign": {"id": "google_reviews_maps_299", "enabled": True}}
+
+
 def test_queue_approved_keeps_ready_copy_when_replenish_is_canceled(monkeypatch):
+    _resume(monkeypatch)
     conn = _PlanConn(approved=0, copies=[{
         "company_id": "c1", "recipient": "owner@example.com", "company_name": "Acme Roofing",
         "subject": "Hello", "body": "Body", "copy_version": "claude-review-v1", "evidence": {},
@@ -153,7 +161,7 @@ def test_queue_approved_keeps_ready_copy_when_replenish_is_canceled(monkeypatch)
         raise RuntimeError("canceling statement due to statement timeout")
 
     monkeypatch.setattr(rc, "auto_prepare_campaign", boom)
-    out = rc.queue_approved(conn, postal_address="123 Main St, Austin, TX")
+    out = rc.queue_approved(conn, postal_address="123 Main St, Austin, TX", cfg=_RESUME_CFG)
     assert out["queued"] == 1 and out["error"] == "RuntimeError"
     assert conn.inserts == 1 and conn.commits >= 1
     # the heavy replenish never got as far as the Ready-table scan
@@ -161,9 +169,28 @@ def test_queue_approved_keeps_ready_copy_when_replenish_is_canceled(monkeypatch)
 
 
 def test_queue_approved_does_not_replenish_when_the_buffer_is_full(monkeypatch):
+    _resume(monkeypatch)
     conn = _PlanConn(approved=50, copies=[])
     called = []
     monkeypatch.setattr(rc, "auto_prepare_campaign", lambda *a, **k: called.append(1))
+    out = rc.queue_approved(conn, postal_address="123 Main St, Austin, TX", cfg=_RESUME_CFG)
+    assert called == [] and "error" not in out and out["queued"] == 0 and not out.get("paused")
+
+
+def test_queue_approved_does_not_recreate_rows_while_paused(monkeypatch):
+    monkeypatch.delenv("OUTREACH_PROSPECT_SEND_ENABLED", raising=False)
+    conn = _PlanConn(approved=0, copies=[{
+        "company_id": "c1", "recipient": "owner@example.com", "company_name": "Acme Roofing",
+        "subject": "Hello", "body": "original", "copy_version": "claude-review-v1", "evidence": {},
+    }])
+    called = []
+    monkeypatch.setattr(rc, "auto_prepare_campaign", lambda *a, **k: called.append(1))
     out = rc.queue_approved(conn, postal_address="123 Main St, Austin, TX")
-    assert called == [] and "error" not in out and out["queued"] == 0
+    assert out["paused"] is True and out["queued"] == 0 and out["blocked"] == 0
+    assert conn.inserts == 0 and conn.sql == [] and conn.commits == 0 and called == []
+    monkeypatch.setenv("OUTREACH_PROSPECT_SEND_ENABLED", "true")
+    # The env flag alone does not resume. campaign.enabled must be true as well.
+    still = rc.queue_approved(conn, postal_address="123 Main St, Austin, TX",
+                              cfg={"campaign": {"enabled": False}})
+    assert still["paused"] is True and conn.sql == [] and called == []
 

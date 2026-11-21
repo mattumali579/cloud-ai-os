@@ -12,6 +12,7 @@ Guarantees (tests/test_outreach_sender.py proves each one):
   * the send guard (outreach_send_check) runs immediately before every SMTP call, fail-closed
   * "sent" is written only after the SMTP server accepted the recipient
   * a worker that died mid-send never causes a resend: the Sent folder decides, else 'ambiguous'
+  * prospect cold SMTP stays off unless campaign.enabled and OUTREACH_PROSPECT_SEND_ENABLED are both on
 """
 from __future__ import annotations
 
@@ -38,6 +39,13 @@ from cloudos.outreach.transport import AuthError, Mailbox, build, new_message_id
 ROOT = REPO_ROOT
 CONFIG = REPO_ROOT / "config" / "outreach_sender.yaml"
 STALE_CLAIM = timedelta(minutes=15)
+# Accepted spellings of OUTREACH_PROSPECT_SEND_ENABLED. Anything else, including
+# unset and empty, is off. campaign.enabled must also be boolean true.
+_PROSPECT_SEND_TRUTHY = {"1", "true", "yes", "on"}
+PAUSE_REASON = (
+    "prospect sends paused: set campaign.enabled true in config/outreach_sender.yaml "
+    "and OUTREACH_PROSPECT_SEND_ENABLED=true"
+)
 _SUPPRESSED = {"email_suppressed", "domain_suppressed", "company_suppressed", "do_not_contact", "bounced"}
 _USABLE_CONTACT = "email_status IN ('validated','published')"     # the only contacts a first touch may go to
 _AUDIT_LABEL = re.compile(r"[a-z_]+")
@@ -48,6 +56,22 @@ COPY_RERENDER_V4 = "copy_rerender:v4"
 
 def load_config(path: Path = CONFIG) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def prospect_send_enabled(cfg: dict | None = None) -> bool:
+    """True only when cold prospect SMTP is explicitly resumed.
+
+    Both switches are required. An unset env var, a missing ``enabled`` key,
+    or ``enabled: false`` all refuse. Pass ``cfg`` to test a config object;
+    ``None`` reads the checked-in file. Reply, bounce, and unsubscribe paths
+    do not call this.
+    """
+    flag = (os.environ.get("OUTREACH_PROSPECT_SEND_ENABLED") or "").strip().lower()
+    if flag not in _PROSPECT_SEND_TRUTHY:
+        return False
+    if cfg is None:
+        cfg = load_config()
+    return ((cfg or {}).get("campaign") or {}).get("enabled") is True
 
 
 def worker_id() -> str:
@@ -369,9 +393,12 @@ def trade_ready_counts(conn, cfg: dict) -> dict:
 
 def plan(conn, cfg: dict, *, limit: int | None = None) -> dict:
     """Prepare first touches for Ready companies. Nothing is sent here."""
+    if not prospect_send_enabled(cfg):
+        # Do not insert, rewrite, or delete queue rows while prospect sending is paused.
+        return {"queued": 0, "blocked": {}, "paused": True, "stopped": PAUSE_REASON}
     active = (cfg.get("campaign") or {}).get("id")
     if active == review_campaign.CAMPAIGN:
-        return review_campaign.queue_approved(conn, postal_address=postal_address(), limit=limit)
+        return review_campaign.queue_approved(conn, postal_address=postal_address(), limit=limit, cfg=cfg)
     migrated = rerender_queued_v4(conn, cfg)
     refreshed = refresh_queued(conn, cfg)
     have, have_v4 = queue_first_touch_counts(conn)
@@ -597,7 +624,11 @@ def audit_queue(conn) -> dict:
 
 
 def send_item(conn, item: dict, mailbox: Mailbox, cfg: dict, *, from_email: str) -> str:
-    """Returns: sent | cancelled | failed | retry | ambiguous | auth."""
+    """Returns: sent | cancelled | failed | retry | ambiguous | auth | paused."""
+    if not prospect_send_enabled(cfg):
+        # Put a claimed row back. Do not cancel it and do not touch its copy.
+        _release(conn, item, undo_attempt=True)
+        return "paused"
     refusal = _refusal(conn, item)
     if refusal:
         why, reasons = refusal
@@ -704,9 +735,20 @@ def sweep(conn, cfg: dict) -> dict:
     return {"cancelled": len(rows), "rows": [dict(r) for r in rows]}
 
 
+def _paused_run(cfg: dict, now: Callable[[], datetime]) -> dict:
+    window = in_window(cfg, now()) if (cfg or {}).get("pacing") else False
+    return {
+        "sent": 0, "cancelled": 0, "failed": 0, "retry": 0, "ambiguous": 0, "throttled": 0,
+        "auth_failed": False, "paused": True, "stopped": PAUSE_REASON, "cap": None,
+        "sent_24h_before": None, "in_window": window,
+    }
+
+
 def run(conn, mailbox: Mailbox, cfg: dict, *, from_email: str, minutes: float, followups: bool = True,
         sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> dict:
+    if not prospect_send_enabled(cfg):
+        return _paused_run(cfg, now)
     who = worker_id()
     bad_run = 0
     deadline = clock() + minutes * 60
@@ -730,6 +772,10 @@ def run(conn, mailbox: Mailbox, cfg: dict, *, from_email: str, minutes: float, f
             stats["stopped"] = "nothing due"
             break
         outcome = send_item(conn, item, mailbox, cfg, from_email=from_email)
+        if outcome == "paused":
+            stats["paused"] = True
+            stats["stopped"] = PAUSE_REASON
+            break
         if outcome == "auth":
             stats["auth_failed"] = True
             break
