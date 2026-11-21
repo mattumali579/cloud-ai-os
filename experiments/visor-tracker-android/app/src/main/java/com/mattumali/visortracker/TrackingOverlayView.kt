@@ -69,8 +69,29 @@ class TrackingOverlayView(context: Context) : View(context) {
     private val boxUpdates = AtomicInteger(0)
     private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
+    private val spatialEngine = SpatialTargetingEngine()
     private val nearby = NearbyCandidates()
     private var aimRay: PointingRay? = null
+    var activeDetector: String = "YOLO26n-seg"
+    var activeDepthBackend: String = "YOLO26-Depth"
+    var lastObjectMs: Long = 0L
+    var lastDepthMs: Long = 0L
+    var lastHandMs: Long = 0L
+
+    fun setPipelineInfo(
+        detector: String,
+        depthBackend: String,
+        objectMs: Long,
+        depthMs: Long,
+        handMs: Long,
+    ) {
+        activeDetector = detector
+        activeDepthBackend = depthBackend
+        lastObjectMs = objectMs
+        lastDepthMs = depthMs
+        lastHandMs = handMs
+        postInvalidate()
+    }
     private val rayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = dp(3f)
@@ -160,15 +181,35 @@ class TrackingOverlayView(context: Context) : View(context) {
 
     fun updateFrame(frame: FrameDetections): String? {
         val previous = latest
-        val lockedId = distanceEstimator.selectedTrackId()
+        val spatialOutput = spatialEngine.step(frame)
+        val lockedId = spatialOutput.lockId ?: distanceEstimator.selectedTrackId()
+        val aimId = spatialOutput.hitId
+        val ray = spatialOutput.ray
+        aimRay = if (ray != null) {
+            PointingRay(
+                tipX = ray.tipX,
+                tipY = ray.tipY,
+                dirX = ray.dirX,
+                dirY = ray.dirY,
+                dirZ = ray.dirZ,
+                reach = ray.reach,
+                joints = ray.joints,
+                reversible = false,
+            )
+        } else null
+
         val incomingHands = HandTrack.forDisplay(frame.boxes)
-        val aimed = if (incomingHands.isEmpty()) null else IndexPoint.aimed(frame, preferId = lockedId)
-        aimRay = aimed?.ray
-        val aimId = aimed?.hit?.trackId
         val incomingObjects = if (frame.boxes.isEmpty()) {
             emptyList()
         } else {
-            nearby.select(frame.width, frame.height, frame.boxes, lockedId, aimId)
+            val objs = frame.boxes.filter { it.kind == "object" }
+            if (lockedId != null) {
+                objs.sortedByDescending { it.trackId == lockedId }
+            } else if (aimId != null) {
+                objs.sortedByDescending { it.trackId == aimId }
+            } else {
+                objs
+            }
         }
         val incoming = HandTrack.compose(incomingObjects, incomingHands)
         val now = SystemClock.elapsedRealtime()
@@ -220,6 +261,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         removeCallbacks(expire)
         // A restarted camera session must be calibrated again.
         distanceEstimator.clear()
+        spatialEngine.reset()
         aimRay = null
         invalidate()
     }
@@ -234,7 +276,16 @@ class TrackingOverlayView(context: Context) : View(context) {
         draws.incrementAndGet()
         val frame = latest
         val hud = frame?.let {
-            TrainingHud.status(it, distanceEstimator.selectedTrackId(), aimRay)
+            TrainingHud.status(
+                it,
+                spatialEngine.currentLockedId ?: distanceEstimator.selectedTrackId(),
+                aimRay,
+                detector = activeDetector,
+                depthBackend = activeDepthBackend,
+                objectMs = lastObjectMs,
+                depthMs = lastDepthMs,
+                handMs = lastHandMs,
+            )
         }
         drawHud(canvas, hud)
         drawProbe(canvas)
@@ -267,16 +318,38 @@ class TrackingOverlayView(context: Context) : View(context) {
                 "arm" -> 0x66FFB020.toInt()
                 else -> 0xFF80F45D.toInt()
             }
-            val locked = observation.trackId == distanceEstimator.selectedTrackId() ||
-                observation.trackId == aimed?.trackId
+            val locked = observation.trackId == spatialEngine.currentLockedId ||
+                observation.trackId == distanceEstimator.selectedTrackId() ||
+                (aimRay != null && observation.trackId == spatialEngine.currentHoverId)
             stroke.color = if (locked) Color.WHITE else color
             stroke.strokeWidth = if (locked) dp(5f) else dp(2.5f)
             canvas.drawRoundRect(current, dp(7f), dp(7f), stroke)
+
+            // Draw instance segmentation mask contour polygon if available
+            if (observation.points.isNotEmpty() && observation.kind == "object") {
+                val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
+                val ox = (width - frame.width * scale) / 2f
+                val oy = (height - frame.height * scale) / 2f
+                handPath.reset()
+                val p0 = observation.points[0]
+                handPath.moveTo(ox + p0.first * scale, oy + p0.second * scale)
+                for (idx in 1 until observation.points.size) {
+                    val pt = observation.points[idx]
+                    handPath.lineTo(ox + pt.first * scale, oy + pt.second * scale)
+                }
+                handPath.close()
+                canvas.drawPath(handPath, stroke)
+            }
+
             val feet = distanceEstimator.estimate(frame.height, observation, frame.sequence)
-            val distanceLabel = if (feet == null) "" else " ~%.1f ft".format(
-                java.util.Locale.US, feet
-            )
-            val label = observation.label + " #" + observation.trackId + distanceLabel
+            val metricDepth = observation.depths.firstOrNull()
+            val distanceLabel = if (feet != null) {
+                " ~%.1f ft".format(java.util.Locale.US, feet)
+            } else if (metricDepth != null && metricDepth > 0f) {
+                " ~%.2f m".format(java.util.Locale.US, metricDepth)
+            } else ""
+            val lockTag = if (locked) " [LOCKED]" else ""
+            val label = observation.label + " #" + observation.trackId + distanceLabel + lockTag
             val labelW = text.measureText(label) + dp(12f)
             val labelTop = (current.top - dp(25f)).coerceAtLeast(0f)
             canvas.drawRoundRect(

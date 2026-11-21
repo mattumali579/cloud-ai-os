@@ -45,15 +45,15 @@ data class FrameDetections(
 class VisionPipeline(
     context: Context,
     private val includeFaces: Boolean = false,
-    private val preset: DetectionPreset = DetectionPreset.FAST,
+    private val preset: DetectionPreset = DetectionPreset.YOLO26_SEG,
     private val includeHands: Boolean = false,
     private val handLongSide: Int = HAND_FRAME,
     private val numHands: Int = HAND_COUNT,
     private val attemptGpu: Boolean = true,
     val overlapModels: Boolean = true,
-    val objectBackend: ObjectBackend = ObjectBackend.EFFICIENT_DET,
-    val enableDepth: Boolean = false,
-    val depthBackend: DepthEstimator.DepthBackend = DepthEstimator.DepthBackend.DEPTH_ANYTHING_V2,
+    val objectBackend: ObjectBackend = ObjectBackend.YOLO26_SEG,
+    val enableDepth: Boolean = true,
+    val depthBackend: DepthEstimator.DepthBackend = DepthEstimator.DepthBackend.YOLO26_DEPTH,
 ) : AutoCloseable {
     enum class ObjectBackend {
         EFFICIENT_DET,
@@ -67,6 +67,13 @@ class VisionPipeline(
     private val faces: FaceDetector?
     val yolo26: Yolo26Segmentation?
     val depthEstimator: DepthEstimator?
+    private val depthExecutor: java.util.concurrent.ExecutorService? = if (enableDepth) {
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "DepthEstimatorThread").apply { priority = Thread.MIN_PRIORITY }
+        }
+    } else null
+    private val isDepthBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var latestDepthMap: DepthEstimator.DepthMap? = null
     private var frameNumber = 0
     private var recentObjects = emptyList<BoxObservation>()
     private var recentHands = emptyList<BoxObservation>()
@@ -220,15 +227,39 @@ class VisionPipeline(
                     }
                 }
 
-                if (enableDepth && depthEstimator != null) {
-                    val depthStarted = android.os.SystemClock.elapsedRealtime()
-                    val depthMap = depthEstimator.estimate(source)
-                    lastDepthMs = android.os.SystemClock.elapsedRealtime() - depthStarted
-                    if (depthMap != null) {
+                if (enableDepth && depthEstimator != null && depthExecutor != null) {
+                    if (isDepthBusy.compareAndSet(false, true)) {
+                        val depthBitmap = try {
+                            source.copy(source.config ?: Bitmap.Config.ARGB_8888, false)
+                        } catch (_: Exception) {
+                            null
+                        }
+                        if (depthBitmap != null) {
+                            depthExecutor.execute {
+                                try {
+                                    val depthStarted = android.os.SystemClock.elapsedRealtime()
+                                    val map = depthEstimator.estimate(depthBitmap)
+                                    lastDepthMs = android.os.SystemClock.elapsedRealtime() - depthStarted
+                                    if (map != null) {
+                                        latestDepthMap = map
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Background depth estimation failure: ${e.message}")
+                                } finally {
+                                    depthBitmap.recycle()
+                                    isDepthBusy.set(false)
+                                }
+                            }
+                        } else {
+                            isDepthBusy.set(false)
+                        }
+                    }
+                    val currentMap = latestDepthMap
+                    if (currentMap != null) {
                         for (i in observed.indices) {
                             val b = observed[i]
                             if (b.kind == "object") {
-                                val d = depthMap.getMedianDepthInBox(b.left, b.top, b.right, b.bottom, width, height)
+                                val d = currentMap.getMedianDepthInBox(b.left, b.top, b.right, b.bottom, width, height)
                                 observed[i] = b.copy(depths = listOf(d))
                             }
                         }
@@ -401,6 +432,7 @@ class VisionPipeline(
         objects?.close()
         yolo26?.close()
         depthEstimator?.close()
+        depthExecutor?.shutdownNow()
     }
 
     private inner class HandRuntime(

@@ -72,6 +72,9 @@ class SpatialTargetingEngine(
     private var switchCount: Int = 0
     private var lostFrames: Int = 0
 
+    val currentLockedId: Int? get() = lockedId
+    val currentHoverId: Int? get() = pendingHoverId
+
     fun reset() {
         currentState = State.NO_HAND
         lockedId = null
@@ -514,7 +517,7 @@ class SpatialTargetingEngine(
             for (box in candidateObjects) {
                 // If box has instance segmentation mask points, verify ray passes near or through mask
                 val t = if (box.points.isNotEmpty() && box.kind == "object") {
-                    rayMaskIntersectionDistance(ray, box) ?: rayBoxIntersectionDistance(ray, box)
+                    rayMaskIntersectionDistance(ray, box)
                 } else {
                     rayBoxIntersectionDistance(ray, box)
                 }

@@ -50,7 +50,15 @@ class TrackerQuickTile : TileService() {
                     )
                     .putExtra(
                         OverlayTrackingService.EXTRA_PRESET,
-                        prefs.getString(OverlayTrackingService.PREF_PRESET, DetectionPreset.FAST.name)
+                        prefs.getString(OverlayTrackingService.PREF_PRESET, DetectionPreset.YOLO26_SEG.name)
+                    )
+                    .putExtra(
+                        OverlayTrackingService.EXTRA_ENABLE_DEPTH,
+                        prefs.getBoolean(OverlayTrackingService.PREF_ENABLE_DEPTH, true)
+                    )
+                    .putExtra(
+                        OverlayTrackingService.EXTRA_DEPTH_BACKEND,
+                        prefs.getString(OverlayTrackingService.PREF_DEPTH_BACKEND, DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
                     )
             )
             updateState()
