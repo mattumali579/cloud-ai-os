@@ -327,12 +327,17 @@ class SpatialTargetingEngine(
             val indexLength = dist(indexMcp, indexPip) + dist(indexPip, pts[IndexPoint.INDEX_DIP]) + dist(pts[IndexPoint.INDEX_DIP], indexTip)
             val indexNetSpan = dist(indexMcp, indexTip)
             val indexStraightness = if (indexLength > 0f) indexNetSpan / indexLength else 0f
-            val indexExtended = dWristIndexTip > dWristIndexMcp * 1.35f && indexStraightness > 0.72f
+            val indexExtended = dWristIndexTip > dWristIndexMcp * 1.25f && indexStraightness > 0.75f
+
+            // Middle finger straightness for curl check
+            val midLength = dist(middleMcp, middlePip) + dist(middlePip, pts[11]) + dist(pts[11], middleTip)
+            val midNetSpan = dist(middleMcp, middleTip)
+            val midStraightness = if (midLength > 0f) midNetSpan / midLength else 0f
 
             // Non-index finger extensions
-            val middleExtended = dWristMiddleTip > dist(wrist, middleMcp) * 1.30f
-            val ringExtended = dWristRingTip > dist(wrist, pts[13]) * 1.30f
-            val pinkyExtended = dWristPinkyTip > dist(wrist, pts[17]) * 1.30f
+            val middleExtended = dWristMiddleTip > dist(wrist, middleMcp) * 1.35f && midStraightness > 0.85f
+            val ringExtended = dWristRingTip > dist(wrist, pts[13]) * 1.35f
+            val pinkyExtended = dWristPinkyTip > dist(wrist, pts[17]) * 1.35f
 
             val extendedNonIndexCount = (if (middleExtended) 1 else 0) +
                 (if (ringExtended) 1 else 0) +
@@ -356,10 +361,11 @@ class SpatialTargetingEngine(
             }
 
             // Intentional pointing:
-            // 1. Index is straight and uniquely extended
-            // 2. Other fingers are curled/tucked
-            // 3. Hand is not in phone grip posture
-            if (indexExtended && extendedNonIndexCount == 0 && indexStraightness > 0.80f) {
+            // 1. Index is straight and extends significantly further than middle and ring
+            // 2. Index is extended beyond MCP
+            // 3. Middle finger is curled (midStraightness < 0.85 or index tip is > middle tip * 1.18)
+            val indexDominant = dWristIndexTip > dWristMiddleTip * 1.10f && dWristIndexTip > dWristRingTip * 1.12f
+            if (indexExtended && indexDominant && (midStraightness < 0.85f || dWristIndexTip > dWristMiddleTip * 1.18f)) {
                 return HandPose.POINTING_INTENDED
             }
 
@@ -413,14 +419,15 @@ class SpatialTargetingEngine(
             val mcp = pts[IndexPoint.INDEX_MCP]
             val wrist = pts[IndexPoint.WRIST]
 
-            // 2D vector along index finger: from PIP to TIP (or MCP to TIP)
-            var dx = tip.first - pip.first
-            var dy = tip.second - pip.second
+            // 2D vector along index finger: from MCP to TIP for directional stability,
+            // fallback to PIP to TIP if MCP is coincident with TIP
+            var dx = tip.first - mcp.first
+            var dy = tip.second - mcp.second
             var len = hypot(dx, dy)
 
             if (len < 1e-4f) {
-                dx = tip.first - mcp.first
-                dy = tip.second - mcp.second
+                dx = tip.first - pip.first
+                dy = tip.second - pip.second
                 len = hypot(dx, dy)
             }
             if (len < 1e-4f) return null
