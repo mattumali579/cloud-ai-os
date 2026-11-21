@@ -1,8 +1,8 @@
 name: Visor Tracker Android
 
-# Ship rule: publish-release must depend only on build-and-test.
-# Emulator jobs are extra checks and must not gate UPDATE THIS APP.
-# See docs/VISOR_TRACKER_RELEASE.md.
+# New issue #40 contract: compile/tests make an artifact, NOT authorization to publish.
+# Public releases require manually confirmed physical-glasses acceptance evidence.
+# See docs/VISOR_END_TO_END.md.
 
 on:
   push:
@@ -18,6 +18,16 @@ on:
       - "experiments/visor-tracker-android/**"
       - ".github/workflows/visor-tracker-android.yml"
   workflow_dispatch:
+    inputs:
+      verified_physical_glasses:
+        description: "Physical S22 Ultra + Ray-Ban glasses acceptance gate in issue #40 passed"
+        required: true
+        type: boolean
+        default: false
+      device_evidence_url:
+        description: "URL to actual test report/results in issue #40"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -221,65 +231,44 @@ jobs:
           if-no-files-found: warn
 
   publish-release:
-    name: Publish signed release after the unit-tested APK
-    if: startsWith(github.ref, 'refs/tags/visor-tracker-v') || github.ref == 'refs/heads/feat/visor-overlay-phase1'
-    # Do not add emulator jobs here. Phone updates must not wait on them.
-    needs: [build-and-test]
+    name: MANUAL promotion of physical-device verified signed APK
+    # Pushes and tags always build/test but NEVER auto-publish.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verified_physical_glasses == true && startsWith(github.ref, 'refs/tags/visor-tracker-v') }}
+    needs: [build-and-test, detector-simulation]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download the tested release APK
-        uses: actions/download-artifact@v4
+      - name: Validate owner-provided physical-device evidence
+        env:
+          EVIDENCE_URL: ${{ inputs.device_evidence_url }}
+        run: |
+          set -euo pipefail
+          [[ "$EVIDENCE_URL" == https://github.com/mattumali579/cloud-ai-os/issues/40* ]] || {
+            echo "Issue #40 proof link required; build artifacts are not hardware evidence"; exit 1;
+          }
+          echo "Physical device verification was explicitly affirmed for: $EVIDENCE_URL"
+          echo "Check the linked test results before approving this manual run."
+      - uses: actions/download-artifact@v4
         with:
           name: visor-tracker-apk
           path: /tmp/new-tracker
-      - name: Publish stable signed update to GitHub Releases
+      - name: Publish signed APK ONLY after manual physical-device gate
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          EVIDENCE_URL: ${{ inputs.device_evidence_url }}
         run: |
           set -euo pipefail
-          REPO="${GITHUB_REPOSITORY}"
           TAG="${GITHUB_REF_NAME}"
-          # Publish the v0.28.1 (versionCode 29) hotfix once so the existing
-          # in-app release updater can discover it. Never replace that release
-          # automatically on later branch pushes.
-          if [[ "${GITHUB_REF}" == refs/heads/feat/visor-overlay-phase1 ]]; then
-            grep -Fq 'versionCode = 29' experiments/visor-tracker-android/app/build.gradle.kts
-            TAG="visor-tracker-v29"
-            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-              echo "Hotfix release already exists; not replacing it."
-              exit 0
-            fi
-          fi
-          APK="${RUNNER_TEMP}/Visor-Fast-Tracking.apk"
+          [[ "${GITHUB_REF}" == refs/tags/visor-tracker-v* ]] || exit 1
           test -f /tmp/new-tracker/app-release.apk
-          cp /tmp/new-tracker/app-release.apk "$APK"
-          # Run 44105775371 built and tested v11, then `gh release create` failed
-          # because that job had no git checkout. Attach that artifact to the
-          # existing tag. Do not move or delete visor-tracker-v11.
-          if ! gh release view visor-tracker-v11 --repo "$REPO" >/dev/null 2>&1; then
-            if gh run download 44105775371 --repo "$REPO" -n visor-tracker-apk -D "${RUNNER_TEMP}/v11"; then
-              v11apk=$(find "${RUNNER_TEMP}/v11" -name '*.apk' | head -1)
-              if [ -n "${v11apk:-}" ]; then
-                mkdir -p "${RUNNER_TEMP}/v11-publish"
-                cp "$v11apk" "${RUNNER_TEMP}/v11-publish/Visor-Fast-Tracking.apk"
-                gh release create visor-tracker-v11 "${RUNNER_TEMP}/v11-publish/Visor-Fast-Tracking.apk" \
-                  --repo "$REPO" \
-                  --title "Visor Fast Tracking 11" \
-                  --notes "Signed arm64 build tested in Actions run 44105775371. Publishing failed because gh had no git checkout. This attaches that artifact to the existing tag and does not move the tag." \
-                  || echo "Could not attach the existing v11 artifact; continuing with ${TAG}"
-              fi
-            else
-              echo "v11 artifact is no longer downloadable; tag visor-tracker-v11 stays without a Release asset"
-            fi
+          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing silent replacement."
+            exit 1
           fi
-          NOTES="Signed arm64 release for the S22 Ultra. Same package com.mattumali.visortracker.stable and the same signing certificate. One selected object box follows the chosen target. Calibrated distance is approximate and uses no depth sensor. It does not install other packages."
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$APK" --repo "$REPO" --clobber
-          else
-            gh release create "$TAG" "$APK" --repo "$REPO" --target "$GITHUB_SHA" \
-              --title "Visor Fast Tracking ${TAG#visor-tracker-v}" \
-              --notes "$NOTES"
-          fi
-          echo "Published signed Tracker APK as a public GitHub Release" >> "$GITHUB_STEP_SUMMARY"
+          cp /tmp/new-tracker/app-release.apk "${RUNNER_TEMP}/Visor-Fast-Tracking.apk"
+          gh release create "$TAG" "${RUNNER_TEMP}/Visor-Fast-Tracking.apk" \
+            --repo "$GH_REPO" --target "$GITHUB_SHA" \
+            --title "Visor Tracker ${TAG#visor-tracker-v}" \
+            --notes "Signed stable-package update. Physical-device acceptance evidence: $EVIDENCE_URL"
+          echo "Manually promoted after physical device evidence: $EVIDENCE_URL" >> "$GITHUB_STEP_SUMMARY"
