@@ -503,10 +503,15 @@ class SpatialTargetingEngine(
             val tipY = ray.tipY
 
             // Disallow fingertip-inside-box false hits:
-            // Any object whose box already contains the fingertip is excluded unless the finger was aimed from outside.
+            // For coarse bounding boxes without mask points, exclude if fingertip is inside box.
+            // For segmented objects with polygon masks, allow ray-mask intersection.
             val candidateObjects = objects.filter { box ->
-                val inside = tipX in box.left..box.right && tipY in box.top..box.bottom
-                !inside
+                if (box.points.isNotEmpty()) {
+                    true
+                } else {
+                    val inside = tipX in box.left..box.right && tipY in box.top..box.bottom
+                    !inside
+                }
             }
 
             if (candidateObjects.isEmpty()) return null
@@ -550,9 +555,33 @@ class SpatialTargetingEngine(
             val pts = box.points
             if (pts.isEmpty()) return null
 
-            val thresholdPx = 35f
+            // 1. Ray-Segment Edge Crossings: If ray crosses any polygon contour edge, it intersects the mask!
+            var minT = Float.MAX_VALUE
+            var crossed = false
+            val n = pts.size
+            for (i in 0 until n) {
+                val a = pts[i]
+                val b = pts[(i + 1) % n]
+                val dx = b.first - a.first
+                val dy = b.second - a.second
+                val denom = ray.dirX * dy - ray.dirY * dx
+                if (kotlin.math.abs(denom) > 1e-6f) {
+                    val qx = a.first - ray.tipX
+                    val qy = a.second - ray.tipY
+                    val t = (qx * dy - qy * dx) / denom
+                    val u = (qx * ray.dirY - qy * ray.dirX) / denom
+                    if (t in 0f..ray.reach && u in 0f..1f) {
+                        crossed = true
+                        if (t < minT) minT = t
+                    }
+                }
+            }
+            if (crossed) return minT
+
+            // 2. Proximity to contour vertices within threshold (for near-miss tolerance)
+            val thresholdPx = 45f
             var minProj = Float.MAX_VALUE
-            var hit = false
+            var nearHit = false
 
             for (p in pts) {
                 val vx = p.first - ray.tipX
@@ -561,12 +590,12 @@ class SpatialTargetingEngine(
                 if (proj in 0f..ray.reach) {
                     val perpDist = kotlin.math.abs(vx * ray.dirY - vy * ray.dirX)
                     if (perpDist <= thresholdPx) {
-                        hit = true
+                        nearHit = true
                         if (proj < minProj) minProj = proj
                     }
                 }
             }
-            return if (hit) minProj else null
+            return if (nearHit) minProj else null
         }
 
         /**

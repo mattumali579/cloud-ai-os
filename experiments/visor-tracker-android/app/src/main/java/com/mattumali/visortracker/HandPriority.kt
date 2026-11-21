@@ -38,6 +38,11 @@ object HandPriority {
         if (IndexPoint.extended(hand, frameWidth, frameHeight) != null) "pointing hand" else "hand"
 
     private fun sameHandRegion(person: BoxObservation, hand: BoxObservation): Boolean {
+        val neverHand = person.label.lowercase() in setOf(
+            "laptop", "tv", "bed", "couch", "chair", "dining table", "refrigerator", "bench", "table", "book", "clock", "airplane", "suitcase", "backpack", "handbag"
+        )
+        if (neverHand) return false
+
         val intersectionWidth = max(0f, min(person.right, hand.right) - max(person.left, hand.left))
         val intersectionHeight = max(0f, min(person.bottom, hand.bottom) - max(person.top, hand.top))
         val handArea = hand.area()

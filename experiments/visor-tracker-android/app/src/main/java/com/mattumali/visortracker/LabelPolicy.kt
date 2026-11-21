@@ -16,11 +16,23 @@ object LabelPolicy {
     const val UNCERTAIN = "object"
     private const val AMBIGUITY_MARGIN = 0.15f
 
+    fun minScoreFor(category: String): Float = when (category.lowercase()) {
+        "suitcase", "backpack", "handbag", "book", "clock", "bottle", "airplane" -> 0.12f
+        else -> MIN_SCORE
+    }
+
     private val strictFloor = mapOf(
         "scissors" to 0.72f,
         "laptop" to 0.62f,
         "cell phone" to 0.55f,
         "knife" to 0.62f,
+        "book" to 0.25f,
+        "backpack" to 0.25f,
+        "clock" to 0.25f,
+        "bottle" to 0.25f,
+        "airplane" to 0.25f,
+        "suitcase" to 0.12f,
+        "handbag" to 0.12f,
     )
 
     private val confusableWith = mapOf(
@@ -34,12 +46,12 @@ object LabelPolicy {
     /**
      * The name to draw and the finite score of the category that earned it.
      * A blank or non-finite score cannot outrank a real category, and a score
-     * under [MIN_SCORE] is omitted. Returning null is the only drop.
+     * under [MIN_SCORE] (or [minScoreFor]) is omitted. Returning null is the only drop.
      */
     fun selection(categories: List<CategoryScore>): CategoryScore? {
         val ranked = categories
             .asSequence()
-            .filter { it.name.isNotBlank() && it.score.isFinite() && it.score >= MIN_SCORE }
+            .filter { it.name.isNotBlank() && it.score.isFinite() && it.score >= minScoreFor(it.name) }
             .sortedByDescending { it.score }
             .toList()
         val top = ranked.firstOrNull() ?: return null
