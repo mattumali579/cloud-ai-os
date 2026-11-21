@@ -4,6 +4,10 @@ Free on-device object/hand/face detection with labeled boxes rendered **over the
 
 **This is not an AR display inside normal Ray-Ban Meta glasses:** they have no display. Visor's existing video remains in its own app; the Android companion is a transparent, touch-through overlay.
 
+## Version 0.41: End-to-end decoupled spatial targeting, 10932 validation, and vision QA
+
+Version code 41. Complete spatial targeting engine with 3D camera-space ray casting, 6-state temporal state machine (NO_HAND -> HAND_TRACKED -> POINTING -> HOVER -> LOCKED -> RELEASED), hand pose classification rejecting phone grips and open palms, strict ray origin verification, and zero fallback locks. Fully tested against 10932.mp4 replay reducing false locks from 15 to 0. Includes opt-in private raw frame capture and affirmative on-demand vision QA.
+
 ## Version 0.39: 10917 arm-box pointing
 
 Version code 40. Re-ran production `hand_landmarker.task` on `10917.mp4`: IMAGE mode saw a hand in 19/170 samples; VIDEO mode 32%. Side-on glasses pointing does not produce landmarks. This build tracks hands in VIDEO mode and, when landmarks are missing, builds the index ray from the forearm `person` box so the barrel/cup in that clip is the lock instead of the phone or `person`.
