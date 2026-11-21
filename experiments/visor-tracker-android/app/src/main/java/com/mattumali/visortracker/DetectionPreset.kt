@@ -23,7 +23,10 @@ enum class DetectionPreset(
     // This model still only knows its trained classes. It cannot invent a box
     // for something it does not see.
     FAST("efficientdet_lite0.tflite", 384, 0.25f, 8),
-    ACCURATE("efficientdet_lite2.tflite", 512, 0.45f, 8);
+    ACCURATE("efficientdet_lite2.tflite", 512, 0.45f, 8),
+    YOLO26_SEG("yolo26n-seg.onnx", 640, 0.25f, 8);
+
+    val isYolo: Boolean get() = this == YOLO26_SEG
 
     companion object {
         fun read(name: String?): DetectionPreset =

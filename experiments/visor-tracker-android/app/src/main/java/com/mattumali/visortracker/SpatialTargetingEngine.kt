@@ -512,8 +512,24 @@ class SpatialTargetingEngine(
             var minT = Float.MAX_VALUE
 
             for (box in candidateObjects) {
-                val t = rayBoxIntersectionDistance(ray, box)
+                // If box has instance segmentation mask points, verify ray passes near or through mask
+                val t = if (box.points.isNotEmpty() && box.kind == "object") {
+                    rayMaskIntersectionDistance(ray, box) ?: rayBoxIntersectionDistance(ray, box)
+                } else {
+                    rayBoxIntersectionDistance(ray, box)
+                }
+
                 if (t != null && t in 0f..ray.reach) {
+                    // 3D Depth consistency: if depth evidence is present, verify along ray trajectory
+                    if (box.depths.isNotEmpty() && hand.depths.isNotEmpty()) {
+                        val handDepth = hand.depths.getOrElse(IndexPoint.INDEX_TIP) { 0.3f }
+                        val objectDepth = box.depths[0]
+                        // When ray points away into space (dirZ > 0), reject objects located in front of hand
+                        if (ray.dirZ > 0.05f && objectDepth < handDepth - 0.25f) {
+                            continue
+                        }
+                    }
+
                     if (t < minT) {
                         minT = t
                         bestBox = box
@@ -522,6 +538,32 @@ class SpatialTargetingEngine(
             }
 
             return bestBox
+        }
+
+        /**
+         * Computes ray intersection distance with instance segmentation mask points.
+         */
+        fun rayMaskIntersectionDistance(ray: SpatialRay, box: BoxObservation): Float? {
+            val pts = box.points
+            if (pts.isEmpty()) return null
+
+            val thresholdPx = 35f
+            var minProj = Float.MAX_VALUE
+            var hit = false
+
+            for (p in pts) {
+                val vx = p.first - ray.tipX
+                val vy = p.second - ray.tipY
+                val proj = vx * ray.dirX + vy * ray.dirY
+                if (proj in 0f..ray.reach) {
+                    val perpDist = kotlin.math.abs(vx * ray.dirY - vy * ray.dirX)
+                    if (perpDist <= thresholdPx) {
+                        hit = true
+                        if (proj < minProj) minProj = proj
+                    }
+                }
+            }
+            return if (hit) minProj else null
         }
 
         /**

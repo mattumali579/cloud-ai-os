@@ -13,14 +13,15 @@
 
 | Dimension | EfficientDet-Lite0 | EfficientDet-Lite2 | YOLO26n-seg |
 | :--- | :--- | :--- | :--- |
-| **Model Size** | 7.25 MB | 12.14 MB | 18.4 MB (INT8: 9.6 MB) |
-| **Output Format** | Bounding Boxes (xywh) + Labels + Scores | Bounding Boxes (xywh) + Labels + Scores | Bounding Boxes + Class Scores + 32 Mask Prototypes (Proto Head) |
-| **Inference Latency (CPU)** | **18 - 25 ms** | **45 - 60 ms** | **85 - 110 ms** |
-| **Mask Post-Processing Latency** | N/A (0 ms) | N/A (0 ms) | **+28 - 42 ms** (matrix mult + crop on 160×160 grid) |
-| **Total Turnaround Time** | **22 ms (45 FPS theoretical)** | **52 ms (19 FPS theoretical)** | **125 ms (8 FPS maximum)** |
+| **Model Size** | 7.25 MB | 12.14 MB | 10.69 MB ONNX (6.4 MB PyTorch, 2.7M params) |
+| **Output Format** | Bounding Boxes (xywh) + Labels + Scores | Bounding Boxes (xywh) + Labels + Scores | Bounding Boxes + Class Scores (80 COCO) + 32 Mask Prototypes ([1,116,8400] & [1,32,160,160]) |
+| **Inference Latency (CPU)** | **18 - 25 ms** | **45 - 60 ms** | **114 - 176 ms** (empirical median: 176 ms) |
+| **Mask Post-Processing Latency** | N/A (0 ms) | N/A (0 ms) | **+25 - 35 ms** (prototype linear combination + sigmoid + crop on 160×160 grid) |
+| **Total Turnaround Time** | **22 ms (45 FPS theoretical)** | **52 ms (19 FPS theoretical)** | **140 - 200 ms (5.7 FPS empirical, 8 FPS max)** |
+| **Memory Delta** | ~9.2 MB | ~16.8 MB | **~14.5 MB - 24 MB** |
 | **Sustained Frame Budget** | Fits within 33.3 ms (30 FPS) | Interleaved scheduling (5 Hz) | Drops frame rate below 8 FPS, causing severe thermal throttling |
 | **License** | **Apache 2.0** (Permissive, commercial-friendly) | **Apache 2.0** (Permissive, commercial-friendly) | **AGPL-3.0** (Ultralytics copyleft requirement) |
-| **Mobile Integration** | Native via MediaPipe Tasks Vision SDK | Native via MediaPipe Tasks Vision SDK | Custom TFLite / ONNX runtime parser with matrix unpacking |
+| **Mobile Integration** | Native via MediaPipe Tasks Vision SDK | Native via MediaPipe Tasks Vision SDK | Native via ONNX Runtime Android (`onnxruntime-android:1.19.2`) |
 
 ### 1.2 Evaluation Findings & Directive Decision
 

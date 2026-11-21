@@ -51,11 +51,22 @@ class VisionPipeline(
     private val numHands: Int = HAND_COUNT,
     private val attemptGpu: Boolean = true,
     val overlapModels: Boolean = true,
+    val objectBackend: ObjectBackend = ObjectBackend.EFFICIENT_DET,
+    val enableDepth: Boolean = false,
+    val depthBackend: DepthEstimator.DepthBackend = DepthEstimator.DepthBackend.DEPTH_ANYTHING_V2,
 ) : AutoCloseable {
+    enum class ObjectBackend {
+        EFFICIENT_DET,
+        YOLO26_SEG,
+        YOLO26_DET,
+    }
+    val effectiveObjectBackend: ObjectBackend = if (preset == DetectionPreset.YOLO26_SEG) ObjectBackend.YOLO26_SEG else objectBackend
     private val tracks = TrackIds()
-    private val objects: ObjectDetector
+    private val objects: ObjectDetector?
     private val handRuntime: HandRuntime?
     private val faces: FaceDetector?
+    val yolo26: Yolo26Segmentation?
+    val depthEstimator: DepthEstimator?
     private var frameNumber = 0
     private var recentObjects = emptyList<BoxObservation>()
     private var recentHands = emptyList<BoxObservation>()
@@ -70,6 +81,8 @@ class VisionPipeline(
         private set
     var lastHandMs: Long = 0
         private set
+    var lastDepthMs: Long = 0
+        private set
     var lastBitmapMs: Long = 0
         private set
     /** Model time only. Bitmap scaling is [lastBitmapMs]. Overlap makes this closer to the slower model. */
@@ -81,25 +94,30 @@ class VisionPipeline(
     val handDelegateAttempt: String get() = handRuntime?.attempt ?: "none"
     val handFallbacks: Int get() = handRuntime?.fallbacks ?: 0
 
-    /** EfficientDet stays on CPU. A GPU detect that never returns is not used. */
-    val objectDelegate: String = "CPU"
+    /** EfficientDet stays on CPU. YOLO26 uses ONNX Runtime. */
+    val objectDelegate: String get() = if (effectiveObjectBackend == ObjectBackend.YOLO26_SEG) "ONNX" else "CPU"
 
     init {
         val app = context.applicationContext
-        objects = ObjectDetector.createFromOptions(
-            app,
-            ObjectDetector.ObjectDetectorOptions.builder()
-                .setBaseOptions(
-                    BaseOptions.builder()
-                        .setModelAssetPath(preset.modelAsset)
-                        .setDelegate(Delegate.CPU)
-                        .build()
-                )
-                .setRunningMode(RunningMode.IMAGE)
-                .setMaxResults(preset.maxResults)
-                .setScoreThreshold(preset.scoreThreshold)
-                .build()
-        )
+        val isYolo = effectiveObjectBackend == ObjectBackend.YOLO26_SEG || effectiveObjectBackend == ObjectBackend.YOLO26_DET
+        objects = if (!isYolo) {
+            ObjectDetector.createFromOptions(
+                app,
+                ObjectDetector.ObjectDetectorOptions.builder()
+                    .setBaseOptions(
+                        BaseOptions.builder()
+                            .setModelAssetPath(preset.modelAsset)
+                            .setDelegate(Delegate.CPU)
+                            .build()
+                    )
+                    .setRunningMode(RunningMode.IMAGE)
+                    .setMaxResults(preset.maxResults)
+                    .setScoreThreshold(preset.scoreThreshold)
+                    .build()
+            )
+        } else {
+            null
+        }
         handRuntime = if (includeHands) HandRuntime(app, numHands, attemptGpu) else null
         faces = if (includeFaces) FaceDetector.createFromOptions(
             app,
@@ -109,7 +127,13 @@ class VisionPipeline(
                 .setMinDetectionConfidence(0.5f)
                 .build()
         ) else null
-        Log.i(TAG, "delegates hand=$handDelegate attempted=$handDelegateAttempt object=$objectDelegate")
+        yolo26 = if (isYolo) {
+            Yolo26Segmentation(app, scoreThreshold = preset.scoreThreshold, maxResults = preset.maxResults)
+        } else null
+        depthEstimator = if (enableDepth) {
+            DepthEstimator(app, depthBackend)
+        } else null
+        Log.i(TAG, "delegates hand=$handDelegate attempted=$handDelegateAttempt object=$objectDelegate yolo=${yolo26 != null} depth=${depthEstimator != null}")
     }
 
     /** Set when hands or faces fail. Object boxes from that frame are still returned. */
@@ -167,22 +191,48 @@ class VisionPipeline(
             }
             if (runObjects) {
                 val source = objectBitmap ?: input
-                val image = BitmapImageBuilder(source).build()
-                try {
-                    val objectStarted = android.os.SystemClock.elapsedRealtime()
-                    val detected = objects.detect(image)
-                    lastObjectMs = android.os.SystemClock.elapsedRealtime() - objectStarted
+                if (effectiveObjectBackend == ObjectBackend.YOLO26_SEG || effectiveObjectBackend == ObjectBackend.YOLO26_DET) {
+                    val yoloStarted = android.os.SystemClock.elapsedRealtime()
+                    val yoloResult = yolo26?.detect(source)
+                    lastObjectMs = android.os.SystemClock.elapsedRealtime() - yoloStarted
                     objectInferences += 1
-                    detected.detections().forEach { detection ->
-                        val categories = detection.categories().map { category ->
-                            CategoryScore(category.categoryName().orEmpty(), category.score())
-                        }
-                        val chosen = LabelPolicy.selection(categories) ?: return@forEach
-                        observed += detection.boundingBox().box("object", chosen.name, chosen.score)
+                    if (yoloResult != null) {
+                        observed += yoloResult.boxes
                     }
                     recentObjects = observed.map { it.copy() }
-                } finally {
-                    image.close()
+                } else if (objects != null) {
+                    val image = BitmapImageBuilder(source).build()
+                    try {
+                        val objectStarted = android.os.SystemClock.elapsedRealtime()
+                        val detected = objects.detect(image)
+                        lastObjectMs = android.os.SystemClock.elapsedRealtime() - objectStarted
+                        objectInferences += 1
+                        detected.detections().forEach { detection ->
+                            val categories = detection.categories().map { category ->
+                                CategoryScore(category.categoryName().orEmpty(), category.score())
+                            }
+                            val chosen = LabelPolicy.selection(categories) ?: return@forEach
+                            observed += detection.boundingBox().box("object", chosen.name, chosen.score)
+                        }
+                        recentObjects = observed.map { it.copy() }
+                    } finally {
+                        image.close()
+                    }
+                }
+
+                if (enableDepth && depthEstimator != null) {
+                    val depthStarted = android.os.SystemClock.elapsedRealtime()
+                    val depthMap = depthEstimator.estimate(source)
+                    lastDepthMs = android.os.SystemClock.elapsedRealtime() - depthStarted
+                    if (depthMap != null) {
+                        for (i in observed.indices) {
+                            val b = observed[i]
+                            if (b.kind == "object") {
+                                val d = depthMap.getMedianDepthInBox(b.left, b.top, b.right, b.bottom, width, height)
+                                observed[i] = b.copy(depths = listOf(d))
+                            }
+                        }
+                    }
                 }
             } else {
                 lastObjectMs = 0
@@ -348,7 +398,9 @@ class VisionPipeline(
     override fun close() {
         handRuntime?.close()
         faces?.close()
-        objects.close()
+        objects?.close()
+        yolo26?.close()
+        depthEstimator?.close()
     }
 
     private inner class HandRuntime(
