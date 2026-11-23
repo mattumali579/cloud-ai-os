@@ -128,3 +128,93 @@ Antigravity: inspect current branch and dirty Windows worktree; choose first fai
 - [Antigravity workspace rules](https://antigravity.google/docs/rules/)
 
 **No other Visor tracking rule is authoritative.**
+
+---
+
+## Performance-first strict-3D workflow rebuild (2026-11-23)
+
+**This section is part of the ONE canonical #40 mission**, not a new task, project, release, or conflicting specification. It refines the implementation path above, superseding any suggestion to replace strict 3D with a 2D fallback. Owner end result: Ray-Ban Meta camera -> existing Visor VDK Live View -> Galaxy S22 Ultra -> **real, evidence-backed 3D pointing** -> accurate named physical object hover/lock/switch/release -> aligned phone HUD, with as little continuous AI inference as possible.
+
+### Non-negotiable constraints and current-code findings
+
+1. Use the EXISTING Android module, overlay, signing identity, in-place updater and branch. Do not add a separate app, cloud streaming service, background agent, arbitrary server, Docker or mandatory USB/ADB.
+2. **Only \`SpatialTargetingEngine\` owns automatic locks in strict mode.** No \`RelativeDistanceEstimator\`, center/nearest-box, legacy \`IndexPoint\`, guessed distance, stale hand, or stale depth fallback may acquire/preserve/render a lock.
+3. Motion sensors are **optional**. First verify whether synchronized glasses IMU samples are *actually exposed by the installed Visor Development Kit/live-session APIs*. Phone IMU orientation is NOT interchangeable with glasses camera pose. If glasses IMU is unavailable, use visual camera-motion estimation and label the sensor input unavailable. Never fabricate an IMU connection.
+4. Existing \`MotionTracker\`, \`NewestFrameSlot\`, \`DetectorSchedule\`, \`TrackIds\`, \`VisionPipeline\`, \`DepthEstimator\`, \`CameraSpatial3D\`, \`FrameFusion\`, \`SpatialTargetingEngine\` and \`TrackingOverlayView\` are the starting building blocks. Try a measured improvement to \`MotionTracker\` first; add OpenCV optical flow ONLY if an A/B benchmark justifies the new Android dependency/size/CPU cost.
+5. **Audit before trusting current 3D.** At the 2026-11-23 branch review, \`CameraSpatial3D.constructHandRay3D\` uses an assumed finger length, a default base depth, and estimated camera intrinsics; \`VisionPipeline\` labels the depth calibration \`UNCALIBRATED_ESTIMATED\`. These assumptions are not by themselves proof of metric camera-space alignment. A coincidental point-cloud intersection or value called “m” does not make it physically valid 3D. Gate strict lock on *validated geometric compatibility* (see calibration below). Do not regress to 2D to compensate.
+6. The previous 11038.mp4 recording can illustrate composited HUD behavior but is **not** ground-truth raw camera data or source latency telemetry. For parity/accuracy tests use approved, opt-in pre-overlay raw frames and independent intent labels. Keep recordings private.
+
+### Rebuilt production pipeline: exact ownership and data flow
+
+\`\`\`text
+Ray-Ban camera -> Visor VDK LiveVideoDecoder (existing, no second camera)
+  |
+  +--> FramePacket{seq, captureMonoMs, dimensions, rotation, crop, mirror,
+  |                source/decoder transforms, camera calibration, video pixels}
+  |         |
+  |         +--> newest-only nonblocking scheduler (skip/drop stale frame; never queue an old view)
+  |         |      |
+  |         |      +--> HAND: MediaPipe 21-index landmark identity, palm, pose, per-hand stable track
+  |         |      +--> OBJECT: existing YOLO26-seg/EfficientDet benchmark winner, real mask + label
+  |         |      +--> DEPTH: one measured on-device model, source-frame-linked depth + scale status
+  |         |      +--> MOTION: current patch/feature tracker; optional *verified* glasses IMU
+  |         |                     |
+  |         +--> timestamp/transform/identity validator + strictly bounded result join
+  |                                |
+  |                          3D evidence bundle
+  |                     hand rays + scene object surfaces
+  |                                |
+  |                     SpatialTargetingEngine STRICT
+  |               (uncertainty cone, forward surface hit, no ambiguity)
+  |                                |
+  |                   deterministic lock state machine
+  |              NONE -> POINTING -> HOVER -> LOCKED
+  |                         -> SWITCH / RELEASE / NO_TARGET
+  |                                |
+  +----------------> TrackingOverlayView (transparent, touch-through)
+                         object outlines, selected ID, truthful error status
+\`\`\`
+
+**Capture and transforms:** assign a monotonically increasing frame sequence at source and a monotonic *capture* clock; avoid using decode/submit wall time as capture time. Preserve original orientation, mirror, active crop, pixel dimensions, display projection, distortion/intrinsics or explicit unknown status. All hand/object/mask/depth outputs carry the originating frame ID, capture timestamp, source transform, inference duration, backend, and reliability. Maintain immutable per-frame evidence; never re-label old results as today's result.
+
+**Scheduling:** decoder never waits for inference. Keep at most one pending newest frame per expensive worker, one in-flight operation per constrained model, cancellation/drop accounting, and a distinct lightweight tracking/render path. Acquire hand/detections/depth together when needed for a lock; propagate *visual position* between expensive inferences only within validated motion and max-age bounds. Trigger refresh on initial detection, uncertain motion, hand/target changes, detector confidence collapse or impending evidence expiry. Adapt cadence to measured motion, thermal state, battery and p95 latency, rather than hard-coding a high AI rate. The objective is low latency **without** hiding dropped work or slow depth behind asynchronous queues. Log detector FPS, hand FPS, depth FPS, propagated FPS and renderer FPS separately.
+
+**Inference join:** replace any main-path wait on a depth future with a bounded keyed result assembler. A delayed depth result can complete an evidence bundle for *its original frame* and trigger an eligible spatial step only if frame/transform/hand/object validity are still true; it must never silently attach to a later camera view. A timed-out or mismatched depth bundle returns \`3D_UNAVAILABLE\`, not a 2D lock. Test both an out-of-order depth completion and a camera movement during inference. An already locked object must also expire or release on evidence loss within the documented limit; no indefinite ghost lock.
+
+**Hand:** only landmark 8 is the index fingertip; wrist/MCP/PIP/DIP and consistent handedness/track ID establish a single pointing hand. Distinguish side-on foreshortening from actual open palm, phone grip and occluded/unknown digit. Do not infer a valid index by substituting thumb landmarks. Hand owner swaps reset hover/lock. A tracked feature may predict fingertip display position briefly, but it cannot invent a missing 21-landmark hand or count as a verified gesture acquisition.
+
+**Object candidates:** measure class/label recall before pointing geometry. Decode segmentation masks with the exact model resize/letterbox transform; class-aware NMS; stable identity association using mask/appearance/motion and camera motion, bounded lifetime, no ID inheritance after uncertain swaps. Household objects outside COCO vocabulary remain \`CANDIDATE_MISSING\` unless an actual supported local model/authorized on-demand grounding supplies them. Keep masks and object-depth surfaces linked to their source frames.
+
+**True 3D calibration contract:** intrinsics must be checked for the actual Visor camera resolution/FOV/crop; determine whether the image is distorted and whether overlay projection matches source pixels. Relative monocular depth has arbitrary scale/shift and MediaPipe world landmarks are hand-relative; they cannot be directly fused as meters. Validate one *shared* camera-coordinate scale using a documented reference/calibration method plus held-out known-distance and near/far overlap trials. If absolute scale cannot be established, report **relative-depth/uncalibrated 3D hypothesis** and **DO NOT acquire a strict-3D lock** until the measured strict contract is satisfied. A hand-origin ray must be based on a justified pose estimate; assume no magic depth from a single 2D finger segment or from an unverified sensor. If 3D calibration proves unavailable on current glasses/phone, surface this as a hardware/evidence blocker rather than claiming success.
+
+**3D selection:** reconstruct visible object surface points from aligned segmentation mask plus compatible depth, with traceable uncertainty. Compute only **forward** camera-space intersections of a calibrated finger ray with physically plausible object surfaces, with uncertainty tested against competing candidates. Reject back-facing, stale, ambiguous or geometry-incompatible hits. A lock is permitted only with valid hand intent, distinct object track, synchronized valid surface depth and a uniquely supported hit. Never select closest box/center/ray-proximity if those strict conditions fail.
+
+**Lock states:** \`NO_HAND -> HAND_TRACKED -> POINTING -> HOVER -> LOCKED -> SWITCH/RELEASE\`. Stable pointing must persist for a measured short hover interval before automatic acquisition; credible redirection changes targets after hysteresis; withdrawing point, losing hand identity or losing usable 3D evidence releases within measured bounded time. No pinch, voice or button confirmation. Render speculative outlines without making them look locked; HUD distinguishes \`LOCKED_3D\`, \`POINTING_NO_HIT\`, \`CANDIDATE_MISSING\`, \`HAND_UNCERTAIN\`, \`DEPTH_STALE\`, \`3D_UNCALIBRATED\`, \`3D_UNAVAILABLE\`.
+
+**Other functions:** OCR/visual Q&A are explicit on-demand work, isolated from the real-time loop. Do not upload source frames to cloud without user authorization. No face identity inference, no continuous cloud model calls.
+
+### Ordered implementation and tests (stop repeating failed patches)
+
+**0 — Baseline and parity**: preserve local dirty work and current code; snapshot branch SHA, enabled model, depth settings, app version/cert. Reproduce owner’s raw recordings in the actual Android inference/decoder/targeting stack and create independently labeled failures. Record candidate recall first, then hand landmark correctness, 3D calibration, timestamp joins, lock correctness, end-to-end latency and thermal telemetry. Classify the first broken layer for every miss. Never tune fingertip thresholds against unknown/missing candidates.
+
+**1 — One frame contract and scheduler**: add/reuse a single \`FramePacket\`/result provenance contract; make source transforms explicit and model outputs immutable. Separate capture, inference and overlay clocks; bounded latest-frame scheduling. Prove old/delayed results cannot change the current target incorrectly, using deterministic tests.
+
+**2 — Efficient non-AI propagation**: reuse \`MotionTracker\` between detection passes and validate per-track feature survival under rotation/translation and moving hands; cap propagation age/confidence. Bench motion performance on S22. Only then trial optical flow library; revert if it raises latency, size, thermals or ID swaps.
+
+**3 — Valid hand/object evidence**: repair real candidate recall, object masks/class-aware suppression, owner-hand track, reliable index gesture and stable object IDs. Use the production ONNX/TFLite/MediaPipe assets, not a Python-only approximation. Add grip/palm, side-on, multiple-hand, clutter and occlusion cases.
+
+**4 — Real depth/geometry**: calibrate camera transforms and a shared depth/hand coordinate contract; test same-frame depth joins and near/far overlap. Remove implicit fixed finger-scale/base-depth claims or label them uncalibrated. Validate ray-to-surface in near/far/moving scenes; no synthetic “metres” or strict lock on guessed scale.
+
+**5 — One lock authority and overlay**: make \`SpatialTargetingEngine\` authoritative through service, view, notification, grounding and tests. Other legacy estimators are diagnostics only in strict mode; no hidden 2D fallback. Test acquisition/switch/release and stale-data fail-closed in actual overlay callback path.
+
+**6 — Test and wireless trial**: run JVM + actual instrumented Android workflow, fix GitHub CI rather than skipping failing tests. Produce independently annotated same-video baseline-vs-candidate replay metrics and a *test* signed APK using existing package/cert and incremented version code. Phone obtains APK wirelessly and taps Update without uninstall, USB or ADB. Real paired Ray-Ban glasses plus Visor Live View trial is mandatory and separately reported. GitHub or Antigravity alone cannot perform a physical glasses trial without real evidence.
+
+### Acceptance gates and reporting
+
+- **Accuracy**: >=90% intended target correct over >=30 independently labeled real pointing trials; zero false locks across >=30 grip/palm/no-point negatives; >=90% correct switches across >=20 deliberate trials; prompt release after loss of gesture; retain uncertainty labels rather than forcing guesses.
+- **3D validity**: near/far physically overlapping objects discriminate correctly using validated scale and camera-space evidence; missing/late depth or uncalibrated geometry never acquires strict lock. Report known-distance errors/uncertainty, and do not label raw relative depth as metres.
+- **Performance**: compare matched recordings and S22 device runs. Publish median and p95 capture-to-overlay latency, acquisition time, total render FPS and fresh 3D-lock update rate, queue drops, inference cadences, CPU/memory/heat and battery trend. **Sub-100-ms median is an optimization target, not a claimed achievable hardware result**; never sacrifice strict correctness to report FPS.
+- **Release**: green relevant CI, valid existing signing identity, successful network-delivered *in-place* test APK upgrade, and 15-minute actual glasses/phone run without unacceptable heat, crash, stream loss or identity changes. Do not mark RELEASE COMPLETE before the real-glasses trial passes.
+- **Truthful report**: commit SHA, CI URL, test APK link/version/cert, production-replay score, PHONE INSTALLED status, PHYSICAL GLASSES status, latency p50/p95 and **first failing stage** if blocked. Distinguish written spec, code, synthetic test, Android replay and physical hardware evidence.
+
+**Priority:** do not build another speculative tracker from zero; reconstruct the **complete existing path** with explicit frame provenance, calibrated 3D evidence and adaptive light tracking. Prefer working existing components over new dependencies. No repeated prompts, no separate new issue, no fake “done” claims.
