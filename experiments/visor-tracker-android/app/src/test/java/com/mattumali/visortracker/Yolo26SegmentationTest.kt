@@ -10,8 +10,8 @@ import javax.imageio.ImageIO
 
 class Yolo26SegmentationTest {
 
-    private val modelFile = File("C:/Users/Admin/cloud-ai-os-visor-tracker/yolo26n-seg.onnx")
-    private val testImageFile = File("C:/Users/Admin/cloud-ai-os-visor-tracker/test-recordings/test_10942_cam.jpg")
+    private val modelFile = ModelBenchmarkTest.resolveModelFile()
+    private val testImageFile = ModelBenchmarkTest.resolveTestImageFile()
 
     @Test
     fun testYolo26SegmentationModelLoads() {

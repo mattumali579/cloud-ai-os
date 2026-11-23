@@ -553,4 +553,52 @@ class CameraSpatial3DTest {
         assertNull("Stale async depth must never trigger a 3D target lock", result.lockId)
         assertEquals("depth_frame_mismatch", result.lockProvenance)
     }
+
+    @Test
+    fun synchronizedDepthDeliveryIntoTargetingEngineActivatesTrue3D() {
+        val engine = SpatialTargetingEngine(
+            strict3DMode = true,
+            directionFramesRequired = 1,
+            hoverFramesRequired = 1,
+        )
+        val target = BoxObservation(
+            kind = "object",
+            label = "target_cup",
+            score = 0.95f,
+            left = 190f,
+            top = 70f,
+            right = 260f,
+            bottom = 140f,
+            points = listOf(190f to 70f, 260f to 70f, 260f to 140f, 190f to 140f),
+            depths = listOf(2.0f),
+            trackId = 10,
+        )
+        val hand = createPointingHand()
+
+        // Synchronous / joined depth arrival for sequence 10L
+        val synchronizedDepthFrame = CameraSpatial3D.DepthFrame.fromBoxes(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target),
+            sequence = 10L,
+            capturedAtMs = 1000L,
+        )
+
+        val frame10 = FrameDetections(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target, hand),
+            sequence = 10L,
+            capturedAtMs = 1000L,
+            depthFrame = synchronizedDepthFrame,
+        )
+
+        val result = engine.step(frame10)
+        assertNotNull("Synchronized depth must produce a 3D ray hit", result.hitId)
+        assertEquals("Target 10 must be hit", 10, result.hitId)
+        assertEquals("Lock provenance must be new_3d_hit", "new_3d_hit", result.lockProvenance)
+        assertEquals("State must be LOCKED", SpatialTargetingEngine.State.LOCKED, result.state)
+        assertEquals("Locked ID must be target 10", 10, result.lockId)
+        assertTrue("Hit coordinates must be positive in front of camera", (result.hit3D?.distanceAlongRay ?: 0f) > 0f)
+    }
 }

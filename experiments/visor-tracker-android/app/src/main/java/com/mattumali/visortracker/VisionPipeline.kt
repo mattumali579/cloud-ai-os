@@ -12,6 +12,7 @@ import com.google.mediapipe.tasks.vision.facedetector.FaceDetector
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector
+import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -61,7 +62,10 @@ class VisionPipeline(
         YOLO26_SEG,
         YOLO26_DET,
     }
-    val effectiveObjectBackend: ObjectBackend = if (preset == DetectionPreset.YOLO26_SEG) ObjectBackend.YOLO26_SEG else objectBackend
+    val effectiveObjectBackend: ObjectBackend = when (preset) {
+        DetectionPreset.YOLO26_SEG -> ObjectBackend.YOLO26_SEG
+        DetectionPreset.FAST, DetectionPreset.ACCURATE -> if (objectBackend == ObjectBackend.YOLO26_SEG) ObjectBackend.EFFICIENT_DET else objectBackend
+    }
     private val tracks = TrackIds()
     private val objects: ObjectDetector?
     private val handRuntime: HandRuntime?
@@ -73,9 +77,8 @@ class VisionPipeline(
             Thread(r, "DepthEstimatorThread").apply { priority = Thread.MIN_PRIORITY }
         }
     } else null
-    private val isDepthBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+    var depthJoinTimeoutMs: Long = 500L
     private val frameSequenceCounter = java.util.concurrent.atomic.AtomicLong(1L)
-    private val depthFrameBuffer = java.util.concurrent.ConcurrentHashMap<Long, DepthEstimator.DepthMap>()
     private var recentObjects = emptyList<BoxObservation>()
     private var recentHands = emptyList<BoxObservation>()
     private var recentArms = emptyList<BoxObservation>()
@@ -159,10 +162,10 @@ class VisionPipeline(
         runObjects: Boolean = true,
         runHands: Boolean = includeHands,
         onHands: ((List<BoxObservation>) -> Unit)? = null,
+        sourceFrameId: Long = frameSequenceCounter.getAndIncrement(),
+        sourceCapturedAtMs: Long = android.os.SystemClock.elapsedRealtime(),
     ): FrameDetections {
         if (input.isRecycled) throw IllegalStateException("recycled frame")
-        val sourceFrameId = frameSequenceCounter.getAndIncrement()
-        val sourceCapturedAtMs = android.os.SystemClock.elapsedRealtime()
         val bitmapStarted = sourceCapturedAtMs
         val (width, height) = YuvSnapshot.outputSize(input.width, input.height, preset.maxFrameWidth)
         val doHands = runHands && handRuntime != null
@@ -192,12 +195,36 @@ class VisionPipeline(
         lastBitmapMs = android.os.SystemClock.elapsedRealtime() - bitmapStarted
 
         var handFuture: Future<HandPass>? = null
+        var depthFuture: Future<DepthEstimator.DepthMap?>? = null
         try {
             val observed = mutableListOf<BoxObservation>()
             val wallStarted = android.os.SystemClock.elapsedRealtime()
             val runtime = handRuntime
             if (doHands && overlapModels && runtime != null) {
                 handFuture = runtime.begin(handBitmap ?: input, width, height, onHands)
+            }
+            if (enableDepth && depthEstimator != null && depthExecutor != null) {
+                val depthSource = objectBitmap ?: input
+                val depthBitmap = try {
+                    depthSource.copy(depthSource.config ?: Bitmap.Config.ARGB_8888, false)
+                } catch (_: Exception) {
+                    null
+                }
+                if (depthBitmap != null) {
+                    depthFuture = depthExecutor.submit(Callable<DepthEstimator.DepthMap?> {
+                        try {
+                            val depthStarted = android.os.SystemClock.elapsedRealtime()
+                            val map = depthEstimator.estimate(depthBitmap, depthStarted, sourceFrameId)
+                            lastDepthMs = android.os.SystemClock.elapsedRealtime() - depthStarted
+                            map
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Background depth estimation failure: ${e.message}")
+                            null
+                        } finally {
+                            depthBitmap.recycle()
+                        }
+                    })
+                }
             }
             if (runObjects) {
                 val source = objectBitmap ?: input
@@ -227,49 +254,6 @@ class VisionPipeline(
                         recentObjects = observed.map { it.copy() }
                     } finally {
                         image.close()
-                    }
-                }
-
-                if (enableDepth && depthEstimator != null && depthExecutor != null) {
-                    if (isDepthBusy.compareAndSet(false, true)) {
-                        val depthBitmap = try {
-                            source.copy(source.config ?: Bitmap.Config.ARGB_8888, false)
-                        } catch (_: Exception) {
-                            null
-                        }
-                        if (depthBitmap != null) {
-                            depthExecutor.execute {
-                                try {
-                                    val depthStarted = android.os.SystemClock.elapsedRealtime()
-                                    val map = depthEstimator.estimate(depthBitmap, depthStarted, sourceFrameId)
-                                    lastDepthMs = android.os.SystemClock.elapsedRealtime() - depthStarted
-                                    if (map != null) {
-                                        depthFrameBuffer[sourceFrameId] = map
-                                        if (depthFrameBuffer.size > 20) {
-                                            val staleKeys = depthFrameBuffer.keys.filter { it < sourceFrameId - 10 }
-                                            staleKeys.forEach { depthFrameBuffer.remove(it) }
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "Background depth estimation failure: ${e.message}")
-                                } finally {
-                                    depthBitmap.recycle()
-                                    isDepthBusy.set(false)
-                                }
-                            }
-                        } else {
-                            isDepthBusy.set(false)
-                        }
-                    }
-                    val currentMap = depthFrameBuffer[sourceFrameId]
-                    if (currentMap != null && currentMap.sequence == sourceFrameId) {
-                        for (i in observed.indices) {
-                            val b = observed[i]
-                            if (b.kind == "object") {
-                                val d = currentMap.getMedianDepthInBox(b.left, b.top, b.right, b.bottom, width, height)
-                                observed[i] = b.copy(depths = listOf(d))
-                            }
-                        }
                     }
                 }
             } else {
@@ -324,7 +308,43 @@ class VisionPipeline(
                     image.close()
                 }
             }
-            val currentMap = depthFrameBuffer.remove(sourceFrameId)
+            val currentMap: DepthEstimator.DepthMap? = when {
+                depthFuture != null -> {
+                    try {
+                        depthFuture.get(depthJoinTimeoutMs, TimeUnit.MILLISECONDS)
+                    } catch (e: TimeoutException) {
+                        depthFuture.cancel(true)
+                        Log.w(TAG, "Depth estimation timed out after ${depthJoinTimeoutMs}ms for frame $sourceFrameId")
+                        null
+                    } catch (e: Exception) {
+                        val cause = (e as? ExecutionException)?.cause ?: e
+                        Log.w(TAG, "Depth estimation failed for frame $sourceFrameId: ${cause.message}")
+                        null
+                    }
+                }
+                enableDepth && depthEstimator != null -> {
+                    val depthSource = objectBitmap ?: input
+                    try {
+                        val depthStarted = android.os.SystemClock.elapsedRealtime()
+                        val map = depthEstimator.estimate(depthSource, depthStarted, sourceFrameId)
+                        lastDepthMs = android.os.SystemClock.elapsedRealtime() - depthStarted
+                        map
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Synchronous depth estimation failed for frame $sourceFrameId: ${e.message}")
+                        null
+                    }
+                }
+                else -> null
+            }
+            if (currentMap != null && currentMap.sequence == sourceFrameId) {
+                for (i in observed.indices) {
+                    val b = observed[i]
+                    if (b.kind == "object") {
+                        val d = currentMap.getMedianDepthInBox(b.left, b.top, b.right, b.bottom, width, height)
+                        observed[i] = b.copy(depths = listOf(d))
+                    }
+                }
+            }
             val synchronizedDepthFrame = if (currentMap != null && currentMap.sequence == sourceFrameId) {
                 CameraSpatial3D.DepthFrame(
                     width = currentMap.width,
@@ -353,6 +373,7 @@ class VisionPipeline(
         } catch (error: Exception) {
             handRuntime?.invalidateInFlight()
             handFuture?.cancel(true)
+            depthFuture?.cancel(true)
             Log.e(TAG, "MediaPipe detection failed", error)
             throw error
         } finally {

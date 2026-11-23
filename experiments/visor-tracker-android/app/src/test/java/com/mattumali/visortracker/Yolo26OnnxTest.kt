@@ -12,7 +12,7 @@ import java.nio.FloatBuffer
 class Yolo26OnnxTest {
     @Test
     fun testOrtLoadModelAndRunInference() {
-        val modelFile = File("C:/Users/Admin/cloud-ai-os-visor-tracker/yolo26n-seg.onnx")
+        val modelFile = ModelBenchmarkTest.resolveModelFile()
         if (!modelFile.exists()) {
             println("Model file not found at ${modelFile.absolutePath}")
             return

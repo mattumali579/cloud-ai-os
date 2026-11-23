@@ -1,16 +1,53 @@
 package com.mattumali.visortracker
 
 import ai.onnxruntime.OrtEnvironment
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import javax.imageio.ImageIO
 
 class ModelBenchmarkTest {
 
+    companion object {
+        fun resolveModelFile(): File {
+            val candidates = listOf(
+                File("experiments/visor-tracker-android/app/src/main/assets/yolo26n-seg.onnx"),
+                File("experiments/visor-tracker-android/app/src/main/assets/models/yolo26n-seg.onnx"),
+                File("app/src/main/assets/yolo26n-seg.onnx"),
+                File("app/src/main/assets/models/yolo26n-seg.onnx"),
+                File("src/main/assets/yolo26n-seg.onnx"),
+                File("src/main/assets/models/yolo26n-seg.onnx"),
+                File("yolo26n-seg.onnx"),
+                File("../../../yolo26n-seg.onnx"),
+                File("C:/Users/Admin/cloud-ai-os-visor-tracker/yolo26n-seg.onnx"),
+                File("C:/Users/Admin/cloud-ai-os-visor-tracker/experiments/visor-tracker-android/app/src/main/assets/yolo26n-seg.onnx"),
+            )
+            return candidates.map { it.absoluteFile }.firstOrNull { it.isFile && it.length() > 0 } ?: File("yolo26n-seg.onnx").absoluteFile
+        }
+
+        fun resolveTestImageFile(): File {
+            val candidates = listOf(
+                File("experiments/visor-tracker-android/app/src/test/resources/test_10942_cam.jpg"),
+                File("app/src/test/resources/test_10942_cam.jpg"),
+                File("src/test/resources/test_10942_cam.jpg"),
+                File("experiments/visor-tracker-android/app/src/androidTest/assets/people.jpg"),
+                File("app/src/androidTest/assets/people.jpg"),
+                File("src/androidTest/assets/people.jpg"),
+                File("test-recordings/test_10942_cam.jpg"),
+                File("../../../test-recordings/test_10942_cam.jpg"),
+                File("C:/Users/Admin/cloud-ai-os-visor-tracker/test-recordings/test_10942_cam.jpg"),
+                File("C:/Users/Admin/cloud-ai-os-visor-tracker/experiments/visor-tracker-android/app/src/test/resources/test_10942_cam.jpg"),
+            )
+            return candidates.map { it.absoluteFile }.firstOrNull { it.isFile && it.length() > 0 } ?: File("test_10942_cam.jpg").absoluteFile
+        }
+    }
+
     @Test
     fun benchmarkYolo26nSeg() {
-        val modelFile = File("C:/Users/Admin/cloud-ai-os-visor-tracker/yolo26n-seg.onnx")
-        val testImageFile = File("C:/Users/Admin/cloud-ai-os-visor-tracker/test-recordings/test_10942_cam.jpg")
+        val modelFile = resolveModelFile()
+        val testImageFile = resolveTestImageFile()
+        assumeTrue("YOLO26n-seg model file required", modelFile.exists() && modelFile.length() > 0)
+        assumeTrue("Test image required", testImageFile.exists() && testImageFile.length() > 0)
 
         println("=== Benchmarking YOLO26n-seg (ONNX Runtime) ===")
         println("Model file size: ${modelFile.length() / (1024 * 1024.0)} MB")

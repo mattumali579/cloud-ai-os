@@ -12,8 +12,8 @@ android {
         applicationId = "com.mattumali.visortracker.stable"
         minSdk = 26
         targetSdk = 35
-        versionCode = 41
-        versionName = "0.41.0"
+        versionCode = 42
+        versionName = "0.42.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val geminiKey = System.getenv("VISOR_GEMINI_API_KEY").orEmpty()
             .replace("\\", "\\\\")

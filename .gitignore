@@ -37,6 +37,7 @@ state/lead_engine/
 *.pt
 *.onnx
 *.tflite
+!experiments/visor-tracker-android/app/src/main/assets/yolo26n-seg.onnx
 experiments/visor-tracker-android/app/src/main/assets/models/
 patch_*.py
 benchmark_*.py
