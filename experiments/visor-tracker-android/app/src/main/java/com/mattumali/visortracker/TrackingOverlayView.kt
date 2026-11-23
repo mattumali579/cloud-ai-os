@@ -169,7 +169,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun selectedTrackId(): Int? = spatialEngine.currentLockedId ?: distanceEstimator.selectedTrackId()
+    fun selectedTrackId(): Int? = if (strict3DMode) spatialEngine.currentLockedId else (spatialEngine.currentLockedId ?: distanceEstimator.selectedTrackId())
 
     @Synchronized
     fun groundingHint(): GroundingHint? {
@@ -208,7 +208,7 @@ class TrackingOverlayView(context: Context) : View(context) {
      */
     fun observeCandidates(frame: FrameDetections): String? {
         val output = evaluateSpatial(frame)
-        val note = distanceEstimator.observe(frame)
+        val note = if (!strict3DMode) distanceEstimator.observe(frame) else null
         aimRay = output.ray?.let { ray ->
             PointingRay(
                 tipX = ray.tipX,
@@ -228,7 +228,7 @@ class TrackingOverlayView(context: Context) : View(context) {
     fun updateFrame(frame: FrameDetections): String? {
         val previous = latest
         val spatialOutput = evaluateSpatial(frame)
-        val lockedId = spatialOutput.lockId ?: distanceEstimator.selectedTrackId()
+        val lockedId = if (strict3DMode) spatialOutput.lockId else (spatialOutput.lockId ?: distanceEstimator.selectedTrackId())
         val aimId = spatialOutput.hitId
         val ray = spatialOutput.ray
         aimRay = if (ray != null) {

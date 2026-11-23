@@ -172,6 +172,7 @@ class DetectorOverlaySimulationTest {
     fun productionSelectionSwitchesAtoBAndBackOnlyAfterTwoDetectorFrames() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val view = TrackingOverlayView(context)
+        view.setStrict3DMode(false)
         view.measure(
             android.view.View.MeasureSpec.makeMeasureSpec(200, android.view.View.MeasureSpec.EXACTLY),
             android.view.View.MeasureSpec.makeMeasureSpec(200, android.view.View.MeasureSpec.EXACTLY),

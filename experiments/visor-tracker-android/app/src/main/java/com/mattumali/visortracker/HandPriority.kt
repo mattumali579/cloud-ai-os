@@ -68,9 +68,10 @@ object HandPriority {
         val personH = person.bottom - person.top
         val personW = person.right - person.left
         val span = max(hand.right - hand.left, hand.bottom - hand.top).coerceAtLeast(24f)
-        val looksLikeBody = personH > personW * 1.6f &&
+        val looksLikeBody = (personH > personW * 1.6f &&
             personH > span * 6f &&
-            person.area() > hand.area() * 20f
+            person.area() > hand.area() * 20f) ||
+            (person.area() > hand.area() * 20f && personH > personW * 1.1f && personH > span * 3.5f)
         return !looksLikeBody
     }
 
@@ -91,6 +92,7 @@ object HandPriority {
         if (!fromLeft && !fromRight && !fromBottom) return false
         val boxH = person.bottom - person.top
         val boxW = person.right - person.left
+        if (fromBottom && !fromLeft && !fromRight && boxH < boxW * 1.05f) return false
         val frameArea = frameWidth.toFloat() * frameHeight.toFloat()
         val frac = person.area() / frameArea
         if (label != "person") {
