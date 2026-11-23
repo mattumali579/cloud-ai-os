@@ -23,13 +23,27 @@ class ReplayDriverTest {
             ?.let(::File)
             ?: File(folder, "detections.txt")
         check(detections.isFile) { "missing ${detections.absolutePath}" }
-        val tracker = ProductionTracker()
+        val tracker = ProductionTracker(engine = SpatialTargetingEngine(strict3DMode = true))
         val frames = parse(detections.readText())
         val out = File(folder, "decisions.jsonl")
         out.bufferedWriter().use { writer ->
             for ((idx, frame) in frames.withIndex()) {
                 val capturedAtMs = (frame.t * 1000).toLong()
-                val step = tracker.step(frame.boxes, frame.width, frame.height, capturedAtMs = capturedAtMs, sequence = idx.toLong())
+                val depthFrame = CameraSpatial3D.DepthFrame.fromBoxes(
+                    width = frame.width,
+                    height = frame.height,
+                    boxes = frame.boxes,
+                    sequence = idx.toLong(),
+                    capturedAtMs = capturedAtMs,
+                )
+                val step = tracker.step(
+                    detections = frame.boxes,
+                    width = frame.width,
+                    height = frame.height,
+                    capturedAtMs = capturedAtMs,
+                    sequence = idx.toLong(),
+                    depthFrame = depthFrame,
+                )
                 writer.append(decision(step))
                 writer.newLine()
             }

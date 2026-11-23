@@ -26,7 +26,7 @@ class SpatialTargetingEngine(
     val directionFramesRequired: Int = 3,
     val minHandScore: Float = IndexPoint.MIN_SCORE,
     val maxTargetFrameFraction: Float = IndexPoint.MAX_POINTABLE_FRAME_FRACTION,
-    val strict3DMode: Boolean = true,
+    val strict3DMode: Boolean = false,
 ) {
     enum class State {
         NO_HAND,
@@ -215,26 +215,55 @@ class SpatialTargetingEngine(
         val armObj = frame.boxes.firstOrNull { it.label.lowercase() in listOf("person", "arm") && it.depths.isNotEmpty() }
         val handBaseDepth = armObj?.depths?.firstOrNull() ?: 0.65f
         val ray3D = CameraSpatial3D.constructHandRay3D(primaryHand, intrinsics, handBaseDepth)
-        val objectSurfaces3D = validObjects.mapNotNull { CameraSpatial3D.reconstructObjectSurface(it, intrinsics) }
-        val hit3D = if (ray3D != null && objectSurfaces3D.isNotEmpty()) {
-            CameraSpatial3D.intersect3D(ray3D, objectSurfaces3D, intrinsics = intrinsics)
+
+        // Depth frame synchronization verification:
+        val depthFrame = frame.depthFrame
+        val isDepthSynchronized = depthFrame != null && depthFrame.sequence == frame.sequence
+
+        val depthLookup: ((Float, Float) -> Float)? = if (isDepthSynchronized) {
+            { normX, normY -> depthFrame.getDepth(normX, normY) }
         } else null
 
-        val finalRay3D = if (hit3D != null && ray3D != null) {
-            ray3D.copy(direction = hit3D.rayDirection)
+        // In strict 3D mode, depth frame mismatch or missing fails closed (rejects 3D target acquisition)
+        val objectSurfaces3D = if (strict3DMode && !isDepthSynchronized) {
+            emptyList()
         } else {
-            ray3D
+            validObjects.mapNotNull { CameraSpatial3D.reconstructObjectSurface(it, intrinsics, depthLookup) }
         }
 
-        // In strict 3D mode, the validated 3D intersection is authoritative (never fall back to 2D)
+        val hit3D = if (ray3D != null && objectSurfaces3D.isNotEmpty()) {
+            CameraSpatial3D.intersect3D(
+                ray = ray3D,
+                surfaces = objectSurfaces3D,
+                strictExactOnly = strict3DMode,
+                intrinsics = intrinsics,
+            )
+        } else null
+
+        // In strict 3D mode, ray direction is NEVER bent or modified!
+        val finalRay3D = ray3D
+
+        // In strict 3D mode: only TRUE_SURFACE_INTERSECTION with synchronized depth can establish a target lock
         val finalTargetId = if (strict3DMode) {
-            if (directionStable && hit3D != null) hit3D.trackId else null
+            if (!isDepthSynchronized) {
+                null
+            } else if (directionStable && hit3D != null && hit3D.intersectionMode == CameraSpatial3D.IntersectionMode.TRUE_SURFACE_INTERSECTION) {
+                hit3D.trackId
+            } else null
         } else {
             targetId
         }
 
         // 4. Temporal state machine update
-        return updateStateMachine(pose, ray, finalTargetId, finalRay3D, hit3D, validObjects)
+        return updateStateMachine(
+            pose = pose,
+            ray = ray,
+            targetId = finalTargetId,
+            ray3D = finalRay3D,
+            hit3D = hit3D,
+            validObjects = validObjects,
+            depthSynchronized = isDepthSynchronized,
+        )
     }
 
     private fun updateDirectionStability(ray: SpatialRay): Boolean {
@@ -392,14 +421,19 @@ class SpatialTargetingEngine(
         ray3D: CameraSpatial3D.SpatialRay3D? = null,
         hit3D: CameraSpatial3D.HitResult3D? = null,
         validObjects: List<BoxObservation> = emptyList(),
+        depthSynchronized: Boolean = true,
     ): Output {
         lostFrames = 0
         var lockChanged = false
         var isReleased = false
 
-        val hitModeProvenance = if (hit3D != null) {
-            if (hit3D.intersectionMode == CameraSpatial3D.IntersectionMode.TRUE_SURFACE_INTERSECTION) "new_3d_hit" else "estimated_proximity"
-        } else "no_target"
+        val hitModeProvenance = when {
+            strict3DMode && !depthSynchronized -> "depth_frame_mismatch"
+            hit3D != null -> {
+                if (hit3D.intersectionMode == CameraSpatial3D.IntersectionMode.TRUE_SURFACE_INTERSECTION) "new_3d_hit" else "estimated_proximity"
+            }
+            else -> "no_target"
+        }
 
         if (lockedId == null) {
             // Not yet locked
@@ -410,7 +444,7 @@ class SpatialTargetingEngine(
                 currentState = State.POINTING
                 return Output(
                     State.POINTING, pose, null, null, null, ray, lockChanged = false, isReleased = false,
-                    ray3D = ray3D, hit3D = hit3D, lockProvenance = "no_target", lockedObjectId = null, intersectedObjectId = null
+                    ray3D = ray3D, hit3D = hit3D, lockProvenance = hitModeProvenance, lockedObjectId = null, intersectedObjectId = null
                 )
             }
 

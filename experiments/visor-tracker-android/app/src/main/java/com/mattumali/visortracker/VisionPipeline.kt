@@ -26,6 +26,7 @@ data class FrameDetections(
     val boxes: List<BoxObservation>,
     val sequence: Long = 0,
     val capturedAtMs: Long = 0,
+    val depthFrame: CameraSpatial3D.DepthFrame? = null,
 )
 
 /**
@@ -319,6 +320,19 @@ class VisionPipeline(
                     image.close()
                 }
             }
+            val currentMap = latestDepthMap
+            val nowMs = android.os.SystemClock.elapsedRealtime()
+            val synchronizedDepthFrame = if (currentMap != null && currentMap.sequence == frameNumber.toLong()) {
+                CameraSpatial3D.DepthFrame(
+                    width = currentMap.width,
+                    height = currentMap.height,
+                    depthData = currentMap.data,
+                    sequence = currentMap.sequence,
+                    capturedAtMs = currentMap.capturedAtMs,
+                    backend = currentMap.backend.name,
+                    calibrationStatus = CameraSpatial3D.CalibrationStatus.UNCALIBRATED_ESTIMATED,
+                )
+            } else null
             if (runObjects) frameNumber++
             if (scannedOptional && !optionalFailed) lastOptionalFault = null
             observed += recentHands
@@ -326,7 +340,14 @@ class VisionPipeline(
             observed += recentFaces
             val tracked = tracks.update(HandPriority.apply(observed, width, height))
                 .filter { box -> !box.held || box.kind == "hand" }
-            return FrameDetections(width, height, tracked.map { it.copy(points = it.points.toList()) })
+            return FrameDetections(
+                width = width,
+                height = height,
+                boxes = tracked.map { it.copy(points = it.points.toList()) },
+                sequence = frameNumber.toLong(),
+                capturedAtMs = nowMs,
+                depthFrame = synchronizedDepthFrame,
+            )
         } catch (error: Exception) {
             handRuntime?.invalidateInFlight()
             handFuture?.cancel(true)

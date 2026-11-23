@@ -154,6 +154,92 @@ object CameraSpatial3D {
         val rayDirection: Vector3 = Vector3(0f, 0f, 1f),
     )
 
+    data class DepthFrame(
+        val width: Int,
+        val height: Int,
+        val depthData: FloatArray,
+        val sequence: Long,
+        val capturedAtMs: Long,
+        val backend: String = "YOLO26_DEPTH",
+        val calibrationStatus: CalibrationStatus = CalibrationStatus.UNCALIBRATED_ESTIMATED,
+    ) {
+        fun getDepth(normX: Float, normY: Float): Float {
+            if (width <= 0 || height <= 0 || depthData.isEmpty()) return 0f
+            val px = (normX.coerceIn(0f, 1f) * (width - 1)).toInt()
+            val py = (normY.coerceIn(0f, 1f) * (height - 1)).toInt()
+            val idx = py * width + px
+            return if (idx in depthData.indices) depthData[idx] else 0f
+        }
+
+        fun getDepthAtPixel(x: Float, y: Float, frameW: Int, frameH: Int): Float {
+            if (frameW <= 0 || frameH <= 0) return 0f
+            return getDepth(x / frameW.toFloat(), y / frameH.toFloat())
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as DepthFrame
+            return width == other.width &&
+                height == other.height &&
+                sequence == other.sequence &&
+                capturedAtMs == other.capturedAtMs &&
+                backend == other.backend &&
+                calibrationStatus == other.calibrationStatus &&
+                depthData.contentEquals(other.depthData)
+        }
+
+        override fun hashCode(): Int {
+            var result = width
+            result = 31 * result + height
+            result = 31 * result + sequence.hashCode()
+            result = 31 * result + capturedAtMs.hashCode()
+            return result
+        }
+
+        companion object {
+            fun fromBoxes(
+                width: Int,
+                height: Int,
+                boxes: List<BoxObservation>,
+                sequence: Long,
+                capturedAtMs: Long,
+                gridW: Int = 160,
+                gridH: Int = 120,
+            ): DepthFrame {
+                val data = FloatArray(gridW * gridH) { 5.0f }
+                for (b in boxes) {
+                    val d = b.depths.firstOrNull() ?: continue
+                    if (d <= 0.05f) continue
+                    val x0 = (b.left / width * gridW).toInt().coerceIn(0, gridW - 1)
+                    val y0 = (b.top / height * gridH).toInt().coerceIn(0, gridH - 1)
+                    val x1 = (b.right / width * gridW).toInt().coerceIn(0, gridW - 1)
+                    val y1 = (b.bottom / height * gridH).toInt().coerceIn(0, gridH - 1)
+                    for (gy in y0..y1) {
+                        for (gx in x0..x1) {
+                            val px = gx * width.toFloat() / gridW
+                            val py = gy * height.toFloat() / gridH
+                            val inMask = b.points.size < 3 || isPointInPolygon(px, py, b.points)
+                            if (inMask) {
+                                data[gy * gridW + gx] = d
+                            }
+                        }
+                    }
+                }
+                return DepthFrame(
+                    width = gridW,
+                    height = gridH,
+                    depthData = data,
+                    sequence = sequence,
+                    capturedAtMs = capturedAtMs,
+                    backend = "YOLO26_DEPTH",
+                    calibrationStatus = CalibrationStatus.UNCALIBRATED_ESTIMATED,
+                )
+            }
+        }
+    }
+
+
     /**
      * Reconstructs 3D hand joints and forward pointing ray in camera coordinates.
      * Uses human anatomical constraints: index finger length L ~ 0.085m (MCP to TIP).
@@ -270,16 +356,22 @@ object CameraSpatial3D {
         val frameW = intrinsics.width.toFloat()
         val frameH = intrinsics.height.toFloat()
 
-        fun getZ(px: Float, py: Float): Float {
-            if (depthLookup == null) return defaultZ
-            val d = depthLookup(px / frameW, py / frameH)
-            return if (d > 0.1f && d.isFinite()) d else defaultZ
+        fun getZ(px: Float, py: Float, pointIndex: Int? = null): Float {
+            if (depthLookup != null) {
+                val d = depthLookup(px / frameW, py / frameH)
+                if (d > 0.05f && d.isFinite()) return d
+            }
+            if (pointIndex != null && pointIndex in obj.depths.indices) {
+                val d = obj.depths[pointIndex]
+                if (d > 0.05f && d.isFinite()) return d
+            }
+            return defaultZ
         }
 
         // 1. Polygon boundary vertices in 3D with per-vertex depth
         if (hasMask) {
-            for (p in obj.points) {
-                val z = getZ(p.first, p.second)
+            for ((idx, p) in obj.points.withIndex()) {
+                val z = getZ(p.first, p.second, idx)
                 points3D.add(intrinsics.backProject(p.first, p.second, z))
             }
         }
@@ -368,17 +460,6 @@ object CameraSpatial3D {
         val dRay = ray.direction
         val hits = mutableListOf<HitResult3D>()
 
-        val uTip = ray.tip2D.first
-        val vTip = ray.tip2D.second
-        val dirU = ray.dir2D.first
-        val dirV = ray.dir2D.second
-        val has2DRay = kotlin.math.hypot(dirU, dirV) > 0.1f
-
-        val effectiveIntrinsics = intrinsics ?: CameraIntrinsics.forViewport(
-            kotlin.math.max(1080, (kotlin.math.abs(pTip.x) * 2000f).toInt()),
-            kotlin.math.max(1440, (kotlin.math.abs(pTip.y) * 2000f).toInt())
-        )
-
         for (surface in surfaces) {
             // Target surface must be in front of fingertip (never behind the hand)
             if (surface.meanDepth <= pTip.z * 0.8f) {
@@ -389,10 +470,9 @@ object CameraSpatial3D {
             var bestS = -1f
             var bestHitPoint: Vector3? = null
             var bestSourceSurfacePoint: Vector3? = null
-            var bestRayDir: Vector3 = dRay
             var isExactHit = false
 
-            // 1. Direct 3D ray-to-point cloud intersection along ray.direction
+            // Direct forward 3D ray-to-point cloud intersection along unbent forward ray.direction
             for (q in surface.points3D) {
                 val v = q - pTip
                 val s = v.dot(dRay)
@@ -410,62 +490,19 @@ object CameraSpatial3D {
                         bestS = s
                         bestHitPoint = pRay
                         bestSourceSurfacePoint = q
-                        bestRayDir = dRay
                     }
                 }
             }
 
-            // 2. Camera frustum line-of-aim 3D surface intersection
-            if (bestHitPoint == null && has2DRay) {
-                val maxSearchStep = 1500f
-                val stepSize = 5f
-                var currentT = 0f
-                var hitPixel: Pair<Float, Float>? = null
-
-                while (currentT <= maxSearchStep) {
-                    val uu = uTip + currentT * dirU
-                    val vv = vTip + currentT * dirV
-
-                    val inSurface = if (surface.polygon2D.size >= 3) {
-                        isPointInPolygon(uu, vv, surface.polygon2D)
-                    } else {
-                        val b = surface.bbox2D
-                        uu >= (b[0] - 5f) && uu <= (b[2] + 5f) && vv >= (b[1] - 5f) && vv <= (b[3] + 5f)
-                    }
-
-                    if (inSurface) {
-                        hitPixel = uu to vv
-                        break
-                    }
-                    currentT += stepSize
-                }
-
-                if (hitPixel != null) {
-                    val zHit = surface.meanDepth.coerceAtLeast(pTip.z + 0.05f)
-                    val pSurfaceHit = effectiveIntrinsics.backProject(hitPixel.first, hitPixel.second, zHit)
-                    val vToHit = pSurfaceHit - pTip
-                    val dist = vToHit.magnitude()
-
-                    if (dist > 0.05f && dist <= ray.reach && pSurfaceHit.z >= pTip.z - 0.05f) {
-                        val hitDir = vToHit.normalized()
-                        bestHitPoint = pTip + hitDir * dist
-                        bestSourceSurfacePoint = pSurfaceHit
-                        bestS = dist
-                        bestRayDir = hitDir
-                        minPerpDist = 0.001f
-                        isExactHit = true
-                    }
-                }
+            // In strict 3D mode, proximity alone without true surface intersection is rejected
+            if (strictExactOnly && !isExactHit) {
+                continue
             }
 
             if (bestHitPoint != null && bestS > 0.05f) {
-                if (strictExactOnly && !isExactHit) {
-                    continue
-                }
-
                 // Mandatory Runtime Invariant Verification:
                 // Ensure hitPoint is mathematically guaranteed to equal origin + rayDirection * distanceAlongRay
-                val checkPoint = pTip + bestRayDir * bestS
+                val checkPoint = pTip + dRay * bestS
                 val invariantError = bestHitPoint.distanceTo(checkPoint)
                 check(invariantError < 1e-3f) {
                     "Runtime 3D geometric invariant violated: hitPoint $bestHitPoint != rayPoint $checkPoint (err=$invariantError)"
@@ -495,7 +532,7 @@ object CameraSpatial3D {
                         intersectionMode = mode,
                         geometricUncertainty = minPerpDist / bestS,
                         calibrationStatus = ray.calibrationStatus,
-                        rayDirection = bestRayDir,
+                        rayDirection = dRay, // Ray direction is NEVER bent or modified!
                     )
                 )
             }
@@ -503,7 +540,14 @@ object CameraSpatial3D {
 
         if (hits.isEmpty()) return null
 
+        val candidateHits = if (strictExactOnly) {
+            hits.filter { it.intersectionMode == IntersectionMode.TRUE_SURFACE_INTERSECTION }
+        } else {
+            hits
+        }
+        if (candidateHits.isEmpty()) return null
+
         // Closest object along forward 3D ray wins (natural 3D occlusion resolution)
-        return hits.minByOrNull { it.distanceAlongRay }
+        return candidateHits.minByOrNull { it.distanceAlongRay }
     }
 }

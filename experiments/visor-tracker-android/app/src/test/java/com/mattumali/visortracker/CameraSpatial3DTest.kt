@@ -290,4 +290,226 @@ class CameraSpatial3DTest {
         assertTrue("Top of surface must be near 2.0m", surface.minBound.z in 1.9f..2.2f)
         assertTrue("Bottom of surface must be near 4.0m", surface.maxBound.z in 3.8f..4.1f)
     }
+
+    @Test
+    fun twoDMaskOverlapWithout3DIntersectionFailsClosed() {
+        val intrinsics = CameraSpatial3D.CameraIntrinsics(
+            width = 1000,
+            height = 1000,
+            fx = 1000f,
+            fy = 1000f,
+            cx = 500f,
+            cy = 500f,
+        )
+
+        // Hand tip at (0, 0, 1.0m) pointing along +Z axis directly down the center
+        val originalDir = CameraSpatial3D.Vector3(0f, 0f, 1f)
+        val ray = CameraSpatial3D.SpatialRay3D(
+            origin = CameraSpatial3D.Vector3(0f, 0f, 1.0f),
+            direction = originalDir,
+            reach = 10.0f,
+            tip2D = 500f to 500f,
+            dir2D = 0f to 1f, // 2D projection points "down" on the screen (increasing V)
+        )
+
+        // Object placed down on the image plane (v in 700..900, u in 400..600)
+        // 2D line from (500, 500) with dir2D=(0, 1) directly enters this box!
+        // BUT in 3D camera space, its 3D coordinates are Y = +0.8m to +1.6m, Z = 4.0m
+        // While the 3D ray along +Z passes at X=0, Y=0, so 3D perpendicular distance is > 0.8m!
+        val obj = BoxObservation(
+            kind = "object",
+            label = "screen_intersecting_but_3d_missing",
+            score = 0.95f,
+            left = 400f,
+            top = 700f,
+            right = 600f,
+            bottom = 900f,
+            points = listOf(400f to 700f, 600f to 700f, 600f to 900f, 400f to 900f),
+            depths = listOf(4.0f),
+            trackId = 88,
+        )
+
+        val surface = CameraSpatial3D.reconstructObjectSurface(obj, intrinsics)!!
+        
+        // In strict mode (strictExactOnly = true), 2D mask crossing MUST NOT fabricate a 3D hit!
+        val strictHit = CameraSpatial3D.intersect3D(ray, listOf(surface), strictExactOnly = true, intrinsics = intrinsics)
+        assertNull("2D mask crossing must NOT fabricate an exact 3D hit when 3D ray misses surface", strictHit)
+
+        // In non-strict mode, if any proximity hit occurs, ray direction must remain the original ray direction!
+        val proxHit = CameraSpatial3D.intersect3D(ray, listOf(surface), strictExactOnly = false, intrinsics = intrinsics)
+        if (proxHit != null) {
+            assertEquals("Ray direction must NEVER be bent or redirected to target", originalDir.x, proxHit.rayDirection.x, 1e-5f)
+            assertEquals("Ray direction must NEVER be bent or redirected to target", originalDir.y, proxHit.rayDirection.y, 1e-5f)
+            assertEquals("Ray direction must NEVER be bent or redirected to target", originalDir.z, proxHit.rayDirection.z, 1e-5f)
+            assertTrue("Cone proximity cannot be marked TRUE_SURFACE_INTERSECTION", proxHit.intersectionMode != CameraSpatial3D.IntersectionMode.TRUE_SURFACE_INTERSECTION)
+        }
+    }
+
+    @Test
+    fun changingPixelDepthAltersReconstructedGeometryAndHitOutcome() {
+        val intrinsics = CameraSpatial3D.CameraIntrinsics(
+            width = 1000,
+            height = 1000,
+            fx = 1000f,
+            fy = 1000f,
+            cx = 500f,
+            cy = 500f,
+        )
+
+        val targetBox = BoxObservation(
+            kind = "object",
+            label = "dynamic_depth_target",
+            score = 0.95f,
+            left = 450f,
+            top = 450f,
+            right = 550f,
+            bottom = 550f,
+            points = listOf(450f to 450f, 550f to 450f, 550f to 550f, 450f to 550f),
+            depths = listOf(3.0f),
+            trackId = 77,
+        )
+
+        // Ray origin at (0, 0, 1.0m) pointing along +Z, reach = 4.0m (can reach up to Z=5.0m)
+        val ray = CameraSpatial3D.SpatialRay3D(
+            origin = CameraSpatial3D.Vector3(0f, 0f, 1.0f),
+            direction = CameraSpatial3D.Vector3(0f, 0f, 1.0f),
+            reach = 4.0f,
+        )
+
+        // State 1: Per-pixel depth is 3.0m (within reach: s = 2.0m <= 4.0m)
+        val depthLookupNear: (Float, Float) -> Float = { _, _ -> 3.0f }
+        val surfaceNear = CameraSpatial3D.reconstructObjectSurface(targetBox, intrinsics, depthLookupNear)!!
+        assertEquals(3.0f, surfaceNear.centroid.z, 0.05f)
+        val hitNear = CameraSpatial3D.intersect3D(ray, listOf(surfaceNear), strictExactOnly = true)
+        assertNotNull("Ray must hit surface at 3.0m depth", hitNear)
+        assertEquals(77, hitNear!!.trackId)
+        assertEquals(2.0f, hitNear.distanceAlongRay, 0.05f)
+
+        // State 2: Changing per-pixel depth to 8.0m moves the 3D surface beyond reach (reach = 4.0m)
+        val depthLookupFar: (Float, Float) -> Float = { _, _ -> 8.0f }
+        val surfaceFar = CameraSpatial3D.reconstructObjectSurface(targetBox, intrinsics, depthLookupFar)!!
+        assertEquals(8.0f, surfaceFar.centroid.z, 0.05f)
+        val hitFar = CameraSpatial3D.intersect3D(ray, listOf(surfaceFar), strictExactOnly = true)
+        assertNull("Ray must miss surface when pixel depth changes beyond ray reach", hitFar)
+    }
+
+    private fun createPointingHand(): BoxObservation {
+        val pts = MutableList(21) { 125f to 215f }
+        val depths = MutableList(21) { 0f }
+        pts[IndexPoint.WRIST] = 100f to 250f
+
+        pts[1] = 105f to 225f
+        pts[2] = 120f to 205f
+        pts[3] = 135f to 185f
+        pts[4] = 150f to 165f
+
+        pts[5] = 130f to 210f
+        pts[6] = 175f to 190f
+        pts[7] = 135f to 170f
+        pts[8] = 170f to 145f
+        depths[5] = 0f
+        depths[6] = 20f
+        depths[7] = 35f
+        depths[8] = 45f
+
+        pts[9] = 125f to 215f
+        pts[10] = 135f to 205f
+        pts[11] = 128f to 212f
+        pts[12] = 120f to 220f
+        pts[13] = 120f to 220f
+        pts[14] = 130f to 212f
+        pts[16] = 118f to 224f
+        pts[17] = 112f to 225f
+        pts[18] = 122f to 218f
+        pts[20] = 110f to 230f
+
+        return BoxObservation(
+            kind = "hand", label = "hand", score = 0.90f, left = 95f, top = 140f, right = 180f, bottom = 255f,
+            points = pts, depths = depths, trackId = 1,
+        )
+    }
+
+    @Test
+    fun depthFrameMismatchFailsClosedInTargetingEngine() {
+        val engine = SpatialTargetingEngine(strict3DMode = true, directionFramesRequired = 1)
+
+        val target = BoxObservation(
+            kind = "object",
+            label = "target_cup",
+            score = 0.95f,
+            left = 190f,
+            top = 70f,
+            right = 260f,
+            bottom = 140f,
+            points = listOf(190f to 70f, 260f to 70f, 260f to 140f, 190f to 140f),
+            depths = listOf(2.0f),
+            trackId = 10,
+        )
+
+        val hand = createPointingHand()
+
+        // Case 1: depthFrame is NULL in strict 3D mode -> must fail closed
+        val frameNoDepth = FrameDetections(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target, hand),
+            sequence = 5L,
+            capturedAtMs = 500L,
+            depthFrame = null,
+        )
+        val outNoDepth = engine.step(frameNoDepth)
+        assertNull("Null depth frame in strict 3D mode must not acquire lock", outNoDepth.lockId)
+        assertEquals("depth_frame_mismatch", outNoDepth.lockProvenance)
+
+        // Case 2: depthFrame has mismatched sequence (e.g. sequence 4L vs frame sequence 5L) -> must fail closed
+        val mismatchedDepthFrame = CameraSpatial3D.DepthFrame.fromBoxes(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target),
+            sequence = 4L, // MISMATCHED!
+            capturedAtMs = 400L,
+        )
+        val frameMismatched = FrameDetections(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target, hand),
+            sequence = 5L,
+            capturedAtMs = 500L,
+            depthFrame = mismatchedDepthFrame,
+        )
+        val outMismatched = engine.step(frameMismatched)
+        assertNull("Mismatched depth frame sequence must fail closed", outMismatched.lockId)
+        assertEquals("depth_frame_mismatch", outMismatched.lockProvenance)
+
+        // Case 3: Synchronized depth frame (sequence 5L == frame sequence 5L) -> acquires target
+        val synchronizedDepthFrame = CameraSpatial3D.DepthFrame.fromBoxes(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target),
+            sequence = 5L, // SYNCHRONIZED!
+            capturedAtMs = 500L,
+        )
+        val frameSynchronized = FrameDetections(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target, hand),
+            sequence = 5L,
+            capturedAtMs = 500L,
+            depthFrame = synchronizedDepthFrame,
+        )
+        // Send enough stable pointing frames to establish lock
+        var outSync = engine.step(frameSynchronized)
+        for (i in 0 until 5) {
+            val f = FrameDetections(
+                width = 1000,
+                height = 1000,
+                boxes = listOf(target, hand),
+                sequence = (6 + i).toLong(),
+                capturedAtMs = (600 + i * 100).toLong(),
+                depthFrame = synchronizedDepthFrame.copy(sequence = (6 + i).toLong()),
+            )
+            outSync = engine.step(f)
+        }
+        assertTrue("Synchronized depth frame enables 3D targeting", outSync.lockProvenance in listOf("new_3d_hit", "retained_lock_grace"))
+    }
 }

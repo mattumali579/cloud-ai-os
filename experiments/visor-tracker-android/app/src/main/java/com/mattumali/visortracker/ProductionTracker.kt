@@ -47,12 +47,20 @@ class ProductionTracker(
         height: Int,
         capturedAtMs: Long = 0L,
         sequence: Long = 0L,
+        depthFrame: CameraSpatial3D.DepthFrame? = null,
     ): Step {
         val arm = detections.firstOrNull { HandPriority.wearerArm(it, width, height) }
         val marked = if (arm != null) detections + HandTrack.armMarker(arm) else detections
         val identified = tracks.update(HandPriority.apply(marked, width, height))
             .filter { box -> !box.held || box.kind == "hand" }
-        val frame = FrameDetections(width, height, identified, sequence = sequence, capturedAtMs = capturedAtMs)
+        val frame = FrameDetections(
+            width = width,
+            height = height,
+            boxes = identified,
+            sequence = sequence,
+            capturedAtMs = capturedAtMs,
+            depthFrame = depthFrame,
+        )
 
         val output = engine.step(frame)
 
@@ -116,7 +124,7 @@ class ProductionTracker(
             lockedObjectId = output.lockedObjectId,
             intersectedObjectId = output.intersectedObjectId,
             frameId = sequence,
-            depthFrameId = sequence,
+            depthFrameId = frame.depthFrame?.sequence ?: -1L,
         )
     }
 }
