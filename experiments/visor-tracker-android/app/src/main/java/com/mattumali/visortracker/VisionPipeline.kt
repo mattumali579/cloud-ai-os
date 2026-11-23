@@ -74,8 +74,8 @@ class VisionPipeline(
         }
     } else null
     private val isDepthBusy = java.util.concurrent.atomic.AtomicBoolean(false)
-    @Volatile private var latestDepthMap: DepthEstimator.DepthMap? = null
-    private var frameNumber = 0
+    private val frameSequenceCounter = java.util.concurrent.atomic.AtomicLong(1L)
+    private val depthFrameBuffer = java.util.concurrent.ConcurrentHashMap<Long, DepthEstimator.DepthMap>()
     private var recentObjects = emptyList<BoxObservation>()
     private var recentHands = emptyList<BoxObservation>()
     private var recentArms = emptyList<BoxObservation>()
@@ -161,7 +161,9 @@ class VisionPipeline(
         onHands: ((List<BoxObservation>) -> Unit)? = null,
     ): FrameDetections {
         if (input.isRecycled) throw IllegalStateException("recycled frame")
-        val bitmapStarted = android.os.SystemClock.elapsedRealtime()
+        val sourceFrameId = frameSequenceCounter.getAndIncrement()
+        val sourceCapturedAtMs = android.os.SystemClock.elapsedRealtime()
+        val bitmapStarted = sourceCapturedAtMs
         val (width, height) = YuvSnapshot.outputSize(input.width, input.height, preset.maxFrameWidth)
         val doHands = runHands && handRuntime != null
         val (handWidth, handHeight) = if (doHands) {
@@ -239,10 +241,14 @@ class VisionPipeline(
                             depthExecutor.execute {
                                 try {
                                     val depthStarted = android.os.SystemClock.elapsedRealtime()
-                                    val map = depthEstimator.estimate(depthBitmap, depthStarted, frameNumber.toLong())
+                                    val map = depthEstimator.estimate(depthBitmap, depthStarted, sourceFrameId)
                                     lastDepthMs = android.os.SystemClock.elapsedRealtime() - depthStarted
                                     if (map != null) {
-                                        latestDepthMap = map
+                                        depthFrameBuffer[sourceFrameId] = map
+                                        if (depthFrameBuffer.size > 20) {
+                                            val staleKeys = depthFrameBuffer.keys.filter { it < sourceFrameId - 10 }
+                                            staleKeys.forEach { depthFrameBuffer.remove(it) }
+                                        }
                                     }
                                 } catch (e: Exception) {
                                     Log.w(TAG, "Background depth estimation failure: ${e.message}")
@@ -255,10 +261,8 @@ class VisionPipeline(
                             isDepthBusy.set(false)
                         }
                     }
-                    val currentMap = latestDepthMap
-                    val nowMs = android.os.SystemClock.elapsedRealtime()
-                    // Expire stale depth maps older than 500ms to avoid sampling moved camera scenes (Failure Mode 6)
-                    if (currentMap != null && nowMs - currentMap.capturedAtMs <= 500L) {
+                    val currentMap = depthFrameBuffer[sourceFrameId]
+                    if (currentMap != null && currentMap.sequence == sourceFrameId) {
                         for (i in observed.indices) {
                             val b = observed[i]
                             if (b.kind == "object") {
@@ -299,7 +303,7 @@ class VisionPipeline(
                 handInferences += 1
             }
             lastWallMs = android.os.SystemClock.elapsedRealtime() - wallStarted
-            if (runObjects && includeFaces && frameNumber % 4 == 0) {
+            if (runObjects && includeFaces && sourceFrameId % 4L == 0L) {
                 scannedOptional = true
                 val source = objectBitmap ?: input
                 val image = BitmapImageBuilder(source).build()
@@ -320,9 +324,8 @@ class VisionPipeline(
                     image.close()
                 }
             }
-            val currentMap = latestDepthMap
-            val nowMs = android.os.SystemClock.elapsedRealtime()
-            val synchronizedDepthFrame = if (currentMap != null && currentMap.sequence == frameNumber.toLong()) {
+            val currentMap = depthFrameBuffer.remove(sourceFrameId)
+            val synchronizedDepthFrame = if (currentMap != null && currentMap.sequence == sourceFrameId) {
                 CameraSpatial3D.DepthFrame(
                     width = currentMap.width,
                     height = currentMap.height,
@@ -333,7 +336,6 @@ class VisionPipeline(
                     calibrationStatus = CameraSpatial3D.CalibrationStatus.UNCALIBRATED_ESTIMATED,
                 )
             } else null
-            if (runObjects) frameNumber++
             if (scannedOptional && !optionalFailed) lastOptionalFault = null
             observed += recentHands
             observed += recentArms
@@ -344,8 +346,8 @@ class VisionPipeline(
                 width = width,
                 height = height,
                 boxes = tracked.map { it.copy(points = it.points.toList()) },
-                sequence = frameNumber.toLong(),
-                capturedAtMs = nowMs,
+                sequence = sourceFrameId,
+                capturedAtMs = sourceCapturedAtMs,
                 depthFrame = synchronizedDepthFrame,
             )
         } catch (error: Exception) {

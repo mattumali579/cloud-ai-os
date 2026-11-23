@@ -512,4 +512,45 @@ class CameraSpatial3DTest {
         }
         assertTrue("Synchronized depth frame enables 3D targeting", outSync.lockProvenance in listOf("new_3d_hit", "retained_lock_grace"))
     }
+
+    @Test
+    fun asyncDepthLateArrivalFailsClosedWithoutStaleReuse() {
+        // Simulates async depth arriving late (e.g. depth for frame 10 arriving when frame 12 is processed)
+        val engine = SpatialTargetingEngine(strict3DMode = true, directionFramesRequired = 1)
+        val target = BoxObservation(
+            kind = "object",
+            label = "target_cup",
+            score = 0.95f,
+            left = 190f,
+            top = 70f,
+            right = 260f,
+            bottom = 140f,
+            points = listOf(190f to 70f, 260f to 70f, 260f to 140f, 190f to 140f),
+            depths = listOf(2.0f),
+            trackId = 10,
+        )
+        val hand = createPointingHand()
+
+        // Late depth frame from sequence 10L
+        val lateDepthFrame = CameraSpatial3D.DepthFrame.fromBoxes(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target),
+            sequence = 10L,
+            capturedAtMs = 1000L,
+        )
+
+        // Frame 12 arrives with late depth frame (sequence 10L) -> must fail closed with depth_frame_mismatch
+        val frame12WithStaleDepth = FrameDetections(
+            width = 1000,
+            height = 1000,
+            boxes = listOf(target, hand),
+            sequence = 12L,
+            capturedAtMs = 1200L,
+            depthFrame = lateDepthFrame,
+        )
+        val result = engine.step(frame12WithStaleDepth)
+        assertNull("Stale async depth must never trigger a 3D target lock", result.lockId)
+        assertEquals("depth_frame_mismatch", result.lockProvenance)
+    }
 }

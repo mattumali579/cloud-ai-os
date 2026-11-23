@@ -100,6 +100,7 @@ class OverlayTrackingService : Service() {
     private var includeHandsFaces = false
     private var preset = DetectionPreset.YOLO26_SEG
     private var enableDepth = true
+    private var strict3D = true
     private var depthBackendName = DepthEstimator.DepthBackend.YOLO26_DEPTH.name
     private var cloudGroundingEnabled = false
     private var lastObjectOfferedAtMs = 0L
@@ -191,8 +192,11 @@ class OverlayTrackingService : Service() {
             intent?.getStringExtra(EXTRA_PRESET) ?: prefs.getString(PREF_PRESET, DetectionPreset.YOLO26_SEG.name)
         )
         enableDepth = intent?.getBooleanExtra(
-            EXTRA_ENABLE_DEPTH, prefs.getBoolean(PREF_ENABLE_DEPTH, false)
-        ) ?: prefs.getBoolean(PREF_ENABLE_DEPTH, false)
+            EXTRA_ENABLE_DEPTH, prefs.getBoolean(PREF_ENABLE_DEPTH, true)
+        ) ?: prefs.getBoolean(PREF_ENABLE_DEPTH, true)
+        strict3D = intent?.getBooleanExtra(
+            EXTRA_STRICT_3D, prefs.getBoolean(PREF_STRICT_3D, true)
+        ) ?: prefs.getBoolean(PREF_STRICT_3D, true)
         depthBackendName = intent?.getStringExtra(EXTRA_DEPTH_BACKEND)
             ?: (prefs.getString(PREF_DEPTH_BACKEND, DepthEstimator.DepthBackend.YOLO26_DEPTH.name) ?: DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
 
@@ -200,6 +204,7 @@ class OverlayTrackingService : Service() {
         startForeground(NOTIFICATION_ID, notification("Attaching the Live View proof mark"))
         try {
             val view = TrackingOverlayView(applicationContext)
+            view.setStrict3DMode(strict3D)
             windows.addView(view, overlayLayout())
             overlay = view
             overlayAttached = true
@@ -959,6 +964,7 @@ class OverlayTrackingService : Service() {
         const val PREF_PRESET = "detector_preset"
         const val PREF_DEPTH_BACKEND = "depth_backend"
         const val PREF_ENABLE_DEPTH = "enable_depth"
+        const val PREF_STRICT_3D = "strict_3d_mode"
         const val PREF_HANDS_FACES = "detect_hands_faces"
         const val PREF_PROBE = "show_overlay_probe"
         const val PREF_PRIVATE_CAPTURE = "opt_in_private_capture"
@@ -967,6 +973,7 @@ class OverlayTrackingService : Service() {
         const val EXTRA_PRESET = "preset"
         const val EXTRA_DEPTH_BACKEND = "depth_backend"
         const val EXTRA_ENABLE_DEPTH = "enable_depth"
+        const val EXTRA_STRICT_3D = "strict_3d"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
         const val ACTION_CALIBRATE = "com.mattumali.visortracker.CALIBRATE_DISTANCE"

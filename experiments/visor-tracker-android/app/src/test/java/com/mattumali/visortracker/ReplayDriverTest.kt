@@ -15,10 +15,10 @@ import org.junit.Test
  */
 class ReplayDriverTest {
     @Test fun writesProductionDecisions() {
-        val dir = System.getenv("VISOR_REPLAY_DIR")
+        val dir = System.getenv("VISOR_REPLAY_DIR") ?: System.getProperty("VISOR_REPLAY_DIR")
         assumeTrue("VISOR_REPLAY_DIR is unset; replay was not requested", !dir.isNullOrBlank())
         val folder = File(dir!!)
-        val detections = System.getenv("VISOR_REPLAY_DETECTIONS")
+        val detections = (System.getenv("VISOR_REPLAY_DETECTIONS") ?: System.getProperty("VISOR_REPLAY_DETECTIONS"))
             ?.takeIf { it.isNotBlank() }
             ?.let(::File)
             ?: File(folder, "detections.txt")
@@ -26,27 +26,36 @@ class ReplayDriverTest {
         val tracker = ProductionTracker(engine = SpatialTargetingEngine(strict3DMode = true))
         val frames = parse(detections.readText())
         val out = File(folder, "decisions.jsonl")
-        out.bufferedWriter().use { writer ->
-            for ((idx, frame) in frames.withIndex()) {
-                val capturedAtMs = (frame.t * 1000).toLong()
-                val depthFrame = CameraSpatial3D.DepthFrame.fromBoxes(
-                    width = frame.width,
-                    height = frame.height,
-                    boxes = frame.boxes,
-                    sequence = idx.toLong(),
-                    capturedAtMs = capturedAtMs,
-                )
-                val step = tracker.step(
-                    detections = frame.boxes,
-                    width = frame.width,
-                    height = frame.height,
-                    capturedAtMs = capturedAtMs,
-                    sequence = idx.toLong(),
-                    depthFrame = depthFrame,
-                )
-                writer.append(decision(step))
-                writer.newLine()
+        val depthFile = File(folder, "depth_frames.bin")
+        val depthStream = if (depthFile.isFile) java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(depthFile))) else null
+        try {
+            out.bufferedWriter().use { writer ->
+                for ((idx, frame) in frames.withIndex()) {
+                    val capturedAtMs = (frame.t * 1000).toLong()
+                    val authenticDepth = depthStream?.let {
+                        CameraSpatial3D.DepthFrame.readNextFromBinary(it, idx.toLong(), capturedAtMs)
+                    }
+                    val depthFrame = authenticDepth ?: CameraSpatial3D.DepthFrame.fromBoxes(
+                        width = frame.width,
+                        height = frame.height,
+                        boxes = frame.boxes,
+                        sequence = idx.toLong(),
+                        capturedAtMs = capturedAtMs,
+                    )
+                    val step = tracker.step(
+                        detections = frame.boxes,
+                        width = frame.width,
+                        height = frame.height,
+                        capturedAtMs = capturedAtMs,
+                        sequence = idx.toLong(),
+                        depthFrame = depthFrame,
+                    )
+                    writer.append(decision(step))
+                    writer.newLine()
+                }
             }
+        } finally {
+            depthStream?.close()
         }
         check(out.readLines().count { it.isNotBlank() } == frames.size) {
             "decision count does not match detections"

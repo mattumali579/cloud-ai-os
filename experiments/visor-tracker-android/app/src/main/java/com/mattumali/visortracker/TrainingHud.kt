@@ -23,6 +23,8 @@ object TrainingHud {
         val objectMs: Long = 0L,
         val depthMs: Long = 0L,
         val handMs: Long = 0L,
+        val strict3DMode: Boolean = false,
+        val lockProvenance: String = "no_target",
     )
 
     fun status(
@@ -34,6 +36,8 @@ object TrainingHud {
         objectMs: Long = 0L,
         depthMs: Long = 0L,
         handMs: Long = 0L,
+        strict3DMode: Boolean = false,
+        lockProvenance: String = "no_target",
     ): Status {
         val hands = frame.boxes.filter { it.kind == "hand" && !it.held && it.points.size >= 21 }
         val pointing = ray != null
@@ -64,18 +68,30 @@ object TrainingHud {
             objectMs = objectMs,
             depthMs = depthMs,
             handMs = handMs,
+            strict3DMode = strict3DMode,
+            lockProvenance = lockProvenance,
         )
     }
 
     fun lines(status: Status, decoderFps: Float = 0f): List<String> {
         val target = if (status.targetLabel != null && status.targetId != null) {
             "${status.targetLabel} #${status.targetId}"
+        } else if (status.strict3DMode && status.lockProvenance == "depth_frame_mismatch") {
+            "none (3D_UNAVAILABLE)"
         } else {
             "none"
         }
         val fps = if (decoderFps > 0f) "%.0f".format(java.util.Locale.US, decoderFps) else "--"
         val conf = status.score?.let { "%.2f".format(java.util.Locale.US, it) } ?: "--"
-        val depthText = if (status.depthBackend == "OFF") "Depth: OFF" else "Depth: ${status.depthBackend} (${status.depthMs}ms)"
+        val depthText = if (status.strict3DMode) {
+            if (status.lockProvenance == "depth_frame_mismatch" || status.depthBackend == "OFF") {
+                "3D: STRICT [3D_UNAVAILABLE]"
+            } else {
+                "3D: STRICT [ACTIVE] (${status.depthMs}ms)"
+            }
+        } else {
+            if (status.depthBackend == "OFF") "Depth: OFF" else "Depth: ${status.depthBackend} (${status.depthMs}ms)"
+        }
         return listOf(
             "Detector: ${status.detector} (${status.objectMs}ms)",
             depthText,

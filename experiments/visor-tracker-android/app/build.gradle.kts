@@ -73,7 +73,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    testOptions { unitTests.isReturnDefaultValues = true }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            it.systemProperties(System.getProperties().mapKeys { (k, _) -> k.toString() })
+            it.environment(System.getenv())
+        }
+    }
 }
 
 dependencies {

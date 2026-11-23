@@ -69,7 +69,19 @@ class TrackingOverlayView(context: Context) : View(context) {
     private val boxUpdates = AtomicInteger(0)
     private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
-    private val spatialEngine = SpatialTargetingEngine()
+    var strict3DMode: Boolean = true
+        private set
+    private var spatialEngine = SpatialTargetingEngine(strict3DMode = true)
+
+    fun setStrict3DMode(enabled: Boolean) {
+        if (strict3DMode != enabled) {
+            strict3DMode = enabled
+            spatialEngine = SpatialTargetingEngine(strict3DMode = enabled)
+            spatialSequence = Long.MIN_VALUE
+            spatialOutput = null
+            postInvalidate()
+        }
+    }
     private var spatialSequence = Long.MIN_VALUE
     private var spatialOutput: SpatialTargetingEngine.Output? = null
     private var spatialFrameWidth = 0
@@ -335,6 +347,8 @@ class TrackingOverlayView(context: Context) : View(context) {
                 objectMs = lastObjectMs,
                 depthMs = lastDepthMs,
                 handMs = lastHandMs,
+                strict3DMode = strict3DMode,
+                lockProvenance = spatialOutput?.lockProvenance ?: "no_target",
             )
         }
         drawHud(canvas, hud)

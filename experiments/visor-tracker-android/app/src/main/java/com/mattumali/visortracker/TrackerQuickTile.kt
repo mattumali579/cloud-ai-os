@@ -60,6 +60,10 @@ class TrackerQuickTile : TileService() {
                         OverlayTrackingService.EXTRA_DEPTH_BACKEND,
                         prefs.getString(OverlayTrackingService.PREF_DEPTH_BACKEND, DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
                     )
+                    .putExtra(
+                        OverlayTrackingService.EXTRA_STRICT_3D,
+                        prefs.getBoolean(OverlayTrackingService.PREF_STRICT_3D, true)
+                    )
             )
             updateState()
         } catch (_: Exception) {

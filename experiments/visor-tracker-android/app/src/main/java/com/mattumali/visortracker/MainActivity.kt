@@ -169,6 +169,13 @@ class MainActivity : ComponentActivity() {
             }
         }
         root.addView(accurate)
+        root.addView(CheckBox(this).apply {
+            text = "Strict 3D Mode: Camera-space ray-to-surface intersection only (fail closed)"
+            isChecked = prefs.getBoolean(OverlayTrackingService.PREF_STRICT_3D, true)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(OverlayTrackingService.PREF_STRICT_3D, checked).apply()
+            }
+        })
         root.addView(TextView(this).apply {
             text = "An intentional extended-index point projects a ray in the camera image. " +
                 "A target locks only after repeated ray intersections with the same valid object. " +
@@ -435,13 +442,15 @@ class MainActivity : ComponentActivity() {
             status.text = "Allow Display over other apps first"
             return
         }
+        val prefs = getSharedPreferences(OverlayTrackingService.PREFS, MODE_PRIVATE)
         try {
             startForegroundService(Intent(this, OverlayTrackingService::class.java)
                 .setAction(OverlayTrackingService.ACTION_START)
                 .putExtra(OverlayTrackingService.EXTRA_ALL_DETECTORS, includeAll.isChecked)
                 .putExtra(OverlayTrackingService.EXTRA_PRESET, currentPreset.name)
                 .putExtra(OverlayTrackingService.EXTRA_ENABLE_DEPTH, currentDepthEnabled)
-                .putExtra(OverlayTrackingService.EXTRA_DEPTH_BACKEND, currentDepthBackend.name))
+                .putExtra(OverlayTrackingService.EXTRA_DEPTH_BACKEND, currentDepthBackend.name)
+                .putExtra(OverlayTrackingService.EXTRA_STRICT_3D, prefs.getBoolean(OverlayTrackingService.PREF_STRICT_3D, true)))
             status.text = "Starting overlay with ${currentPreset.name}; open Visor Live View"
         } catch (error: Exception) {
             status.text = "Could not start tracking: " + error.message

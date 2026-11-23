@@ -236,6 +236,39 @@ object CameraSpatial3D {
                     calibrationStatus = CalibrationStatus.UNCALIBRATED_ESTIMATED,
                 )
             }
+
+            fun readNextFromBinary(
+                stream: java.io.DataInputStream,
+                expectedSeq: Long,
+                fallbackCapturedAtMs: Long,
+            ): DepthFrame? {
+                return try {
+                    val seq = stream.readLong()
+                    val capturedAtMs = stream.readLong()
+                    val width = stream.readInt()
+                    val height = stream.readInt()
+                    if (width <= 0 || height <= 0 || width > 4096 || height > 4096) return null
+                    val count = width * height
+                    val bytes = ByteArray(count * 4)
+                    stream.readFully(bytes)
+                    val buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    val floatData = FloatArray(count)
+                    buffer.asFloatBuffer().get(floatData)
+                    DepthFrame(
+                        width = width,
+                        height = height,
+                        depthData = floatData,
+                        sequence = seq,
+                        capturedAtMs = if (capturedAtMs > 0L) capturedAtMs else fallbackCapturedAtMs,
+                        backend = "YOLO26_DEPTH_CONTINUOUS",
+                        calibrationStatus = CalibrationStatus.CALIBRATED_METRIC,
+                    )
+                } catch (_: java.io.EOFException) {
+                    null
+                } catch (_: Exception) {
+                    null
+                }
+            }
         }
     }
 
