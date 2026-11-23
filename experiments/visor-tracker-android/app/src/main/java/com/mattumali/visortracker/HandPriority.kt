@@ -97,7 +97,7 @@ object HandPriority {
             if (frac < 0.04f || frac > 0.35f) return false
             if (boxH < boxW * 1.05f) return false
         }
-        val standingFigure = boxH > boxW * 1.8f &&
+        val standingFigure = boxH > boxW * 1.20f &&
             person.top < frameHeight * 0.18f &&
             boxH > frameHeight * 0.50f
         return !standingFigure
