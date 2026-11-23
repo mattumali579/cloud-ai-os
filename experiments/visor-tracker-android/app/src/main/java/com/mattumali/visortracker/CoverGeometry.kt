@@ -1,6 +1,6 @@
 package com.mattumali.visortracker
 
-import kotlin.math.max
+import kotlin.math.min
 
 data class ProjectedBox(
     val left: Float,
@@ -10,9 +10,9 @@ data class ProjectedBox(
 )
 
 /**
- * Visor's full-screen LiveScreen uses coverRect: fill the phone screen,
- * center the picture, and crop the excess. Match that transform exactly.
- * The user must leave Visor's Live View expanded, not in stepped/windowed mode.
+ * Visor's Live View preserves the 3:4 camera raster and centers it between
+ * black bands on the phone. The 10942 screen recording proves a 1080x1440
+ * image at y=438 inside a 1080x2316 display. Match that aspect-fit transform.
  */
 object CoverGeometry {
     fun project(
@@ -23,7 +23,7 @@ object CoverGeometry {
         box: BoxObservation,
     ): ProjectedBox {
         require(frameWidth > 0 && frameHeight > 0 && screenWidth > 0 && screenHeight > 0)
-        val scale = max(screenWidth.toFloat() / frameWidth, screenHeight.toFloat() / frameHeight)
+        val scale = min(screenWidth.toFloat() / frameWidth, screenHeight.toFloat() / frameHeight)
         val leftOffset = (screenWidth - frameWidth * scale) / 2f
         val topOffset = (screenHeight - frameHeight * scale) / 2f
         return ProjectedBox(
@@ -34,9 +34,23 @@ object CoverGeometry {
         )
     }
 
+    fun projectPoint(
+        frameWidth: Int,
+        frameHeight: Int,
+        screenWidth: Int,
+        screenHeight: Int,
+        x: Float,
+        y: Float,
+    ): Pair<Float, Float> {
+        require(frameWidth > 0 && frameHeight > 0 && screenWidth > 0 && screenHeight > 0)
+        val scale = min(screenWidth.toFloat() / frameWidth, screenHeight.toFloat() / frameHeight)
+        val leftOffset = (screenWidth - frameWidth * scale) / 2f
+        val topOffset = (screenHeight - frameHeight * scale) / 2f
+        return leftOffset + x * scale to topOffset + y * scale
+    }
+
     /**
-     * True when the cover-cropped box still overlaps the phone screen.
-     * A box that lies entirely in the cropped margin is not a drawn overlay.
+     * True when a non-empty camera-space box overlaps the aspect-fit viewport.
      */
     fun isVisible(
         frameWidth: Int,

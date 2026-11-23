@@ -15,7 +15,13 @@ android {
         versionCode = 41
         versionName = "0.41.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        val geminiKey = System.getenv("VISOR_GEMINI_API_KEY").orEmpty()
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+        buildConfigField("String", "VISOR_GEMINI_API_KEY", "\"$geminiKey\"")
     }
+
+    buildFeatures { buildConfig = true }
 
     // Optional persistent signing for future in-place updates. With no stored
     // secret, CI continues producing a normal ephemeral debug APK for tests.
@@ -80,6 +86,7 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     testImplementation("com.microsoft.onnxruntime:onnxruntime:1.19.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

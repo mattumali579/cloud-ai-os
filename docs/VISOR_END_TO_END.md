@@ -14,6 +14,62 @@ Do not spend another day adjusting `IndexPoint.kt` thresholds/2D line reversal. 
 - Existing dependencies: MediaPipe Tasks Vision 0.10.35, Visor Development Kit `com.macedonga.visor:kit:0.1.1`, EfficientDet Lite0/Lite2, BlazeFace, custom `MotionTracker`, `TrackIds`, `AimLock`, `VisionPipeline`, `OverlayTrackingService`, `TrackingOverlayView`, `RelativeDistanceEstimator` and tests.
 - Existing VDK `camera.live` is the source of frame data. The Visor video should remain native; companion overlay is transparent and touch-through. Preserve app ID `com.mattumali.visortracker.stable`, existing signing certificate, in-place updater, and Tailscale split-tunnel compatibility.
 
+## Mandatory recovery contract after repeated failed fixes
+
+**Owner directive, 2026-11-22:** previous attempts repeatedly improved a synthetic test, a single timestamp, or a Python replay without proving the Ray-Ban Meta -> Visor VDK -> S22 -> Android model -> tracker -> overlay chain. Do not begin attempt 21 by changing another gesture ratio, widening a ray, holding a lock longer, or building another APK. The latest honest pre-grounding `10942.mp4` audit is **1/9 semantically correct reference locks (laptop), 8 misses, 0 retained false locks**. Safety improved mainly by returning `NO_TARGET`; intended-object selection is still below the release gate. The current dirty working tree may contain later experiments, but they are not improvements until the exact production path is replayed and measured again.
+
+### Twenty failure modes that must be addressed, not tuned around
+
+1. **Production/replay mismatch:** the Python replay uses Ultralytics/PyTorch inference and thresholds that differ from the Android ONNX decoder, NMS, mask reconstruction, cadence and confidence floors. A Python replay pass is not Android proof. Build one production-faithful replay that exercises the exact Android preprocessing, ONNX outputs, Kotlin tracking and state machine.
+2. **Detector vocabulary gap:** the 80-class COCO model does not directly cover several owner targets, including laundry basket, closet clothing, portable air conditioner, windowsill, conical hat, paper roll and plastic-covered item. Never tune the finger ray to compensate for a candidate that does not exist. Measure candidate recall first; evaluate a locally runnable detector/fine-tune or bounded, explicitly consented grounding path for the actual target set.
+3. **False 3D claim:** storing `dirZ` while hit-testing only `dirX/dirY` is still a 2D image ray. Call it 2D pointing with relative-depth evidence until camera-space geometry is implemented and validated.
+4. **Incompatible Z spaces:** MediaPipe hand Z is hand-relative; monocular scene depth has unknown scale/shift. Never numerically compare them or present them as one metric camera-space depth without a calibrated transform.
+5. **Stale hand/object fusion:** a new hand must not be tested against object boxes silently reused from an older camera pose. Preserve each result's source sequence and capture time; motion-warp with measured evidence or expire it.
+6. **Stale depth fusion:** every depth map must retain source sequence/PTS, crop, rotation, dimensions and backend latency. Never sample a multi-second-old map at current-frame object coordinates after camera movement.
+7. **Unstable hand ownership:** do not select the highest-confidence hand independently each frame. Maintain one pointing-hand identity using track ID, handedness, wrist/palm geometry and motion, with a bounded loss/reacquisition policy; an ownership change must reset hover/lock.
+8. **Wrong-digit fallback:** landmark 8/index identity is authoritative. Do not silently replace it with thumb landmarks 1-4 or another digit when the index chain fails. Ambiguous digit identity is `NO_TARGET` with a logged reason.
+9. **Threshold overfitting:** fixed ratios introduced for particular timestamps, poses or one person's hand are hypotheses, not fixes. Every classifier change requires held-out adverse recordings covering different lighting, distance, orientation, foreshortening, occlusion, open palms, grips and multiple hands.
+10. **Low-confidence landmark admission:** lowering MediaPipe model thresholds may recover side-on hands but also admits noisy landmarks. Record detector/presence/tracking confidence and temporal consistency; low-confidence geometry cannot acquire a lock merely because later thresholds accept it.
+11. **Approximate mask geometry:** sparse prototype samples plus a convex hull can fill gaps and concavities. Reconstruct a binary mask in the correct letterbox transform and derive a real ordered boundary or use direct ray-to-mask occupancy; do not call a hull an exact segmentation contour.
+12. **Class-agnostic suppression:** NMS must not let one class incorrectly suppress a different overlapping class. Validate laptop/mouse, furniture/items-on-furniture and overlapping container cases.
+13. **Weak object identity:** IoU-only association fails during head motion, detector gaps, occlusion and label changes. Add camera-motion compensation plus mask/appearance/position evidence and explicit maximum age; do not let a new physical object inherit a lock silently.
+14. **Multiple lock authorities:** `SpatialTargetingEngine` is the only automatic lock authority. `RelativeDistanceEstimator`, `IndexPoint`, old center selection and renderer fallbacks may provide separately labeled diagnostics/calibration only; they must never create, preserve, draw or report a lock when spatial output is `NO_TARGET`.
+15. **Fabricated metric distance:** relative monocular values must not be rendered as meters. Metric labels require a documented model provenance, camera calibration, known-distance validation set and measured error bounds.
+16. **Incomplete camera transform contract:** every result needs coherent crop, rotation, mirroring, lens/intrinsics and overlay projection metadata. A hard-coded offset or aspect-fit correction observed on one recording is not proof across Visor display modes.
+17. **Synthetic/circular test success:** synthetic hands drawn directly toward synthetic boxes only prove the final line/box math. They cannot establish real hand recovery, candidate recall, camera alignment, depth validity or intent. Report synthetic tests separately from production replay and hardware evidence.
+18. **Unconfirmed ground truth:** model predictions, agent guesses and screenshot hypotheses are not owner intent labels. Keep uncertain timestamps uncertain; score accuracy only from independently confirmed labels and never feed those labels into inference.
+19. **Performance hidden by asynchrony:** submitting slow work asynchronously does not make its cost zero. Report actual detector/hand/depth cadence, queue/drop rate, result age, median/p95 end-to-end latency, memory, battery and thermals on the S22. Disable depth by default until it materially improves labeled selection.
+20. **Release without end-to-end proof:** compilation, unit tests, a rendered MP4, signing or an empty ADB check do not prove glasses behavior. No victory wording, version bump, signed install, tag or release until replay gates and the authorized physical-glasses gates pass separately.
+
+### What Antigravity must do differently from the previous attempts
+
+1. Freeze ad-hoc gesture/ray threshold tuning until the exact production data path is observable.
+2. For every disagreement frame, classify the **first broken stage**: frame/crop/rotation -> hand presence -> landmark/digit identity -> pointing pose -> ray/uncertainty -> candidate recall -> mask -> timestamp alignment -> track identity -> state machine -> overlay. Fix that earliest stage only, then rerun the full holdout.
+3. Create a production-faithful raw-frame replay using the same Android ONNX assets, preprocessing, mask decoder, thresholds, scheduling, `TrackIds`, `SpatialTargetingEngine` and lock renderer. If code reuse is impossible, parity-test every intermediate tensor/result and document remaining differences.
+4. Give decoded frame, hand, objects, masks and depth separate source metadata. Reject stale/misaligned evidence instead of relabeling it as current.
+5. Fix candidate generation before pointing geometry: measure candidate recall at the owner reference moments, implement class-aware NMS and correct masks, and address the household-vocabulary gap. A missing intended object must produce `NO_TARGET: candidate missing`, never a ray retune toward the wrong COCO box.
+6. Remove thumb-ray and legacy-lock fallbacks. Maintain one stable pointing hand and one automatic lock authority.
+7. Replace the perfect-ray fiction with a calibrated angular uncertainty cone. Use camera intrinsics/orientation and MediaPipe world-landmark evidence where valid; if the cone overlaps multiple candidates or depth is not aligned, return `NO_TARGET`.
+8. Keep expensive depth off by default until an A/B test on independently labeled near/far overlaps shows a material selection gain at acceptable S22 latency/thermal cost. Do not display meters without metric calibration.
+9. Preserve the original `10942.mp4`, previous overlay, diagnostics and metrics. Generate a newly named candidate replay plus a machine-readable per-reference table containing expected label/status, candidates, hand/digit, ray source, source-frame ages, hit/lock, and first failure reason.
+10. Do not declare the replay repaired merely because false locks are zero. It must improve intended-object selection beyond the current 1/9 result through genuine model output, without using reference labels as inference inputs, and explain every remaining miss.
+11. After replay evidence is credible, verify the legitimate signing certificate and install in place on the S22 without uninstall/data loss. Then run the required 30 pointing, 30 negative, 20 switch and 15-minute glasses/thermal trials.
+12. Report `SOURCE CODED`, `UNIT TEST`, `PRODUCTION REPLAY`, `PHONE INSTALLED`, `PHYSICAL GLASSES`, and `SIGNED UPDATE` independently. A failure or pending gate in one column cannot be hidden by a pass in another.
+
+### Definition of genuine 3D/depth completion
+
+The owner specifically remembers the promised 3D depth repair. It is **not complete** merely because a model emits a depth array or `SpatialRay` contains `dirZ`. Genuine completion requires all of the following, with measured evidence:
+
+1. Verified camera intrinsics, lens/crop/rotation/mirroring contract for the active VDK stream.
+2. Stable pointing-hand and index identity across time.
+3. Hand pose/ray represented in a justified camera coordinate system with documented uncertainty; hand-relative world landmarks alone are not absolute camera pose.
+4. Object depth derived from the same source frame or validly motion-aligned to it.
+5. No comparison between incompatible relative-depth scales.
+6. Near/far overlapping-object trials demonstrating that depth changes the correct selection compared with the 2D baseline.
+7. Honest fallback to `NO_TARGET` when calibration, alignment or depth confidence is insufficient.
+
+Until those seven requirements pass, label the implementation **2D pointing with relative-depth evidence**, not real 3D object intersection.
+
 ## Required architecture (run in this order; no blind mass installation)
 
 ### Stage 0 — Observe and instrument (no release)
@@ -60,8 +116,9 @@ Antigravity: inspect current branch and dirty Windows worktree; choose first fai
 | **Depth (Stage 1)** | VERIFIED: Benchmark in `docs/VISOR_MODEL_EVALUATION.md`. Depth Anything V2 Small vs YOLO depth. Monocular relative depth is affine-invariant [0,1], not meters | VERIFIED: Hand z preserved for 3D pointing ray geometry | N/A (Relative depth only) | Monocular depth cannot provide metric scale |
 | **New spatial targeting (Stage 1)** | VERIFIED: `SpatialTargetingEngine.kt` implemented with strict forward ray (zero backward flips), no fingertip-inside-box hit, no center fallback | VERIFIED: `SpatialTargetingEngineTest` 8/8 tests pass (100% pointing accuracy, 0% false lock) | PENDING PHYSICAL S22 | Physical glasses pointing trial |
 | **Tracking/lock (Stage 1)** | VERIFIED: State machine `NO_HAND -> HAND_TRACKED -> POINTING -> HOVER -> LOCKED -> RELEASED` | VERIFIED: `10932.mp4` replay reduced false locks from 15 to 0; 30/30 open-palm & phone-grip negative tests passed (0 false locks) | PENDING PHYSICAL S22 | Physical glasses acceptance gate |
-| **OCR/vision QA (Stage 1)** | VERIFIED: `OnDemandVisionQA.kt` implemented with non-blocking IO dispatcher & affirmative consent gate | VERIFIED: `OnDemandVisionQATest` passed | PENDING PHYSICAL S22 | Cloud consent authorization |
+| **OCR/vision QA (Stage 1)** | VERIFIED: `OnDemandVisionQA.kt` has non-blocking strict grounded-box parsing, affirmative consent, stable-point/no-local-target gating, and no fabricated confidence | VERIFIED: 283 unit tests passed, 1 skipped; dry run found 10 algorithmic 10942 request frames without upload | PENDING OWNER CLOUD CONSENT + PHYSICAL S22 | Sending selected private camera frames to Gemini is not yet authorized in this run |
 | **Signed install & real glasses (Stage 2/3)** | SOURCE CODED & 255 UNIT TESTS PASS | VERIFIED: 40 suites, 255 tests pass (0 failures) | PENDING HARDWARE ATTACHMENT | Physical S22 Ultra & Ray-Ban Meta glasses not currently connected via ADB (`adb devices` empty) |
+| **10942 final repair audit (2026-11-21)** | Camera viewport/overlay aspect-fit, YOLO letterbox, hand-Z separation, angular ray confirmation, generic-mask suppression, low-confidence local rejection, strict Gemini grounding and bounded release are source-coded; live Android and replay now share the same cached spatial decision; full Android suite 283 passed / 1 skipped; debug APK builds | PRE-GROUNDING RELEASE GATE STILL FAILED: actual inference on original 42.284s `10942.mp4`; 1/9 reference locks semantically correct (laptop), 8 misses, 0 false locks after rejecting the 0.16 suitcase. 10.8s and 7.0s false-laptop regressions pass; no-hand/non-pointing retained locks = 0. Grounding dry run found 10 stable algorithmic request frames without upload. | NOT INSTALLED: `adb devices -l` empty; debug certificate only | Owner confirmation is required immediately before transmitting the selected private camera frames to Google Gemini. Do not publish/install/push as release before the grounded replay passes. |
 
 ## Official upstream references
 - [Ultralytics YOLO26 tasks](https://docs.ultralytics.com/models/yolo26)

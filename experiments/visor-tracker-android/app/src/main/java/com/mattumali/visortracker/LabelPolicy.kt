@@ -17,7 +17,9 @@ object LabelPolicy {
     private const val AMBIGUITY_MARGIN = 0.15f
 
     fun minScoreFor(category: String): Float = when (category.lowercase()) {
-        "suitcase", "backpack", "handbag", "book", "clock", "bottle", "airplane" -> 0.12f
+        "suitcase", "backpack", "handbag", "book", "clock", "bottle", "airplane",
+        "clothes hamper", "laundry basket", "hanging clothes", "closet clothing", "wardrobe clothes",
+        "portable air conditioner", "air conditioner", "covered object", "white plastic trash bag", "white plastic-covered item" -> 0.12f
         else -> MIN_SCORE
     }
 
@@ -33,6 +35,16 @@ object LabelPolicy {
         "airplane" to 0.25f,
         "suitcase" to 0.12f,
         "handbag" to 0.12f,
+        "clothes hamper" to 0.15f,
+        "laundry basket" to 0.15f,
+        "hanging clothes" to 0.15f,
+        "closet clothing" to 0.15f,
+        "wardrobe clothes" to 0.15f,
+        "portable air conditioner" to 0.15f,
+        "air conditioner" to 0.15f,
+        "covered object" to 0.15f,
+        "white plastic trash bag" to 0.15f,
+        "white plastic-covered item" to 0.15f,
     )
 
     private val confusableWith = mapOf(

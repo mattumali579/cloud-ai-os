@@ -82,6 +82,8 @@ class Yolo26Segmentation(
             // 3. Try Android assets if context available
             if (loadedSession == null && context != null) {
                 val candidateAssets = listOf(
+                    "yoloe-26n-seg.onnx",
+                    "models/yoloe-26n-seg.onnx",
                     "yolo26n-seg.onnx",
                     "models/yolo26n-seg.onnx",
                     "generated/visionAssets/yolo26n-seg.onnx"
@@ -104,6 +106,12 @@ class Yolo26Segmentation(
             // 4. Try standard filesystem paths (host tests & local development)
             if (loadedSession == null) {
                 val candidatePaths = listOf(
+                    "yoloe-26n-seg.onnx",
+                    "../yoloe-26n-seg.onnx",
+                    "../../yoloe-26n-seg.onnx",
+                    "C:/Users/Admin/cloud-ai-os-visor-tracker/yoloe-26n-seg.onnx",
+                    "C:/Users/Admin/cloud-ai-os-visor-tracker/experiments/visor-tracker-android/app/src/main/assets/yoloe-26n-seg.onnx",
+                    "C:/Users/Admin/cloud-ai-os-visor-tracker/experiments/visor-tracker-android/app/src/main/assets/models/yoloe-26n-seg.onnx",
                     "yolo26n-seg.onnx",
                     "../yolo26n-seg.onnx",
                     "../../yolo26n-seg.onnx",
@@ -168,20 +176,21 @@ class Yolo26Segmentation(
         val inputSize = 640
         val totalPixels = inputSize * inputSize
 
-        // Scale pixels to 640x640 if dimensions differ
+        // Ultralytics models are trained/exported with aspect-preserving
+        // letterboxing. Stretching a 1080x1440 camera frame to a square moves
+        // boxes and masks relative to MediaPipe landmarks.
+        val transform = LetterboxTransform.forFrame(origW, origH, inputSize)
         val scaledPixels = if (origW == inputSize && origH == inputSize && pixels.size == totalPixels) {
             pixels
         } else if (pixels.isNotEmpty() && origW > 0 && origH > 0) {
-            val out = IntArray(totalPixels)
-            val xRatio = origW.toFloat() / inputSize
-            val yRatio = origH.toFloat() / inputSize
-            for (y in 0 until inputSize) {
-                val srcY = (y * yRatio).toInt().coerceIn(0, origH - 1)
+            val out = IntArray(totalPixels) { 0xFF727272.toInt() }
+            for (y in 0 until transform.scaledHeight) {
+                val srcY = (y / transform.scale).toInt().coerceIn(0, origH - 1)
                 val srcRow = srcY * origW
-                val dstRow = y * inputSize
-                for (x in 0 until inputSize) {
-                    val srcX = (x * xRatio).toInt().coerceIn(0, origW - 1)
-                    out[dstRow + x] = pixels[srcRow + srcX]
+                val dstRow = (y + transform.padY) * inputSize
+                for (x in 0 until transform.scaledWidth) {
+                    val srcX = (x / transform.scale).toInt().coerceIn(0, origW - 1)
+                    out[dstRow + x + transform.padX] = pixels[srcRow + srcX]
                 }
             }
             out
@@ -217,7 +226,7 @@ class Yolo26Segmentation(
                 @Suppress("UNCHECKED_CAST")
                 val out1Value = out1.value as Array<Array<Array<FloatArray>>>
 
-                val boxes = parseSegmentationOutputs(out0Value[0], out1Value[0], origW, origH)
+                val boxes = parseSegmentationOutputs(out0Value[0], out1Value[0], origW, origH, transform)
                 val latency = System.currentTimeMillis() - startedAt
                 return DetectionResult(boxes, latency, modelAssetPath)
             } finally {
@@ -233,19 +242,28 @@ class Yolo26Segmentation(
     }
 
     private fun parseSegmentationOutputs(
-        out0: Array<FloatArray>, // [116][8400]
+        out0: Array<FloatArray>, // [channels][8400]
         out1: Array<Array<FloatArray>>, // [32][160][160]
         origW: Int,
         origH: Int,
+        transform: LetterboxTransform = LetterboxTransform.forFrame(origW, origH, 640),
     ): List<BoxObservation> {
         val rawDetections = mutableListOf<RawBox>()
+        val totalChannels = out0.size
+        val numMaskCoeffs = 32
+        val numClasses = totalChannels - 4 - numMaskCoeffs
+        val classLabels = when (numClasses) {
+            8 -> YOLOE_CLASSES
+            12 -> YOLOE_CLASSES_12
+            80 -> COCO_CLASSES
+            else -> if (numClasses <= COCO_CLASSES.size) COCO_CLASSES.subList(0, numClasses) else List(numClasses) { "class_$it" }
+        }
 
         // 8400 detection anchors
         for (i in 0 until 8400) {
             var maxScore = 0f
             var bestClass = -1
-            // Channels 4..83: 80 COCO class probabilities
-            for (c in 0 until 80) {
+            for (c in 0 until numClasses) {
                 val score = out0[4 + c][i]
                 if (score > maxScore) {
                     maxScore = score
@@ -253,19 +271,19 @@ class Yolo26Segmentation(
                 }
             }
 
-            if (maxScore >= scoreThreshold && bestClass in COCO_CLASSES.indices) {
+            if (maxScore >= scoreThreshold && bestClass in classLabels.indices) {
                 val cx = out0[0][i]
                 val cy = out0[1][i]
                 val w = out0[2][i]
                 val h = out0[3][i]
 
-                val left = max(0f, (cx - w / 2f) / 640f * origW)
-                val top = max(0f, (cy - h / 2f) / 640f * origH)
-                val right = min(origW.toFloat(), (cx + w / 2f) / 640f * origW)
-                val bottom = min(origH.toFloat(), (cy + h / 2f) / 640f * origH)
+                val left = transform.toFrameX(cx - w / 2f, origW)
+                val top = transform.toFrameY(cy - h / 2f, origH)
+                val right = transform.toFrameX(cx + w / 2f, origW)
+                val bottom = transform.toFrameY(cy + h / 2f, origH)
 
-                // Channels 84..115: 32 mask coefficients
-                val maskCoeffs = FloatArray(32) { k -> out0[84 + k][i] }
+                // Channels (4 + numClasses)..(4 + numClasses + 31): 32 mask coefficients
+                val maskCoeffs = FloatArray(numMaskCoeffs) { k -> out0[4 + numClasses + k][i] }
                 rawDetections.add(RawBox(bestClass, maxScore, left, top, right, bottom, maskCoeffs))
             }
         }
@@ -277,8 +295,8 @@ class Yolo26Segmentation(
         // Reconstruct instance segmentation masks
         val observations = mutableListOf<BoxObservation>()
         for (raw in capped) {
-            val label = COCO_CLASSES[raw.classId]
-            val maskPoints = extractMaskContour(raw, out1, origW, origH)
+            val label = classLabels[raw.classId]
+            val maskPoints = extractMaskContour(raw, out1, origW, origH, transform)
             observations.add(
                 BoxObservation(
                     kind = "object",
@@ -300,41 +318,102 @@ class Yolo26Segmentation(
         protoMasks: Array<Array<FloatArray>>, // [32][160][160]
         origW: Int,
         origH: Int,
+        transform: LetterboxTransform,
     ): List<Pair<Float, Float>> {
         if (raw.maskCoeffs.isEmpty()) return emptyList()
 
-        val normL = raw.left / origW
-        val normT = raw.top / origH
-        val normR = raw.right / origW
-        val normB = raw.bottom / origH
+        val px0 = max(0, ((raw.left * transform.scale + transform.padX) / 4f).toInt())
+        val py0 = max(0, ((raw.top * transform.scale + transform.padY) / 4f).toInt())
+        val px1 = min(159, ((raw.right * transform.scale + transform.padX) / 4f).toInt())
+        val py1 = min(159, ((raw.bottom * transform.scale + transform.padY) / 4f).toInt())
 
-        val px0 = max(0, (normL * 160).toInt())
-        val py0 = max(0, (normT * 160).toInt())
-        val px1 = min(159, (normR * 160).toInt())
-        val py1 = min(159, (normB * 160).toInt())
+        if (px1 <= px0 || py1 <= py0) return emptyList()
 
-        val contour = mutableListOf<Pair<Float, Float>>()
-        if (px1 <= px0 || py1 <= py0) return contour
+        val stepX = max(1, (px1 - px0) / 20)
+        val stepY = max(1, (py1 - py0) / 20)
+        val gridW = ((px1 - px0) / stepX) + 1
+        val gridH = ((py1 - py0) / stepY) + 1
+        val maskGrid = Array(gridH) { BooleanArray(gridW) }
 
-        // Sample prototype grid within bounding box
-        val stepX = max(1, (px1 - px0) / 16)
-        val stepY = max(1, (py1 - py0) / 16)
+        var count = 0
+        var sumX = 0f
+        var sumY = 0f
 
-        for (py in py0..py1 step stepY) {
-            for (px in px0..px1 step stepX) {
+        for (gy in 0 until gridH) {
+            val py = min(159, py0 + gy * stepY)
+            for (gx in 0 until gridW) {
+                val px = min(159, px0 + gx * stepX)
                 var dot = 0f
                 for (k in 0 until 32) {
                     dot += raw.maskCoeffs[k] * protoMasks[k][py][px]
                 }
-                val prob = 1f / (1f + exp(-dot))
-                if (prob > 0.5f) {
-                    val frameX = (px / 160f) * origW
-                    val frameY = (py / 160f) * origH
-                    contour.add(frameX to frameY)
+                val isOccupied = (1f / (1f + exp(-dot))) > 0.5f
+                maskGrid[gy][gx] = isOccupied
+                if (isOccupied) {
+                    val fx = transform.toFrameX(px * 4f, origW)
+                    val fy = transform.toFrameY(py * 4f, origH)
+                    sumX += fx
+                    sumY += fy
+                    count++
                 }
             }
         }
-        return contour
+        if (count < 3) return emptyList()
+
+        val cx = sumX / count
+        val cy = sumY / count
+
+        // Extract real boundary points (cells with at least one 4-neighbor that is unoccupied).
+        // Order boundary points radially around mask centroid to preserve concavities
+        // without false convex hull bridging across gaps (Failure Mode 11).
+        val boundaryPoints = mutableListOf<Pair<Float, Float>>()
+        for (gy in 0 until gridH) {
+            val py = min(159, py0 + gy * stepY)
+            for (gx in 0 until gridW) {
+                if (!maskGrid[gy][gx]) continue
+                val isBoundary = gx == 0 || gx == gridW - 1 || gy == 0 || gy == gridH - 1 ||
+                    !maskGrid[gy - 1][gx] || !maskGrid[gy + 1][gx] ||
+                    !maskGrid[gy][gx - 1] || !maskGrid[gy][gx + 1]
+                if (isBoundary) {
+                    val px = min(159, px0 + gx * stepX)
+                    val fx = transform.toFrameX(px * 4f, origW)
+                    val fy = transform.toFrameY(py * 4f, origH)
+                    boundaryPoints.add(fx to fy)
+                }
+            }
+        }
+
+        if (boundaryPoints.size < 3) return emptyList()
+
+        return boundaryPoints.sortedBy { p ->
+            kotlin.math.atan2(p.second - cy, p.first - cx)
+        }
+    }
+
+    data class LetterboxTransform(
+        val scale: Float,
+        val padX: Int,
+        val padY: Int,
+        val scaledWidth: Int,
+        val scaledHeight: Int,
+    ) {
+        fun toFrameX(modelX: Float, frameWidth: Int): Float =
+            ((modelX - padX) / scale).coerceIn(0f, frameWidth.toFloat())
+
+        fun toFrameY(modelY: Float, frameHeight: Int): Float =
+            ((modelY - padY) / scale).coerceIn(0f, frameHeight.toFloat())
+
+        companion object {
+            fun forFrame(width: Int, height: Int, inputSize: Int): LetterboxTransform {
+                if (width <= 0 || height <= 0) return LetterboxTransform(1f, 0, 0, inputSize, inputSize)
+                val scale = min(inputSize.toFloat() / width, inputSize.toFloat() / height)
+                val scaledWidth = (width * scale).toInt().coerceIn(1, inputSize)
+                val scaledHeight = (height * scale).toInt().coerceIn(1, inputSize)
+                val padX = (inputSize - scaledWidth) / 2
+                val padY = (inputSize - scaledHeight) / 2
+                return LetterboxTransform(scale, padX, padY, scaledWidth, scaledHeight)
+            }
+        }
     }
 
     private data class RawBox(
@@ -355,7 +434,14 @@ class Yolo26Segmentation(
         for (box in sorted) {
             var overlap = false
             for (chosen in selected) {
-                if (iou(box, chosen) > threshold) {
+                val boxIou = iou(box, chosen)
+                // Class-aware NMS: suppress overlapping boxes of the same class (threshold ~0.45)
+                // and cross-class duplicate detections of the exact same physical object (IoU > 0.60)
+                if (box.classId == chosen.classId && boxIou > threshold) {
+                    overlap = true
+                    break
+                }
+                if (box.classId != chosen.classId && boxIou > 0.60f) {
                     overlap = true
                     break
                 }
@@ -386,6 +472,17 @@ class Yolo26Segmentation(
 
     companion object {
         private const val TAG = "Yolo26Segmentation"
+
+        val YOLOE_CLASSES = listOf(
+            "clothes hamper", "hanging clothes", "portable air conditioner",
+            "laptop", "white plastic trash bag", "mouse", "bottle", "person"
+        )
+
+        val YOLOE_CLASSES_12 = listOf(
+            "laundry basket", "closet clothing", "portable air conditioner",
+            "windowsill", "conical hat", "laptop", "paper roll",
+            "white plastic-covered item", "trash bag", "mouse", "bottle", "person"
+        )
 
         val COCO_CLASSES = listOf(
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",

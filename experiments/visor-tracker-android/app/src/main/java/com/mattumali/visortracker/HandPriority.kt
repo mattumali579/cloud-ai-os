@@ -21,7 +21,7 @@ object HandPriority {
             hand.kind == "hand" && hand.points.size >= 21 && hand.area() > 0f
         }
         return observations.filterNot { candidate ->
-            candidate.kind == "object" && (
+            candidate.kind == "object" && !candidate.grounded && (
                 wearerArm(candidate, frameWidth, frameHeight) ||
                     (hands.isNotEmpty() && hands.any { hand ->
                         sameHandRegion(candidate, hand) || armLabeledPerson(candidate, hand)

@@ -70,6 +70,10 @@ class TrackingOverlayView(context: Context) : View(context) {
     private val draws = AtomicInteger(0)
     private val distanceEstimator = RelativeDistanceEstimator()
     private val spatialEngine = SpatialTargetingEngine()
+    private var spatialSequence = Long.MIN_VALUE
+    private var spatialOutput: SpatialTargetingEngine.Output? = null
+    private var spatialFrameWidth = 0
+    private var spatialFrameHeight = 0
     private val nearby = NearbyCandidates()
     private var aimRay: PointingRay? = null
     var activeDetector: String = "YOLO26n-seg"
@@ -153,7 +157,26 @@ class TrackingOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun selectedTrackId(): Int? = distanceEstimator.selectedTrackId()
+    fun selectedTrackId(): Int? = spatialEngine.currentLockedId
+
+    @Synchronized
+    fun groundingHint(): GroundingHint? {
+        val output = spatialOutput ?: return null
+        val ray = output.ray ?: return null
+        if (spatialFrameWidth <= 0 || spatialFrameHeight <= 0) return null
+        return GroundingHint(
+            sequence = spatialSequence,
+            frameWidth = spatialFrameWidth,
+            frameHeight = spatialFrameHeight,
+            tipX = ray.tipX,
+            tipY = ray.tipY,
+            dirX = ray.dirX,
+            dirY = ray.dirY,
+            eligible = output.handPose == SpatialTargetingEngine.HandPose.POINTING_INTENDED &&
+                output.hitId == null && output.lockId == null &&
+                output.state == SpatialTargetingEngine.State.POINTING,
+        )
+    }
 
     fun notificationDistance(): String = distanceEstimator.shortStatus(latest?.boxes.orEmpty())
 
@@ -162,7 +185,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         val boxes = frame.boxes
         if (boxes.isEmpty()) return 0
         // Before the window is measured, keep the stored count. Once the view has
-        // a size, a box that cover-crops entirely off screen is not drawn.
+        // a size, a box outside the aspect-fit camera viewport is not drawn.
         if (width <= 0 || height <= 0 || frame.width <= 0 || frame.height <= 0) return boxes.size
         return boxes.count { CoverGeometry.isVisible(frame.width, frame.height, width, height, it) }
     }
@@ -172,17 +195,27 @@ class TrackingOverlayView(context: Context) : View(context) {
      * so a held point at a new center can switch the lock.
      */
     fun observeCandidates(frame: FrameDetections): String? {
-        val aimed = IndexPoint.aimed(frame, preferId = distanceEstimator.selectedTrackId())
-        aimRay = aimed?.ray
-        val note = distanceEstimator.observe(frame)
+        val output = evaluateSpatial(frame)
+        aimRay = output.ray?.let { ray ->
+            PointingRay(
+                tipX = ray.tipX,
+                tipY = ray.tipY,
+                dirX = ray.dirX,
+                dirY = ray.dirY,
+                dirZ = ray.dirZ,
+                reach = ray.reach,
+                joints = ray.joints,
+                reversible = false,
+            )
+        }
         invalidate()
-        return note
+        return null
     }
 
     fun updateFrame(frame: FrameDetections): String? {
         val previous = latest
-        val spatialOutput = spatialEngine.step(frame)
-        val lockedId = spatialOutput.lockId ?: distanceEstimator.selectedTrackId()
+        val spatialOutput = evaluateSpatial(frame)
+        val lockedId = spatialOutput.lockId
         val aimId = spatialOutput.hitId
         val ray = spatialOutput.ray
         aimRay = if (ray != null) {
@@ -262,8 +295,25 @@ class TrackingOverlayView(context: Context) : View(context) {
         // A restarted camera session must be calibrated again.
         distanceEstimator.clear()
         spatialEngine.reset()
+        spatialSequence = Long.MIN_VALUE
+        spatialOutput = null
+        spatialFrameWidth = 0
+        spatialFrameHeight = 0
         aimRay = null
         invalidate()
+    }
+
+    @Synchronized
+    private fun evaluateSpatial(frame: FrameDetections): SpatialTargetingEngine.Output {
+        if (frame.sequence == spatialSequence) {
+            spatialOutput?.let { return it }
+        }
+        val output = spatialEngine.step(frame)
+        spatialSequence = frame.sequence
+        spatialOutput = output
+        spatialFrameWidth = frame.width
+        spatialFrameHeight = frame.height
+        return output
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -278,7 +328,7 @@ class TrackingOverlayView(context: Context) : View(context) {
         val hud = frame?.let {
             TrainingHud.status(
                 it,
-                spatialEngine.currentLockedId ?: distanceEstimator.selectedTrackId(),
+                spatialEngine.currentLockedId,
                 aimRay,
                 detector = activeDetector,
                 depthBackend = activeDepthBackend,
@@ -299,13 +349,9 @@ class TrackingOverlayView(context: Context) : View(context) {
             return
         }
         val liveRay = aimRay
-        val aimed = liveRay?.let {
-            IndexPoint.alongRay(
-                it, frame.boxes, distanceEstimator.selectedTrackId(),
-                frameWidth = frame.width, frameHeight = frame.height,
-            )
-        }
-        drawAim(canvas, frame, liveRay, aimed)
+        val spatialTarget = spatialOutput?.lockId?.let { id -> frame.boxes.firstOrNull { it.trackId == id } }
+            ?: spatialOutput?.hitId?.let { id -> frame.boxes.firstOrNull { it.trackId == id } }
+        drawAim(canvas, frame, liveRay, spatialTarget)
         for (observation in frame.boxes) {
             if (observation.kind == "hand") {
                 drawHand(canvas, frame, observation, hud?.pointing == true)
@@ -318,35 +364,30 @@ class TrackingOverlayView(context: Context) : View(context) {
                 "arm" -> 0x66FFB020.toInt()
                 else -> 0xFF80F45D.toInt()
             }
-            val locked = observation.trackId == spatialEngine.currentLockedId ||
-                observation.trackId == distanceEstimator.selectedTrackId() ||
-                (aimRay != null && observation.trackId == spatialEngine.currentHoverId)
-            stroke.color = if (locked) Color.WHITE else color
+            val locked = spatialEngine.currentLockedId != null && observation.trackId == spatialEngine.currentLockedId
+            val hovered = aimRay != null && spatialEngine.currentHoverId != null && observation.trackId == spatialEngine.currentHoverId
+            stroke.color = if (locked) Color.WHITE else if (hovered) 0xFFFFD700.toInt() else color
             stroke.strokeWidth = if (locked) dp(5f) else dp(2.5f)
             canvas.drawRoundRect(current, dp(7f), dp(7f), stroke)
 
             // Draw instance segmentation mask contour polygon if available
             if (observation.points.isNotEmpty() && observation.kind == "object") {
-                val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
-                val ox = (width - frame.width * scale) / 2f
-                val oy = (height - frame.height * scale) / 2f
                 handPath.reset()
                 val p0 = observation.points[0]
-                handPath.moveTo(ox + p0.first * scale, oy + p0.second * scale)
+                val first = CoverGeometry.projectPoint(frame.width, frame.height, width, height, p0.first, p0.second)
+                handPath.moveTo(first.first, first.second)
                 for (idx in 1 until observation.points.size) {
                     val pt = observation.points[idx]
-                    handPath.lineTo(ox + pt.first * scale, oy + pt.second * scale)
+                    val at = CoverGeometry.projectPoint(frame.width, frame.height, width, height, pt.first, pt.second)
+                    handPath.lineTo(at.first, at.second)
                 }
                 handPath.close()
                 canvas.drawPath(handPath, stroke)
             }
 
             val feet = distanceEstimator.estimate(frame.height, observation, frame.sequence)
-            val metricDepth = observation.depths.firstOrNull()
             val distanceLabel = if (feet != null) {
                 " ~%.1f ft".format(java.util.Locale.US, feet)
-            } else if (metricDepth != null && metricDepth > 0f) {
-                " ~%.2f m".format(java.util.Locale.US, metricDepth)
             } else ""
             val lockTag = if (locked) " [LOCKED]" else ""
             val label = observation.label + " #" + observation.trackId + distanceLabel + lockTag
@@ -371,10 +412,8 @@ class TrackingOverlayView(context: Context) : View(context) {
         point.color = cyan
         handLine.color = cyan
         handOutline.color = outline
-        val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
-        val ox = (width - frame.width * scale) / 2f
-        val oy = (height - frame.height * scale) / 2f
-        fun mapped(x: Float, y: Float) = ox + x * scale to oy + y * scale
+        fun mapped(x: Float, y: Float) =
+            CoverGeometry.projectPoint(frame.width, frame.height, width, height, x, y)
         val hull = HandOutline.hull(observation.points)
         if (hull.size >= 3) {
             handPath.reset()
@@ -391,16 +430,17 @@ class TrackingOverlayView(context: Context) : View(context) {
             val start = observation.points.getOrNull(from) ?: return@forEach
             val end = observation.points.getOrNull(to) ?: return@forEach
             canvas.drawLine(
-                ox + start.first * scale,
-                oy + start.second * scale,
-                ox + end.first * scale,
-                oy + end.second * scale,
+                mapped(start.first, start.second).first,
+                mapped(start.first, start.second).second,
+                mapped(end.first, end.second).first,
+                mapped(end.first, end.second).second,
                 handLine,
             )
         }
         observation.points.forEachIndexed { index, (x, y) ->
             if (index == IndexPoint.INDEX_TIP) return@forEachIndexed
-            canvas.drawCircle(ox + x * scale, oy + y * scale, dp(3f), point)
+            val at = mapped(x, y)
+            canvas.drawCircle(at.first, at.second, dp(3f), point)
         }
         val tip = HandTrack.indexTip(observation)
         if (tip != null) {
@@ -428,10 +468,8 @@ class TrackingOverlayView(context: Context) : View(context) {
     ) {
         if (ray == null) return
         if (frame.boxes.none { it.kind == "hand" && !it.held && it.points.size >= 21 }) return
-        val scale = kotlin.math.max(width.toFloat() / frame.width, height.toFloat() / frame.height)
-        val ox = (width - frame.width * scale) / 2f
-        val oy = (height - frame.height * scale) / 2f
-        fun px(x: Float, y: Float) = ox + x * scale to oy + y * scale
+        fun px(x: Float, y: Float) =
+            CoverGeometry.projectPoint(frame.width, frame.height, width, height, x, y)
         val start = px(ray.tipX, ray.tipY)
         val endPoint = if (target != null) {
             (target.left + target.right) / 2f to (target.top + target.bottom) / 2f

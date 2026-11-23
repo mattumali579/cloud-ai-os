@@ -1,5 +1,27 @@
 # 10917 replay (issue #39)
 
+## 10942 grounded fallback (issue #40)
+
+`run_10942_overlay_replay.py` always begins with the original unannotated
+recording and actual YOLO26n-seg, YOLO26-Depth, MediaPipe, and Kotlin tracker
+inference. When the 80-class detector has no reliable ray candidate, audit the
+algorithmic request frames without uploading anything:
+
+```powershell
+python scripts/replay/apply_gemini_grounding.py `
+  --video C:\Users\Admin\Downloads\10942.mp4 `
+  --detections ..\..\test-recordings\10942-final-repair\detections.txt `
+  --decisions ..\..\test-recordings\10942-final-repair\decisions.jsonl `
+  --out ..\..\test-recordings\10942-final-repair\detections_grounded.txt `
+  --dry-run
+```
+
+Remove `--dry-run` only after the owner explicitly consents to sending the
+selected camera frames to Gemini and provides `GEMINI_API_KEY`. Returned boxes
+are strict normalized model output, marked `GROUNDED`, and never receive a
+manufactured confidence. The Kotlin engine still performs ray association and
+multi-frame lock confirmation. Human reference timestamps are never inputs.
+
 One-command local replay of the owner’s composited Live View recording.
 
 Footage stays under `test-recordings/` (gitignored). Do not publish the MP4.

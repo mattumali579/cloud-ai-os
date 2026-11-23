@@ -18,14 +18,18 @@ class ReplayDriverTest {
         val dir = System.getenv("VISOR_REPLAY_DIR")
         assumeTrue("VISOR_REPLAY_DIR is unset; replay was not requested", !dir.isNullOrBlank())
         val folder = File(dir!!)
-        val detections = File(folder, "detections.txt")
+        val detections = System.getenv("VISOR_REPLAY_DETECTIONS")
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::File)
+            ?: File(folder, "detections.txt")
         check(detections.isFile) { "missing ${detections.absolutePath}" }
         val tracker = ProductionTracker()
         val frames = parse(detections.readText())
         val out = File(folder, "decisions.jsonl")
         out.bufferedWriter().use { writer ->
-            for (frame in frames) {
-                val step = tracker.step(frame.boxes, frame.width, frame.height)
+            for ((idx, frame) in frames.withIndex()) {
+                val capturedAtMs = (frame.t * 1000).toLong()
+                val step = tracker.step(frame.boxes, frame.width, frame.height, capturedAtMs = capturedAtMs, sequence = idx.toLong())
                 writer.append(decision(step))
                 writer.newLine()
             }
@@ -91,18 +95,23 @@ class ReplayDriverTest {
         assertEquals(step1.dirY, step2.dirY, 1e-3f)
     }
 
-    private data class Parsed(val width: Int, val height: Int, val boxes: List<BoxObservation>)
+    private data class Parsed(val width: Int, val height: Int, val t: Float, val boxes: List<BoxObservation>)
 
     private fun parse(text: String): List<Parsed> {
         val frames = mutableListOf<Parsed>()
         var width = 0
         var height = 0
+        var t = 0f
         val boxes = mutableListOf<BoxObservation>()
         var pending: BoxObservation? = null
         fun finishBox() {
             val box = pending ?: return
             pending = null
             if (box.kind != "object") {
+                boxes += box
+                return
+            }
+            if (box.grounded) {
                 boxes += box
                 return
             }
@@ -116,10 +125,11 @@ class ReplayDriverTest {
             when (parts[0]) {
                 "FRAME" -> {
                     finishBox()
-                    if (width > 0) frames += Parsed(width, height, boxes.toList())
+                    if (width > 0) frames += Parsed(width, height, t, boxes.toList())
                     boxes.clear()
                     width = parts[1].toInt()
                     height = parts[2].toInt()
+                    t = parts.getOrNull(3)?.toFloatOrNull() ?: 0f
                 }
                 "BOX" -> {
                     finishBox()
@@ -144,9 +154,13 @@ class ReplayDriverTest {
                     val depths = parts.drop(1).map { it.toFloat() }
                     pending = box.copy(depths = depths)
                 }
+                "GROUNDED" -> {
+                    val box = pending ?: error("GROUNDED before BOX")
+                    pending = box.copy(grounded = true)
+                }
                 "END" -> {
                     finishBox()
-                    if (width > 0) frames += Parsed(width, height, boxes.toList())
+                    if (width > 0) frames += Parsed(width, height, t, boxes.toList())
                     boxes.clear()
                     width = 0
                     height = 0
@@ -176,9 +190,20 @@ class ReplayDriverTest {
                 }
                 ""","points":[$encoded]"""
             }
-            """{"kind":${quote(box.kind)},"label":${quote(box.label)},"score":${box.score},"left":${box.left},"top":${box.top},"right":${box.right},"bottom":${box.bottom},"track_id":${box.trackId}$points}"""
+            val depthsStr = if (box.depths.isEmpty()) "" else ""","depths":[${box.depths.joinToString(",")}]"""
+            """{"kind":${quote(box.kind)},"label":${quote(box.label)},"score":${box.score},"confidence_available":${!box.grounded},"grounded":${box.grounded},"left":${box.left},"top":${box.top},"right":${box.right},"bottom":${box.bottom},"track_id":${box.trackId},"held":${box.held}$points$depthsStr}"""
         }
-        return """{"state":${quote(step.state.name)},"targeting_state":${quote(step.targetingState.name)},"lock_id":${jsonId(step.lockId)},"hit_id":${jsonId(step.hitId)},"ray":${step.ray},"tip_x":${step.tipX},"tip_y":${step.tipY},"dir_x":${step.dirX},"dir_y":${step.dirY},"reach":${step.reach},"boxes":[$boxes]}"""
+        val ray3DStr = step.ray3D?.let { r ->
+            val originStr = "[${r.origin.x},${r.origin.y},${r.origin.z}]"
+            val dirStr = "[${r.direction.x},${r.direction.y},${r.direction.z}]"
+            ""","ray_3d":{"origin":$originStr,"direction":$dirStr,"reach":${r.reach},"calibration":${quote(r.calibrationStatus.name)}}"""
+        } ?: ""
+        val hit3DStr = step.hit3D?.let { h ->
+            val hitPtStr = "[${h.hitPoint3D.x},${h.hitPoint3D.y},${h.hitPoint3D.z}]"
+            val sourcePtStr = "[${h.sourceSurfacePoint3D.x},${h.sourceSurfacePoint3D.y},${h.sourceSurfacePoint3D.z}]"
+            ""","hit_3d":{"track_id":${h.trackId},"label":${quote(h.label)},"hit_point":$hitPtStr,"hit_source_surface_point":$sourcePtStr,"residual_to_surface":${h.residualToSurface},"distance_along_ray":${h.distanceAlongRay},"ray_parameter":${h.distanceAlongRay},"perp_distance":${h.perpendicularDistance},"confidence":${h.confidence},"mode":${quote(h.intersectionMode.name)},"uncertainty":${h.geometricUncertainty},"calibration":${quote(h.calibrationStatus.name)}}"""
+        } ?: ""
+        return """{"frame_id":${step.frameId},"depth_frame_id":${step.depthFrameId},"lock_provenance":${quote(step.lockProvenance)},"locked_object_id":${jsonId(step.lockedObjectId)},"intersected_object_id":${jsonId(step.intersectedObjectId)},"state":${quote(step.state.name)},"targeting_state":${quote(step.targetingState.name)},"gesture_reason":${quote(step.gestureReason)},"target_reason":${quote(step.targetReason)},"lock_id":${jsonId(step.lockId)},"hit_id":${jsonId(step.hitId)},"ray":${step.ray},"landmark8_x":${step.landmark8X},"landmark8_y":${step.landmark8Y},"ray_source_landmark":${step.raySourceLandmark},"tip_x":${step.tipX},"tip_y":${step.tipY},"dir_x":${step.dirX},"dir_y":${step.dirY},"reach":${step.reach}$ray3DStr$hit3DStr,"boxes":[$boxes]}"""
     }
 
     private fun jsonId(id: Int?): String = id?.toString() ?: "null"

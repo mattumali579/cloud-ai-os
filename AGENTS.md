@@ -15,7 +15,7 @@
 
 ## Visor Tracker and computer vision — one active instruction
 
-Read **`docs/VISOR_END_TO_END.md`** and follow GitHub issue **#40** for all Ray-Ban Meta / Visor **computer vision, pointing, depth, object tracking, locking and overlay** tasks. It supersedes old Visor tracking release rules and issue-specific phase tasks (#25/#36/#39). Do not ship a signed APK merely because unit tests and signing succeed. Require the specified real-device acceptance evidence. Implement the new spatial engine rather than repeating endless IndexPoint threshold fixes. This instruction applies only to Visor tracking/vision and does not cancel separate Jarvis voice remote-control work.
+Read **`docs/VISOR_END_TO_END.md`** and follow GitHub issue **#40** for all Ray-Ban Meta / Visor **computer vision, pointing, depth, object tracking, locking and overlay** tasks. The document's **Mandatory recovery contract after repeated failed fixes** is binding: diagnose the first broken stage, make replay production-faithful, synchronize evidence by source frame, fix candidate generation before gesture tuning, and do not substitute another recording-specific threshold change. It supersedes old Visor tracking release rules and issue-specific phase tasks (#25/#36/#39). Do not ship a signed APK merely because unit tests and signing succeed. Require the specified real-device acceptance evidence. Implement the new spatial engine rather than repeating endless IndexPoint threshold fixes. This instruction applies only to Visor tracking/vision and does not cancel separate Jarvis voice remote-control work.
 
 ## Creative and outreach rules
 

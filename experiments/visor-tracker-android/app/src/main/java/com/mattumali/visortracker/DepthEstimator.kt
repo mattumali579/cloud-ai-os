@@ -39,6 +39,8 @@ class DepthEstimator(
         val maxDepth: Float,
         val backend: DepthBackend,
         val inferenceMs: Long,
+        val capturedAtMs: Long = 0L,
+        val sequence: Long = 0L,
     ) {
         /**
          * Returns normalized relative depth [0.0..1.0] at normalized coordinates (0.0..1.0).
@@ -128,21 +130,31 @@ class DepthEstimator(
     /**
      * Estimates depth for the given input frame.
      */
-    fun estimate(bitmap: Bitmap): DepthMap? {
+    fun estimate(
+        bitmap: Bitmap,
+        capturedAtMs: Long = android.os.SystemClock.elapsedRealtime(),
+        sequence: Long = 0L,
+    ): DepthMap? {
         val startedAt = System.currentTimeMillis()
         return when (activeBackend) {
             DepthBackend.DEPTH_ANYTHING_V2 -> {
                 val interp = dav2Interpreter ?: yoloDepthInterpreter ?: return null
-                estimateWithDav2(interp, bitmap, startedAt)
+                estimateWithDav2(interp, bitmap, startedAt, capturedAtMs, sequence)
             }
             DepthBackend.YOLO26_DEPTH -> {
                 val interp = yoloDepthInterpreter ?: dav2Interpreter ?: return null
-                estimateWithYoloDepth(interp, bitmap, startedAt)
+                estimateWithYoloDepth(interp, bitmap, startedAt, capturedAtMs, sequence)
             }
         }
     }
 
-    private fun estimateWithDav2(interpreter: Interpreter, bitmap: Bitmap, startedAt: Long): DepthMap {
+    private fun estimateWithDav2(
+        interpreter: Interpreter,
+        bitmap: Bitmap,
+        startedAt: Long,
+        capturedAtMs: Long,
+        sequence: Long,
+    ): DepthMap {
         val inputSize = 518
         val scaled = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
         val byteBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
@@ -193,10 +205,18 @@ class DepthEstimator(
             maxDepth = maxVal,
             backend = DepthBackend.DEPTH_ANYTHING_V2,
             inferenceMs = latency,
+            capturedAtMs = capturedAtMs,
+            sequence = sequence,
         )
     }
 
-    private fun estimateWithYoloDepth(interpreter: Interpreter, bitmap: Bitmap, startedAt: Long): DepthMap {
+    private fun estimateWithYoloDepth(
+        interpreter: Interpreter,
+        bitmap: Bitmap,
+        startedAt: Long,
+        capturedAtMs: Long,
+        sequence: Long,
+    ): DepthMap {
         val inputSize = 768
         val scaled = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
         val byteBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
@@ -244,6 +264,8 @@ class DepthEstimator(
             maxDepth = maxVal,
             backend = DepthBackend.YOLO26_DEPTH,
             inferenceMs = latency,
+            capturedAtMs = capturedAtMs,
+            sequence = sequence,
         )
     }
 

@@ -52,7 +52,7 @@ class VisionPipeline(
     private val attemptGpu: Boolean = true,
     val overlapModels: Boolean = true,
     val objectBackend: ObjectBackend = ObjectBackend.YOLO26_SEG,
-    val enableDepth: Boolean = true,
+    val enableDepth: Boolean = false,
     val depthBackend: DepthEstimator.DepthBackend = DepthEstimator.DepthBackend.YOLO26_DEPTH,
 ) : AutoCloseable {
     enum class ObjectBackend {
@@ -238,7 +238,7 @@ class VisionPipeline(
                             depthExecutor.execute {
                                 try {
                                     val depthStarted = android.os.SystemClock.elapsedRealtime()
-                                    val map = depthEstimator.estimate(depthBitmap)
+                                    val map = depthEstimator.estimate(depthBitmap, depthStarted, frameNumber.toLong())
                                     lastDepthMs = android.os.SystemClock.elapsedRealtime() - depthStarted
                                     if (map != null) {
                                         latestDepthMap = map
@@ -255,7 +255,9 @@ class VisionPipeline(
                         }
                     }
                     val currentMap = latestDepthMap
-                    if (currentMap != null) {
+                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                    // Expire stale depth maps older than 500ms to avoid sampling moved camera scenes (Failure Mode 6)
+                    if (currentMap != null && nowMs - currentMap.capturedAtMs <= 500L) {
                         for (i in observed.indices) {
                             val b = observed[i]
                             if (b.kind == "object") {
@@ -596,9 +598,13 @@ class VisionPipeline(
                     )
                     .setRunningMode(RunningMode.VIDEO)
                     .setNumHands(numHands)
-                    .setMinHandDetectionConfidence(HAND_DETECT)
-                    .setMinHandPresenceConfidence(HAND_DETECT)
-                    .setMinTrackingConfidence(HAND_DETECT)
+                    // Let MediaPipe surface difficult side-on/occluded hands, then
+                    // apply HAND_DETECT and the geometric pose gate below. Using
+                    // the same threshold for both stages discarded real hands
+                    // before their landmarks could be evaluated.
+                    .setMinHandDetectionConfidence(HAND_MODEL_THRESHOLD)
+                    .setMinHandPresenceConfidence(HAND_MODEL_THRESHOLD)
+                    .setMinTrackingConfidence(HAND_MODEL_THRESHOLD)
                     .build()
             )
 
@@ -647,6 +653,7 @@ class VisionPipeline(
         internal const val HAND_COUNT = 2
         /** Keep a pointing skeleton only while the arm is still in view. */
         internal const val HAND_STALE_FRAMES = 8
+        internal const val HAND_MODEL_THRESHOLD = 0.05f
         internal const val HAND_DETECT = 0.15f
         private const val CREATE_TIMEOUT_MS = 3_000L
         private const val PROBE_TIMEOUT_MS = 2_500L

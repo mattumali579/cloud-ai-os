@@ -39,7 +39,7 @@ class OnDemandVisionQA(
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
@@ -53,6 +53,33 @@ class OnDemandVisionQA(
     data class VisualQAResult(
         val question: String,
         val answer: String,
+        val latencyMs: Long,
+        val cloudConsentGranted: Boolean,
+        val error: String? = null,
+    )
+
+    data class GroundedObject(
+        val label: String,
+        val ymin: Float,
+        val xmin: Float,
+        val ymax: Float,
+        val xmax: Float,
+    ) {
+        fun toObservation(width: Int, height: Int): BoxObservation = BoxObservation(
+            kind = "object",
+            label = label,
+            // Gemini detection boxes do not provide calibrated confidence.
+            score = 0f,
+            left = xmin * width,
+            top = ymin * height,
+            right = xmax * width,
+            bottom = ymax * height,
+            grounded = true,
+        )
+    }
+
+    data class GroundedVisionResult(
+        val objects: List<GroundedObject>,
         val latencyMs: Long,
         val cloudConsentGranted: Boolean,
         val error: String? = null,
@@ -154,6 +181,47 @@ class OnDemandVisionQA(
         }
     }
 
+    /**
+     * Uses the existing Gemini capability only after affirmative cloud consent.
+     * Returned boxes must be model-grounded normalized coordinates; malformed,
+     * oversized, or text-only guesses are rejected.
+     */
+    fun locatePointedObjects(
+        bitmap: Bitmap?,
+        hint: GroundingHint,
+        cloudConsentGranted: Boolean,
+        onResult: (GroundedVisionResult) -> Unit,
+    ) {
+        val startedAt = System.currentTimeMillis()
+        if (!cloudConsentGranted) {
+            onResult(GroundedVisionResult(
+                objects = emptyList(),
+                latencyMs = 0,
+                cloudConsentGranted = false,
+                error = "Explicit user authorization required for cloud VLM grounded localization",
+            ))
+            return
+        }
+        scope.launch {
+            val result = try {
+                val text = queryVlmEndpoint(bitmap, groundingPrompt(hint), jsonResponse = true)
+                GroundedVisionResult(
+                    objects = parseGroundedObjects(text),
+                    latencyMs = System.currentTimeMillis() - startedAt,
+                    cloudConsentGranted = true,
+                )
+            } catch (error: Exception) {
+                GroundedVisionResult(
+                    objects = emptyList(),
+                    latencyMs = System.currentTimeMillis() - startedAt,
+                    cloudConsentGranted = true,
+                    error = error.message ?: "Grounded VLM localization failure",
+                )
+            }
+            withContext(Dispatchers.Main) { onResult(result) }
+        }
+    }
+
     private fun extractLocalText(bitmap: Bitmap?): String {
         if (bitmap == null) return ""
         return try {
@@ -168,9 +236,10 @@ class OnDemandVisionQA(
         }
     }
 
-    private fun queryVlmEndpoint(bitmap: Bitmap?, question: String): String {
+    private fun queryVlmEndpoint(bitmap: Bitmap?, question: String, jsonResponse: Boolean = false): String {
         if (bitmap == null) return "No frame available for vision analysis."
-        val apiKey = System.getenv("GEMINI_API_KEY")
+        val apiKey = BuildConfig.VISOR_GEMINI_API_KEY.takeIf { it.isNotBlank() }
+            ?: System.getenv("GEMINI_API_KEY")
             ?: System.getProperty("GEMINI_API_KEY")
             ?: ""
         if (apiKey.isBlank()) {
@@ -183,28 +252,39 @@ class OnDemandVisionQA(
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
 
         val jsonPayload = JSONObject().apply {
-            put("contents", JSONArray().apply {
+            // 3.8 can return capacity-only failures for interactive camera
+            // requests. The existing 3.1 Flash Lite endpoint produced the
+            // verified grounded boxes used by replay and is the stable default.
+            put("model", "gemini-3.1-flash-lite")
+            put("store", false)
+            put("stream", true)
+            put("input", JSONArray().apply {
                 put(JSONObject().apply {
-                    put("parts", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("inline_data", JSONObject().apply {
-                                put("mime_type", "image/jpeg")
-                                put("data", base64Image)
-                            })
-                        })
-                        put(JSONObject().apply {
-                            put("text", question)
-                        })
-                    })
+                    put("type", "text")
+                    put("text", question)
+                })
+                put(JSONObject().apply {
+                    put("type", "image")
+                    put("data", base64Image)
+                    put("mime_type", "image/jpeg")
                 })
             })
+            if (jsonResponse) {
+                put("response_format", JSONObject().apply {
+                    put("type", "text")
+                    put("mime_type", "application/json")
+                    put("schema", groundedResponseSchema())
+                })
+            }
         }
 
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val requestBody = jsonPayload.toString().toRequestBody(mediaType)
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
+        val url = "https://generativelanguage.googleapis.com/v1beta/interactions?alt=sse"
         val request = Request.Builder()
             .url(url)
+            .header("x-goog-api-key", apiKey)
+            .header("Api-Revision", "2026-05-20")
             .post(requestBody)
             .build()
 
@@ -212,19 +292,86 @@ class OnDemandVisionQA(
             if (!response.isSuccessful) {
                 return "Gemini API returned error: HTTP ${response.code}"
             }
-            val responseBody = response.body?.string() ?: return "Empty response from Gemini API"
-            val jsonResp = JSONObject(responseBody)
-            val candidates = jsonResp.optJSONArray("candidates")
-            if (candidates != null && candidates.length() > 0) {
-                val candidate = candidates.getJSONObject(0)
-                val content = candidate.optJSONObject("content")
-                val parts = content?.optJSONArray("parts")
-                if (parts != null && parts.length() > 0) {
-                    return parts.getJSONObject(0).optString("text", "No response text")
+            val source = response.body?.source() ?: return "Empty response from Gemini API"
+            val text = StringBuilder()
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                if (!line.startsWith("data:")) continue
+                val payload = line.removePrefix("data:").trim()
+                if (payload == "[DONE]") continue
+                val event = JSONObject(payload)
+                if (event.optString("event_type") != "step.delta") continue
+                val delta = event.optJSONObject("delta") ?: continue
+                if (delta.optString("type") == "text") {
+                    text.append(delta.optString("text"))
                 }
             }
-            return "Unable to parse response from Gemini API"
+            if (text.isNotEmpty()) return text.toString()
+            throw IllegalStateException("Gemini stream completed without model text")
         }
+    }
+
+    private fun groundedResponseSchema(): JSONObject = JSONObject().apply {
+        put("type", "object")
+        put("properties", JSONObject().apply {
+            put("objects", JSONObject().apply {
+                put("type", "array")
+                put("items", JSONObject().apply {
+                    put("type", "object")
+                    put("properties", JSONObject().apply {
+                        put("label", JSONObject().put("type", "string"))
+                        put("box_2d", JSONObject().apply {
+                            put("type", "array")
+                            put("items", JSONObject().put("type", "integer"))
+                            put("minItems", 4)
+                            put("maxItems", 4)
+                        })
+                    })
+                    put("required", JSONArray().put("label").put("box_2d"))
+                })
+            })
+        })
+        put("required", JSONArray().put("objects"))
+    }
+
+    internal fun groundingPrompt(hint: GroundingHint): String {
+        val tipX = (hint.tipX / hint.frameWidth * 1000f).coerceIn(0f, 1000f).toInt()
+        val tipY = (hint.tipY / hint.frameHeight * 1000f).coerceIn(0f, 1000f).toInt()
+        val endX = ((hint.tipX + hint.dirX * hint.frameWidth) / hint.frameWidth * 1000f)
+            .coerceIn(0f, 1000f).toInt()
+        val endY = ((hint.tipY + hint.dirY * hint.frameHeight) / hint.frameHeight * 1000f)
+            .coerceIn(0f, 1000f).toInt()
+        return """
+            Locate tangible household objects intersected by the directed image ray from
+            (x=$tipX,y=$tipY) toward (x=$endX,y=$endY). Return only objects visibly grounded
+            in this image, ordered nearest along the ray. Do not infer a box from text or from
+            the requested label. Return JSON only in this exact shape:
+            {"objects":[{"label":"concise visible name","box_2d":[ymin,xmin,ymax,xmax]}]}
+            Coordinates are integers normalized 0..1000. Return {"objects":[]} when uncertain.
+        """.trimIndent()
+    }
+
+    internal fun parseGroundedObjects(raw: String): List<GroundedObject> {
+        val cleaned = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val root = JSONObject(cleaned)
+        val array = root.optJSONArray("objects") ?: return emptyList()
+        val parsed = mutableListOf<GroundedObject>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val label = item.optString("label").trim().lowercase()
+            val box = item.optJSONArray("box_2d") ?: continue
+            if (label.isBlank() || box.length() != 4) continue
+            val values = (0 until 4).map { box.optDouble(it, Double.NaN) }
+            if (values.any { !it.isFinite() || it !in 0.0..1000.0 }) continue
+            val ymin = (values[0] / 1000.0).toFloat()
+            val xmin = (values[1] / 1000.0).toFloat()
+            val ymax = (values[2] / 1000.0).toFloat()
+            val xmax = (values[3] / 1000.0).toFloat()
+            if (ymax <= ymin || xmax <= xmin) continue
+            if ((ymax - ymin) * (xmax - xmin) > 0.14f) continue
+            parsed += GroundedObject(label, ymin, xmin, ymax, xmax)
+        }
+        return parsed.take(8)
     }
 
     companion object {

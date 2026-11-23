@@ -53,3 +53,5 @@ experiments/visor-tracker-android/release_notes_*.md
 .agents/
 experiments/visor-tracker-android/.kotlin/
 challenge_*.py
+
+scratch/

@@ -165,21 +165,23 @@ class Yolo26AdversarialStressTest {
                 )
             }
 
-            // Verify IoU NMS suppression: no two boxes should have IoU > 0.45
+            // Verify class-aware IoU NMS suppression: no two boxes of the same class should have IoU > 0.45 (Failure Mode 12)
             for (i in result.boxes.indices) {
                 for (j in i + 1 until result.boxes.size) {
                     val b1 = result.boxes[i]
                     val b2 = result.boxes[j]
-                    val interL = maxOf(b1.left, b2.left)
-                    val interT = maxOf(b1.top, b2.top)
-                    val interR = minOf(b1.right, b2.right)
-                    val interB = minOf(b1.bottom, b2.bottom)
-                    val interArea = maxOf(0f, interR - interL) * maxOf(0f, interB - interT)
-                    val area1 = (b1.right - b1.left) * (b1.bottom - b1.top)
-                    val area2 = (b2.right - b2.left) * (b2.bottom - b2.top)
-                    val unionArea = area1 + area2 - interArea
-                    val iou = if (unionArea > 0f) interArea / unionArea else 0f
-                    assertTrue("NMS must suppress boxes with IoU > 0.45 (found $iou)", iou <= 0.451f)
+                    if (b1.label == b2.label) {
+                        val interL = maxOf(b1.left, b2.left)
+                        val interT = maxOf(b1.top, b2.top)
+                        val interR = minOf(b1.right, b2.right)
+                        val interB = minOf(b1.bottom, b2.bottom)
+                        val interArea = maxOf(0f, interR - interL) * maxOf(0f, interB - interT)
+                        val area1 = (b1.right - b1.left) * (b1.bottom - b1.top)
+                        val area2 = (b2.right - b2.left) * (b2.bottom - b2.top)
+                        val unionArea = area1 + area2 - interArea
+                        val iou = if (unionArea > 0f) interArea / unionArea else 0f
+                        assertTrue("Class-aware NMS must suppress same-class boxes with IoU > 0.45 (found $iou for ${b1.label})", iou <= 0.451f)
+                    }
                 }
             }
         } finally {

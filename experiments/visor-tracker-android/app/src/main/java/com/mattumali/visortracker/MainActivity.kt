@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var installUpdate: Button
     private var currentPreset: DetectionPreset = DetectionPreset.YOLO26_SEG
-    private var currentDepthEnabled: Boolean = true
+    private var currentDepthEnabled: Boolean = false
     private var currentDepthBackend: DepthEstimator.DepthBackend = DepthEstimator.DepthBackend.YOLO26_DEPTH
     private lateinit var detectorButton: Button
     private lateinit var depthButton: Button
@@ -170,15 +170,14 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(accurate)
         root.addView(TextView(this).apply {
-            text = "One object. An extended index finger locks the object on that 2D ray. " +
-                "The ray is on the camera image and cannot measure depth. " +
-                "The lock stays after the hand drops, and follows the object until it leaves. " +
-                "A closed fist or a fully curled index does not switch it. Holding that gesture " +
-                "releases the lock and does not send a command. If the locked object leaves and " +
-                "another object was already visible, the next detection can take it without a " +
-                "second model pass. With no hand, the center of the picture still locks. " +
-                "Motion does not swap the lock every frame. Fast mode stays " +
-                "EfficientDet-Lite0. An unsure name is shown as object."
+            text = "An intentional extended-index point projects a ray in the camera image. " +
+                "A target locks only after repeated ray intersections with the same valid object. " +
+                "A short landmark or detector dropout is tolerated; the lock releases when pointing " +
+                "stops or the ray remains off target. Open palms, fists, arms without 21 landmarks, " +
+                "and no-hand frames cannot create a lock. When cloud grounding is explicitly enabled, " +
+                "one frame may be sent to Gemini after a sustained point has no reliable local target. " +
+                "Gemini can propose visible boxes, but the same ray and multi-frame confirmation still " +
+                "decide the lock."
             textSize = 14f
             setPadding(0, dp(10), 0, dp(4))
         })
@@ -267,6 +266,13 @@ class MainActivity : ComponentActivity() {
             isChecked = prefs.getBoolean(OverlayTrackingService.PREF_PRIVATE_CAPTURE, false)
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean(OverlayTrackingService.PREF_PRIVATE_CAPTURE, checked).apply()
+            }
+        })
+        root.addView(CheckBox(this).apply {
+            text = "Opt-in: Send a camera frame to Gemini only after a stable point has no local target"
+            isChecked = prefs.getBoolean(OverlayTrackingService.PREF_CLOUD_GROUNDING, false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(OverlayTrackingService.PREF_CLOUD_GROUNDING, checked).apply()
             }
         })
         root.addView(Button(this).apply {

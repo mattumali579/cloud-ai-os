@@ -134,4 +134,42 @@ class Yolo26SegmentationTest {
         assertTrue(preset.isYolo)
         assertEquals(DetectionPreset.YOLO26_SEG, DetectionPreset.read("YOLO26_SEG"))
     }
+
+    @Test
+    fun portraitCameraUsesCenteredLetterboxAndRoundTripsCoordinates() {
+        val transform = Yolo26Segmentation.LetterboxTransform.forFrame(1080, 1440, 640)
+        assertEquals(640, transform.scaledHeight)
+        assertEquals(480, transform.scaledWidth)
+        assertEquals(80, transform.padX)
+        assertEquals(0, transform.padY)
+        assertEquals(0f, transform.toFrameX(80f, 1080), 0.01f)
+        assertEquals(1080f, transform.toFrameX(560f, 1080), 0.01f)
+        assertEquals(720f, transform.toFrameY(320f, 1440), 0.01f)
+    }
+
+    @Test
+    fun testYoloeOpenVocabSegmentationModelLoadsAndInfers() {
+        val yoloeModelFile = File("C:/Users/Admin/cloud-ai-os-visor-tracker/yoloe-26n-seg.onnx")
+        if (!yoloeModelFile.exists()) return
+        val yolo = Yolo26Segmentation(modelPath = yoloeModelFile.absolutePath, scoreThreshold = 0.20f)
+        try {
+            assertTrue("YOLOE model should initialize", yolo.isInitialized)
+            if (testImageFile.exists()) {
+                val img = ImageIO.read(testImageFile)
+                val width = img.width
+                val height = img.height
+                val pixels = IntArray(width * height)
+                img.getRGB(0, 0, width, height, pixels, 0, width)
+                val result = yolo.detectPixels(pixels, width, height)
+                assertTrue("Inference time recorded", result.inferenceMs > 0)
+                println("YOLOE-26n-seg detected ${result.boxes.size} objects in ${result.inferenceMs} ms")
+                for (b in result.boxes) {
+                    assertTrue("Label in YOLOE classes", Yolo26Segmentation.YOLOE_CLASSES.contains(b.label))
+                    assertTrue("Valid coordinates", b.right > b.left && b.bottom > b.top)
+                }
+            }
+        } finally {
+            yolo.close()
+        }
+    }
 }
