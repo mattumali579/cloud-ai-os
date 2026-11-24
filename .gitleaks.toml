@@ -1,7 +1,11 @@
+# Extend gitleaks' built-in rules. Without this block the file defines NO rules
+# and every scan silently reports "no leaks found" (fixed 2026-11-23).
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Intentional local fixtures, generated research caches, vendor code, and documented detector examples"
 paths = [
-  '''^\.env$''',
   '''^\.firecrawl/''',
   '''^\.tools/''',
   '''^\.pytest_cache/''',

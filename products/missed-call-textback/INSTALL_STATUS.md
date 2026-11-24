@@ -14,7 +14,7 @@ Repo: C:\Users\Admin\cloud-ai-os @ adde87b (PR #5 merged). Mode: **TWILIO_MODE=m
   - Credential **`BrightReach Postgres`** (id `BrPgMctbCred0001`, host `db`:5432, db/user `cloudos`, SSL disabled) was created through `n8n import:credentials`.
   - Imported all 6 workflows with `n8n import:workflow`, published them with `n8n publish:workflow`, and restarted n8n. All 6 are active: Missed Call (`/webhook/mctb-voice`), Dial Result (`/webhook/mctb-dial-status`), Inbound SMS (`/webhook/mctb-sms`), Estimate Follow-ups (every minute plus `/webhook/mctb-followups-run`), Dashboard (`/webhook/mctb-dashboard`), Dashboard Actions (`/webhook/mctb-action`). The credential is attached to all 11 Postgres nodes.
 - **Demo tenant:** slug `demo-plumbing`, business "Demo Plumbing Co", Twilio number +15555550100, owner "Demo Owner" at +15555550199, America/Chicago, forward mode. Bash/psql/openssl aren't on the Windows host, so I inserted it with the same SQL as setup_tenant.sh via `docker exec psql`, using a 24-byte random token.
-- **Demo dashboard (localhost only):** http://localhost:5679/webhook/mctb-dashboard?token=17aac3da08764deb4b5a0071bde1f6d264e9572749087dbf
+- **Demo dashboard (localhost only):** http://localhost:5679/webhook/mctb-dashboard?token=<MCTB_DASHBOARD_TOKEN>
   (This link works as a password. Don't commit it. It's a fake demo tenant.)
 
 ## Product bug found and patched in the installed copies (repo is NOT changed)
