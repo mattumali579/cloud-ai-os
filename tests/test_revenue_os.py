@@ -92,9 +92,13 @@ def test_local_compose_wires_real_repo_and_n8n_internal_api():
     assert api["environment"]["PYTHONPATH"] == "/workspace/src"
     assert any(v.get("target") == "/workspace" for v in api["volumes"] if isinstance(v, dict))
 
-    n8n = compose["services"]["n8n"]["environment"]
-    assert n8n["N8N_BLOCK_ENV_ACCESS_IN_NODE"] == "false"
-    assert n8n["AGENT_API_URL"] == "http://agent-api:8080"
+    # GB-2 (2026-11-23): the live n8n runs only the library collector and the
+    # error reporter. It must not load the repo .env or expose it to nodes.
+    n8n_service = compose["services"]["n8n"]
+    n8n = n8n_service["environment"]
+    assert "env_file" not in n8n_service
+    assert n8n["N8N_BLOCK_ENV_ACCESS_IN_NODE"] == "true"
+    assert "AGENT_API_TOKEN" not in n8n
 
 
 def test_api_image_contains_subscription_cli_workers():
