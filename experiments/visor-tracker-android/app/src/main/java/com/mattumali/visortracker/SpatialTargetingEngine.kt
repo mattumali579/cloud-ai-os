@@ -212,9 +212,6 @@ class SpatialTargetingEngine(
 
         // 3D Spatial Computing: Calculate camera-space ray and 3D surface intersections
         val intrinsics = CameraIntrinsics.forViewport(width, height)
-        val armObj = frame.boxes.firstOrNull { it.label.lowercase() in listOf("person", "arm") && it.depths.isNotEmpty() }
-        val handBaseDepth = armObj?.depths?.firstOrNull() ?: 0.65f
-        val ray3D = CameraSpatial3D.constructHandRay3D(primaryHand, intrinsics, handBaseDepth)
 
         // Depth frame synchronization verification:
         val depthFrame = frame.depthFrame
@@ -223,6 +220,10 @@ class SpatialTargetingEngine(
         val depthLookup: ((Float, Float) -> Float)? = if (isDepthSynchronized) {
             { normX, normY -> depthFrame.getDepth(normX, normY) }
         } else null
+
+        val armObj = frame.boxes.firstOrNull { it.label.lowercase() in listOf("person", "arm") && it.depths.isNotEmpty() }
+        val handBaseDepth = armObj?.depths?.firstOrNull() ?: 0.65f
+        val ray3D = CameraSpatial3D.constructHandRay3D(primaryHand, intrinsics, handBaseDepth, depthLookup)
 
         // In strict 3D mode, depth frame mismatch or missing fails closed (rejects 3D target acquisition)
         val objectSurfaces3D = if (strict3DMode && !isDepthSynchronized) {
@@ -428,10 +429,11 @@ class SpatialTargetingEngine(
         var isReleased = false
 
         val hitModeProvenance = when {
-            strict3DMode && !depthSynchronized -> "depth_frame_mismatch"
+            strict3DMode && !depthSynchronized -> "3D_UNAVAILABLE"
             hit3D != null -> {
                 if (hit3D.intersectionMode == CameraSpatial3D.IntersectionMode.TRUE_SURFACE_INTERSECTION) "new_3d_hit" else "estimated_proximity"
             }
+            strict3DMode -> "NO_TARGET"
             else -> "no_target"
         }
 

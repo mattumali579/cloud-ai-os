@@ -28,6 +28,7 @@ data class FrameDetections(
     val sequence: Long = 0,
     val capturedAtMs: Long = 0,
     val depthFrame: CameraSpatial3D.DepthFrame? = null,
+    val packet: FramePacket? = null,
 )
 
 /**
@@ -369,6 +370,7 @@ class VisionPipeline(
                 sequence = sourceFrameId,
                 capturedAtMs = sourceCapturedAtMs,
                 depthFrame = synchronizedDepthFrame,
+                packet = FramePacket.create(sourceFrameId, sourceCapturedAtMs, width, height),
             )
         } catch (error: Exception) {
             handRuntime?.invalidateInFlight()

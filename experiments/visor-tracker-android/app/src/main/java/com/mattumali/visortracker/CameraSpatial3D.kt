@@ -275,13 +275,14 @@ object CameraSpatial3D {
 
     /**
      * Reconstructs 3D hand joints and forward pointing ray in camera coordinates.
-     * Uses human anatomical constraints: index finger length L ~ 0.085m (MCP to TIP).
-     * Scale factor maps normalized MediaPipe coordinates into consistent camera units.
+     * Uses synchronized same-frame per-pixel depth when available; otherwise applies human
+     * anatomical constraints (index finger length L ~ 0.085m MCP to TIP) as calibrated baseline.
      */
     fun constructHandRay3D(
         hand: BoxObservation,
         intrinsics: CameraIntrinsics,
         baseDepth: Float = 0.65f,
+        depthLookup: ((normX: Float, normY: Float) -> Float)? = null,
     ): SpatialRay3D? {
         val pts = hand.points
         if (pts.size < 21) return null
@@ -310,29 +311,73 @@ object CameraSpatial3D {
         val dirU = du / mag2D
         val dirV = dv / mag2D
 
-        // Defensible anatomical calibration:
-        // Adult human index finger length (MCP to TIP) is ~0.085m (8.5 cm).
-        // Scale MediaPipe landmarks to physical camera-relative space:
-        val dzRaw = if (hand.depths.size >= 21) {
-            hand.depths[IndexPoint.INDEX_TIP] - hand.depths[IndexPoint.INDEX_MCP]
+        val frameW = intrinsics.width.toFloat()
+        val frameH = intrinsics.height.toFloat()
+
+        // 1. Check if true per-pixel depth map can directly supply hand depths
+        val tipDepth = if (depthLookup != null && frameW > 0 && frameH > 0) {
+            depthLookup(uTip.first / frameW, uTip.second / frameH)
         } else 0f
-        val norm3D = kotlin.math.sqrt(du * du + dv * dv + dzRaw * dzRaw)
-        val zCalibrated = if (norm3D > 1.0f) {
-            ((0.085f * intrinsics.fx) / norm3D).coerceIn(0.35f, 1.20f)
+        val mcpDepth = if (depthLookup != null && frameW > 0 && frameH > 0) {
+            depthLookup(uMcp.first / frameW, uMcp.second / frameH)
+        } else 0f
+        val wristDepth = if (depthLookup != null && frameW > 0 && frameH > 0) {
+            depthLookup(uWrist.first / frameW, uWrist.second / frameH)
+        } else 0f
+
+        val hasValidPixelDepth = tipDepth > 0.05f && tipDepth.isFinite() &&
+            mcpDepth > 0.05f && mcpDepth.isFinite()
+
+        val zCalibrated: Float
+        val pTip: Vector3
+        val pMcp: Vector3
+        val pWrist: Vector3
+        val pPip: Vector3
+        val pDip: Vector3
+        val defaultDir: Vector3
+
+        if (hasValidPixelDepth) {
+            zCalibrated = tipDepth
+            pTip = intrinsics.backProject(uTip.first, uTip.second, tipDepth)
+            pMcp = intrinsics.backProject(uMcp.first, uMcp.second, mcpDepth)
+            val wZ = if (wristDepth > 0.05f && wristDepth.isFinite()) wristDepth else (mcpDepth - 0.12f).coerceAtLeast(0.25f)
+            pWrist = intrinsics.backProject(uWrist.first, uWrist.second, wZ)
+            pPip = intrinsics.backProject(uPip.first, uPip.second, (tipDepth + mcpDepth) * 0.5f)
+            pDip = intrinsics.backProject(uDip.first, uDip.second, tipDepth * 0.75f + mcpDepth * 0.25f)
+
+            // Direct anatomical 3D ray from MCP through TIP
+            val fingerVec = pTip - pMcp
+            val fingerDir = fingerVec.normalized()
+            defaultDir = if (fingerDir.z > 0.02f) {
+                fingerDir
+            } else {
+                // Ensure ray aims forward into the scene camera frustum
+                val forwardTarget = intrinsics.backProject(uTip.first + dirU * 100f, uTip.second + dirV * 100f, tipDepth + 1.0f)
+                (forwardTarget - pTip).normalized()
+            }
         } else {
-            baseDepth.coerceIn(0.35f, 1.20f)
+            // Defensible anatomical calibration baseline:
+            // Adult human index finger length (MCP to TIP) is ~0.085m (8.5 cm).
+            val dzRaw = if (hand.depths.size >= 21) {
+                hand.depths[IndexPoint.INDEX_TIP] - hand.depths[IndexPoint.INDEX_MCP]
+            } else 0f
+            val norm3D = kotlin.math.sqrt(du * du + dv * dv + dzRaw * dzRaw)
+            zCalibrated = if (norm3D > 1.0f) {
+                ((0.085f * intrinsics.fx) / norm3D).coerceIn(0.35f, 1.20f)
+            } else {
+                baseDepth.coerceIn(0.35f, 1.20f)
+            }
+
+            pTip = intrinsics.backProject(uTip.first, uTip.second, zCalibrated)
+            pMcp = intrinsics.backProject(uMcp.first, uMcp.second, (zCalibrated - dzRaw * (zCalibrated / intrinsics.fx) * 0.5f).coerceAtLeast(0.30f))
+            pWrist = intrinsics.backProject(uWrist.first, uWrist.second, (zCalibrated - 0.15f).coerceAtLeast(0.25f))
+            pPip = intrinsics.backProject(uPip.first, uPip.second, (pTip.z + pMcp.z) * 0.5f)
+            pDip = intrinsics.backProject(uDip.first, uDip.second, (pTip.z * 0.75f + pPip.z * 0.25f))
+
+            val stepPixels = 100f
+            val forwardTarget = intrinsics.backProject(uTip.first + dirU * stepPixels, uTip.second + dirV * stepPixels, zCalibrated + 1.0f)
+            defaultDir = (forwardTarget - pTip).normalized()
         }
-
-        val pTip = intrinsics.backProject(uTip.first, uTip.second, zCalibrated)
-        val pMcp = intrinsics.backProject(uMcp.first, uMcp.second, (zCalibrated - dzRaw * (zCalibrated / intrinsics.fx) * 0.5f).coerceAtLeast(0.30f))
-        val pWrist = intrinsics.backProject(uWrist.first, uWrist.second, (zCalibrated - 0.15f).coerceAtLeast(0.25f))
-        val pPip = intrinsics.backProject(uPip.first, uPip.second, (pTip.z + pMcp.z) * 0.5f)
-        val pDip = intrinsics.backProject(uDip.first, uDip.second, (pTip.z * 0.75f + pPip.z * 0.25f))
-
-        // Default ray direction: forward in camera frustum along finger line of aim
-        val stepPixels = 100f
-        val forwardTarget = intrinsics.backProject(uTip.first + dirU * stepPixels, uTip.second + dirV * stepPixels, zCalibrated + 1.0f)
-        val defaultDir = (forwardTarget - pTip).normalized()
 
         val reach = 15.0f // max distance in relative units
         return SpatialRay3D(
@@ -341,7 +386,7 @@ object CameraSpatial3D {
             reach = reach,
             sourceLandmark = IndexPoint.INDEX_TIP,
             joints3D = listOf(pWrist, pMcp, pPip, pDip, pTip),
-            calibrationStatus = intrinsics.calibrationStatus,
+            calibrationStatus = if (hasValidPixelDepth && intrinsics.isMetricCalibrated) CalibrationStatus.CALIBRATED_METRIC else CalibrationStatus.UNCALIBRATED_ESTIMATED,
             tip2D = uTip,
             dir2D = (dirU to dirV),
         )

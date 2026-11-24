@@ -54,6 +54,34 @@ class CameraSpatial3DTest {
     }
 
     @Test
+    fun constructHandRay3DUsesPerPixelDepthLookupWhenProvided() {
+        val intrinsics = CameraSpatial3D.CameraIntrinsics.forViewport(1080, 1440, 68f)
+        val points = (0 until 21).map { i -> (500f + i * 2f) to (600f - i * 5f) }
+        val hand = BoxObservation(
+            kind = "hand",
+            label = "hand",
+            score = 0.95f,
+            left = 490f,
+            top = 500f,
+            right = 550f,
+            bottom = 610f,
+            points = points,
+            depths = emptyList(),
+            trackId = 1,
+        )
+
+        // Depth lookup returns exact 1.8m for tip and 1.6m for MCP
+        val depthLookup: (Float, Float) -> Float = { normX, normY ->
+            if (normY < 0.40f) 1.8f else 1.6f
+        }
+
+        val ray3D = CameraSpatial3D.constructHandRay3D(hand, intrinsics, baseDepth = 0.5f, depthLookup = depthLookup)
+        assertNotNull(ray3D)
+        assertEquals(1.8f, ray3D!!.origin.z, 0.05f)
+        assertTrue("Ray must aim forward", ray3D.direction.z > 0f)
+    }
+
+    @Test
     fun reconstructObjectSurfaceCreatesValid3DPointCloud() {
         val intrinsics = CameraSpatial3D.CameraIntrinsics.forViewport(1080, 1440, 68f)
         val polygon = listOf(
