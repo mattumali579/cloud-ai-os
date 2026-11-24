@@ -100,14 +100,16 @@ services:
 
   n8n:
     restart: unless-stopped
-    image: docker.n8n.io/n8nio/n8n
+    # Pinned (2026-11-23 GB-2). Upgrade: back up the n8n-data volume, test the new
+    # tag on a restored copy, then bump this tag. Rollback image: 2.41.6-local-backup.
+    image: docker.n8n.io/n8nio/n8n:2.48.8
     ports:
       # Loopback only (security 2026-11-23): n8n must never be reachable off-host.
       - "127.0.0.1:5679:5678"   # host 5679: 5678 is commonly taken by other local n8n instances
       - "[::1]:5679:5678"
-    env_file:
-      - path: ../../.env         # supplies N8N_BASIC_AUTH_USER / N8N_BASIC_AUTH_PASSWORD
-        required: false
+    # No env_file (GB-2): the container used to load the whole repo .env (GitHub,
+    # Twilio, SMTP, Discord, DB secrets). The two retained workflows need none of
+    # them; the encryption key lives in the volume (/home/node/.n8n/config).
     environment:
       # SQLite backend by default (contract Â§12) â€” protects the Supabase 500 MB budget.
       NODE_OPTIONS: "--max-old-space-size=512"
@@ -115,12 +117,29 @@ services:
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_PERSONALIZATION_ENABLED: "false"
-      # Revenue OS workflows intentionally read these internal runtime values.
-      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
-      AGENT_API_URL: "http://agent-api:8080"
-      AGENT_API_TOKEN: "${AGENT_API_TOKEN}"
+      # Retained workflows (library collector, error reporter) read no $env values.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"
+      # n8n 2.x always uses the internal JS task runner. This flag is ignored;
+      # a blocked runner event loop still fails the ~30s heartbeat.
+      N8N_RUNNERS_ENABLED: "false"
+      # Keep the collector's multi-minute API run inside the task budget.
+      # Upstream will otherwise drop the default from 300s to 60s.
+      N8N_RUNNERS_TASK_TIMEOUT: "600"
+      N8N_RUNNERS_HEARTBEAT_INTERVAL: "30"
+      # child_process: library collector runs /data/scripts/library_collector.mjs.
+      # fs/path/crypto: collector + error reporter write under /data/research-alerts.
+      NODE_FUNCTION_ALLOW_BUILTIN: child_process,fs,path,crypto
     volumes:
       - n8n-data:/home/node/.n8n
+      - type: bind
+        source: ../../work/research-alerts
+        target: /data/research-alerts
+      - type: bind
+        source: ../../scripts
+        target: /data/scripts
+        read_only: true
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null 2>&1 || exit 1"]
       interval: 15s

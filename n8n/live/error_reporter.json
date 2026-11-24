@@ -1,0 +1,51 @@
+{
+    "id":  "z1LSLiNvQ2RSOfnN",
+    "name":  "Jarvis Error Reporter → Muse",
+    "nodes":  [
+                  {
+                      "id":  "err-trigger",
+                      "name":  "Error Trigger",
+                      "type":  "n8n-nodes-base.errorTrigger",
+                      "typeVersion":  1,
+                      "position":  [
+                                       -480,
+                                       0
+                                   ],
+                      "parameters":  {
+
+                                     }
+                  },
+                  {
+                      "id":  "err-dedupe",
+                      "name":  "Dedupe \u0026 Format",
+                      "notes":  "Suppress duplicate alerts for the same workflow+node+message within 30 minutes. Writes a Muse-visible marker under /data/research-alerts.",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       -240,
+                                       0
+                                   ],
+                      "parameters":  {
+                                         "jsCode":  "const fs = require(\u0027fs\u0027);\nconst path = require(\u0027path\u0027);\nconst crypto = require(\u0027crypto\u0027);\n\nconst root = \u0027/data/research-alerts\u0027;\nconst statePath = path.join(root, \u0027n8n_error_alert_state.json\u0027);\nconst outboxDir = path.join(root, \u0027muse-alerts\u0027);\nfs.mkdirSync(outboxDir, { recursive: true });\n\nconst exec = $input.first().json || {};\nconst wf = exec.workflow || {};\nconst execInfo = exec.execution || {};\nconst err = execInfo.error || exec.error || {};\nconst workflowId = String(wf.id || exec.workflowId || \u0027unknown\u0027);\nconst workflowName = String(wf.name || workflowId);\nconst nodeName = String((err.node || {}).name || err.node || \u0027unknown\u0027);\nconst message = String(err.message || \u0027n8n execution failed\u0027).slice(0, 500);\nconst executionId = String(execInfo.id || exec.id || \u0027\u0027);\nconst fingerprint = crypto\n  .createHash(\u0027sha256\u0027)\n  .update([workflowId, nodeName, message].join(\u0027|\u0027))\n  .digest(\u0027hex\u0027)\n  .slice(0, 24);\n\nlet state = { alerts: {} };\ntry {\n  if (fs.existsSync(statePath)) {\n    state = JSON.parse(fs.readFileSync(statePath, \u0027utf8\u0027)) || { alerts: {} };\n  }\n} catch (e) {\n  state = { alerts: {} };\n}\nstate.alerts = state.alerts || {};\n\nconst now = Date.now();\nconst windowMs = 30 * 60 * 1000;\nconst prev = state.alerts[fingerprint];\nconst suppress = !!(prev \u0026\u0026 (now - Number(prev.ts || 0)) \u003c windowMs);\n\nconst payload = {\n  kind: \u0027n8n_error\u0027,\n  fingerprint,\n  suppress,\n  checked_at: new Date(now).toISOString(),\n  workflow_id: workflowId,\n  workflow_name: workflowName,\n  node: nodeName,\n  message,\n  execution_id: executionId,\n  muse_route: \u0027monitor_gateway_poll\u0027,\n};\n\nstate.alerts[fingerprint] = {\n  ts: now,\n  count: Number((prev \u0026\u0026 prev.count) || 0) + 1,\n  last_execution_id: executionId,\n  suppress,\n};\n// prune old fingerprints (\u003e24h)\nfor (const [k, v] of Object.entries(state.alerts)) {\n  if (now - Number(v.ts || 0) \u003e 24 * 60 * 60 * 1000) delete state.alerts[k];\n}\nfs.writeFileSync(statePath, JSON.stringify(state, null, 2));\nfs.writeFileSync(path.join(outboxDir, \u0027latest_error.json\u0027), JSON.stringify(payload, null, 2));\nif (!suppress) {\n  fs.writeFileSync(\n    path.join(outboxDir, `error-${fingerprint}-${executionId || now}.json`),\n    JSON.stringify(payload, null, 2)\n  );\n}\n\nreturn [{ json: payload }];"
+                                     }
+                  }
+              ],
+    "connections":  {
+                        "Error Trigger":  {
+                                              "main":  [
+                                                           [
+                                                               {
+                                                                   "node":  "Dedupe \u0026 Format",
+                                                                   "type":  "main",
+                                                                   "index":  0
+                                                               }
+                                                           ]
+                                                       ]
+                                          }
+                    },
+    "settings":  {
+                     "timezone":  "America/Chicago",
+                     "executionOrder":  "v1",
+                     "callerPolicy":  "any"
+                 }
+}

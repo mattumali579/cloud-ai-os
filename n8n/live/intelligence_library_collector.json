@@ -1,0 +1,58 @@
+{
+    "id":  "OANO8Vu5znOMvi1k",
+    "name":  "Intelligence Library Collector",
+    "nodes":  [
+                  {
+                      "id":  "a11c0e6e-1111-4b7a-9c01-intel-sched-0001",
+                      "name":  "Every 2 hours",
+                      "type":  "n8n-nodes-base.scheduleTrigger",
+                      "typeVersion":  1.2,
+                      "position":  [
+                                       260,
+                                       300
+                                   ],
+                      "parameters":  {
+                                         "rule":  {
+                                                      "interval":  [
+                                                                       {
+                                                                           "field":  "hours",
+                                                                           "hoursInterval":  2
+                                                                       }
+                                                                   ]
+                                                  }
+                                     }
+                  },
+                  {
+                      "id":  "b22d1f7f-2222-4c8b-9d02-intel-code-0002",
+                      "name":  "Run library collector",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       560,
+                                       300
+                                   ],
+                      "parameters":  {
+                                         "jsCode":  "const { execFile } = require(\u0027child_process\u0027);\nconst fs = require(\u0027fs\u0027);\nconst args = [\n  \u0027/data/scripts/library_collector.mjs\u0027,\n  \u0027--queue\u0027, \u0027/data/research-alerts/research_queue.json\u0027,\n  \u0027--existing-ids\u0027, \u0027/data/research-alerts/sheet_ids.json\u0027,\n  \u0027--seen\u0027, \u0027/data/research-alerts/n8n_seen.json\u0027,\n  \u0027--state\u0027, \u0027/data/research-alerts/n8n_collector_state.json\u0027,\n  \u0027--out-dir\u0027, \u0027/data/research-alerts/incoming\u0027,\n  \u0027--max-new\u0027, \u002770\u0027,\n  \u0027--topics-per-run\u0027, \u002712\u0027,\n  \u0027--per-source\u0027, \u00278\u0027,\n];\nconst started = Date.now();\n\nfunction batchWrittenThisRun() {\n  const dir = \u0027/data/research-alerts/incoming\u0027;\n  let best = \u0027\u0027;\n  let bestMtime = 0;\n  for (const name of fs.readdirSync(dir)) {\n    if (name.indexOf(\u0027n8n-append-\u0027) !== 0 || name.slice(-5) !== \u0027.json\u0027) continue;\n    const full = dir + \u0027/\u0027 + name;\n    const mtime = fs.statSync(full).mtimeMs;\n    if (mtime + 2000 \u003e= started \u0026\u0026 mtime \u003e= bestMtime) {\n      best = full;\n      bestMtime = mtime;\n    }\n  }\n  return best;\n}\n\nconst executed = await new Promise((resolve) =\u003e {\n  execFile(\u0027/usr/local/bin/node\u0027, args, {\n    encoding: \u0027utf8\u0027,\n    timeout: 540000,\n    maxBuffer: 12 * 1024 * 1024,\n  }, (error, stdout, stderr) =\u003e {\n    resolve({\n      output: stdout ? String(stdout) : \u0027\u0027,\n      errMsg: error ? String(error.message || error) : \u0027\u0027,\n      stderr: stderr ? String(stderr) : \u0027\u0027,\n    });\n  });\n});\n\nlet parsed = null;\ntry { parsed = JSON.parse(executed.output); } catch (e) { parsed = null; }\nif (parsed \u0026\u0026 parsed.ok) {\n  return [{ json: parsed }];\n}\nconst latest = batchWrittenThisRun();\nif (latest) {\n  const payload = JSON.parse(fs.readFileSync(latest, \u0027utf8\u0027));\n  return [{ json: { ok: true, recovered: true, warning: executed.errMsg, json: latest, count: payload.new_count } }];\n}\nthrow new Error(\u0027collector failed: \u0027 + executed.errMsg + \u0027\\n\u0027 + executed.stderr + \u0027\\n\u0027 + executed.output);\n"
+                                     }
+                  }
+              ],
+    "connections":  {
+                        "Every 2 hours":  {
+                                              "main":  [
+                                                           [
+                                                               {
+                                                                   "node":  "Run library collector",
+                                                                   "type":  "main",
+                                                                   "index":  0
+                                                               }
+                                                           ]
+                                                       ]
+                                          }
+                    },
+    "settings":  {
+                     "executionTimeout":  3600,
+                     "timezone":  "America/Chicago",
+                     "executionOrder":  "v1",
+                     "errorWorkflow":  "z1LSLiNvQ2RSOfnN"
+                 }
+}

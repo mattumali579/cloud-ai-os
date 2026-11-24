@@ -21,3 +21,27 @@ kept off GitHub (`docs/security/*.local.md` is git-ignored).
   broken endpoint fails the run); weekly gitleaks history scan and pip-audit.
 - **Dependencies.** `.github/dependabot.yml` enables weekly, rate-limited
   Dependabot version updates for pip and GitHub Actions.
+
+## 2026-11-23 - n8n audit and cleanup (Grok Bot, task GB-2)
+
+- **Backed up before changes.** Backups include every workflow, an encrypted
+  credential export, and the full n8n data volume, which holds the encryption-key
+  file and the execution history. A restore into a scratch, loopback-only n8n
+  container was verified: 16/16 workflows were present and 2/2 credentials
+  decrypted. The scratch container was removed afterwards.
+- **16 workflows were reduced to 2 active.** Kept: Intelligence Library
+  Collector and Jarvis Error Reporter. Disabled: Lead Discovery, ONLINE_MONEY_RESEARCH
+  and Sales Optimizer, because their output was unused or stuck. Deleted: 11
+  inactive or test workflows. See `n8n/live/README.md`.
+- **n8n 2.41.6 → 2.48.8, pinned.** The upgrade was tested on a restored copy
+  first. A pre-upgrade volume backup and a local rollback image tag are kept.
+- **Least privilege.** The n8n container no longer loads the repo `.env`, which
+  holds GitHub, SMTP, Twilio and DB secrets. Container env went from 100
+  variables to 24, none of them secrets. `$env` access from nodes is blocked.
+  Ports stay loopback-only.
+- **Collector relevance gate.** About 95% of collector rows were off-topic. The
+  first gated production runs produced 23/23 and 1/1 on-topic rows, in an
+  unchanged file format.
+- **Failure path tested.** A temporary failing workflow triggered the error
+  reporter, which wrote an alert file. The Muse monitor gateway reported the
+  failed execution. The probe workflow was then deleted.
