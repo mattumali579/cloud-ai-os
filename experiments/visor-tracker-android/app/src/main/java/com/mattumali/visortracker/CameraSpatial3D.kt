@@ -314,7 +314,7 @@ object CameraSpatial3D {
         val frameW = intrinsics.width.toFloat()
         val frameH = intrinsics.height.toFloat()
 
-        // 1. Check if true per-pixel depth map can directly supply hand depths
+        // 1. Check if true per-pixel depth map can directly supply hand depths within plausible reach of glasses (0.20m - 1.30m)
         val tipDepth = if (depthLookup != null && frameW > 0 && frameH > 0) {
             depthLookup(uTip.first / frameW, uTip.second / frameH)
         } else 0f
@@ -325,8 +325,9 @@ object CameraSpatial3D {
             depthLookup(uWrist.first / frameW, uWrist.second / frameH)
         } else 0f
 
-        val hasValidPixelDepth = tipDepth > 0.05f && tipDepth.isFinite() &&
-            mcpDepth > 0.05f && mcpDepth.isFinite()
+        val hasValidPixelDepth = tipDepth in 0.20f..1.30f &&
+            mcpDepth in 0.20f..1.30f &&
+            tipDepth.isFinite() && mcpDepth.isFinite()
 
         val zCalibrated: Float
         val pTip: Vector3

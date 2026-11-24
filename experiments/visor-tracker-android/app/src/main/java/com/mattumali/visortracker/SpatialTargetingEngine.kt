@@ -429,11 +429,10 @@ class SpatialTargetingEngine(
         var isReleased = false
 
         val hitModeProvenance = when {
-            strict3DMode && !depthSynchronized -> "3D_UNAVAILABLE"
+            strict3DMode && !depthSynchronized -> "depth_frame_mismatch"
             hit3D != null -> {
                 if (hit3D.intersectionMode == CameraSpatial3D.IntersectionMode.TRUE_SURFACE_INTERSECTION) "new_3d_hit" else "estimated_proximity"
             }
-            strict3DMode -> "NO_TARGET"
             else -> "no_target"
         }
 
