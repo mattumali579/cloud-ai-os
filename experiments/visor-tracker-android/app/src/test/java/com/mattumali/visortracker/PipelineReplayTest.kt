@@ -38,7 +38,8 @@ class PipelineReplayTest {
         assertTrue(motion.movedLeft > motion.firstLeft)
         assertTrue(motion.movedProjectedLeft > motion.firstProjectedLeft)
         assertTrue(motion.movedVisible)
-        assertEquals(false, motion.marginVisible)
+        // Aspect-fit preserves the camera margin instead of cover-cropping it.
+        assertEquals(true, motion.marginVisible)
         assertTrue(motion.disappeared)
     }
 

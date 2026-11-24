@@ -25,12 +25,15 @@ class ProductionTrackerTest {
         val first = tracker.step(listOf(cup, hand), 220, 160)
         assertEquals(GestureState.POINTING_CONFIRMED, first.state)
         assertNull(first.lockId)
-        val locked = tracker.step(listOf(cup, hand), 220, 160)
+        var locked = first
+        repeat(5) { locked = tracker.step(listOf(cup, hand), 220, 160) }
         val cupId = locked.boxes.first { it.label == "cup" }.trackId
         assertEquals(cupId, locked.lockId)
         assertEquals(true, locked.ray)
         val arm = BoxObservation("object", "person", 0.8f, 0f, 40f, 70f, 150f)
-        val dropped = tracker.step(listOf(cup, arm), 220, 160)
+        var dropped = tracker.step(listOf(cup, arm), 220, 160)
+        assertEquals(cupId, dropped.lockId)
+        repeat(3) { dropped = tracker.step(listOf(cup, arm), 220, 160) }
         assertEquals(GestureState.ARM_VISIBLE, dropped.state)
         assertNull(dropped.lockId)
     }

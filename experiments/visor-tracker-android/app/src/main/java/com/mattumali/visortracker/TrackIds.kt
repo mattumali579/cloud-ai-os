@@ -19,6 +19,8 @@ data class BoxObservation(
     val held: Boolean = false,
     /** True when the skeleton was built from an EfficientDet arm box, not MediaPipe. */
     val synthetic: Boolean = false,
+    /** True only for a strict grounded box returned by the opt-in VLM fallback. */
+    val grounded: Boolean = false,
 ) {
     fun area(): Float = max(0f, right - left) * max(0f, bottom - top)
 }

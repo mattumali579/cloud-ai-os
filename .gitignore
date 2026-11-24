@@ -32,3 +32,27 @@ test-recordings/
 # Lead engine: company/contact data never goes into this PUBLIC repo
 data/lead_history/
 state/lead_engine/
+
+# Large vision models & weights
+*.pt
+*.onnx
+*.tflite
+!experiments/visor-tracker-android/app/src/main/assets/yolo26n-seg.onnx
+experiments/visor-tracker-android/app/src/main/assets/models/
+patch_*.py
+benchmark_*.py
+
+# Android build artifacts and Gradle caches
+experiments/visor-tracker-android/.gradle/
+experiments/visor-tracker-android/build/
+experiments/visor-tracker-android/app/build/
+experiments/visor-tracker-android/local.properties
+experiments/visor-tracker-android/release-apks/
+experiments/visor-tracker-android/signed-apk/
+experiments/visor-tracker-android/ci-artifact/
+experiments/visor-tracker-android/release_notes_*.md
+.agents/
+experiments/visor-tracker-android/.kotlin/
+challenge_*.py
+
+scratch/

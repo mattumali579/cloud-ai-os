@@ -80,6 +80,9 @@ class OverlayTrackingService : Service() {
     private val grayFrames = AtomicInteger(0)
     private val detectorBusy = AtomicBoolean(false)
     private val stageFaults = StageFaults()
+    private val groundedVision by lazy { OnDemandVisionQA(applicationContext) }
+    private val groundingGate = GroundingRequestGate()
+    private val groundedCandidates = GroundedCandidateCache()
     private val totalInferences = AtomicInteger(0)
     private val rawDetections = AtomicInteger(0)
     private val stages = StageTimings()
@@ -95,7 +98,11 @@ class OverlayTrackingService : Service() {
     private var streamJob: Job? = null
     private var running = false
     private var includeHandsFaces = false
-    private var preset = DetectionPreset.FAST
+    private var preset = DetectionPreset.YOLO26_SEG
+    private var enableDepth = true
+    private var strict3D = true
+    private var depthBackendName = DepthEstimator.DepthBackend.YOLO26_DEPTH.name
+    private var cloudGroundingEnabled = false
     private var lastObjectOfferedAtMs = 0L
     private var lastHandOfferedAtMs = 0L
     @Volatile private var lastObjectFrame: FrameDetections? = null
@@ -159,6 +166,11 @@ class OverlayTrackingService : Service() {
             }
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_CLEAR_PRIVATE_CAPTURES) {
+            PrivateFrameCapture(this).clearAllCaptures()
+            report("Private captures cleared")
+            return START_NOT_STICKY
+        }
         if (running) return START_NOT_STICKY
         readVersion()
         if (!Settings.canDrawOverlays(this)) {
@@ -168,17 +180,31 @@ class OverlayTrackingService : Service() {
             return START_NOT_STICKY
         }
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        privateCaptureEnabled = prefs.getBoolean(PREF_PRIVATE_CAPTURE, false)
+        cloudGroundingEnabled = prefs.getBoolean(PREF_CLOUD_GROUNDING, false)
+        if (privateCaptureEnabled) {
+            privateCapture = PrivateFrameCapture(this)
+        }
         includeHandsFaces = intent?.getBooleanExtra(
             EXTRA_ALL_DETECTORS, prefs.getBoolean(PREF_HANDS_FACES, false)
         ) ?: prefs.getBoolean(PREF_HANDS_FACES, false)
         preset = DetectionPreset.read(
-            intent?.getStringExtra(EXTRA_PRESET) ?: prefs.getString(PREF_PRESET, null)
+            intent?.getStringExtra(EXTRA_PRESET) ?: prefs.getString(PREF_PRESET, DetectionPreset.YOLO26_SEG.name)
         )
+        enableDepth = intent?.getBooleanExtra(
+            EXTRA_ENABLE_DEPTH, prefs.getBoolean(PREF_ENABLE_DEPTH, true)
+        ) ?: prefs.getBoolean(PREF_ENABLE_DEPTH, true)
+        strict3D = intent?.getBooleanExtra(
+            EXTRA_STRICT_3D, prefs.getBoolean(PREF_STRICT_3D, true)
+        ) ?: prefs.getBoolean(PREF_STRICT_3D, true)
+        depthBackendName = intent?.getStringExtra(EXTRA_DEPTH_BACKEND)
+            ?: (prefs.getString(PREF_DEPTH_BACKEND, DepthEstimator.DepthBackend.YOLO26_DEPTH.name) ?: DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
 
         createChannel()
         startForeground(NOTIFICATION_ID, notification("Attaching the Live View proof mark"))
         try {
             val view = TrackingOverlayView(applicationContext)
+            view.setStrict3DMode(strict3D)
             windows.addView(view, overlayLayout())
             overlay = view
             overlayAttached = true
@@ -197,7 +223,12 @@ class OverlayTrackingService : Service() {
         refreshTile()
         mainHandler.removeCallbacks(diagnosticTick)
         mainHandler.post(diagnosticTick)
-        report("Loading " + preset.name.lowercase() + " detector (VDK video up to 30 FPS)")
+        val depthBackend = try {
+            DepthEstimator.DepthBackend.valueOf(depthBackendName ?: DepthEstimator.DepthBackend.YOLO26_DEPTH.name)
+        } catch (_: Exception) {
+            DepthEstimator.DepthBackend.YOLO26_DEPTH
+        }
+        report("Loading " + preset.name.lowercase() + " detector with " + (if (enableDepth) depthBackend.name else "no depth") + " (VDK video up to 30 FPS)")
         worker.execute {
             try {
                 val ready = VisionPipeline(
@@ -205,13 +236,11 @@ class OverlayTrackingService : Service() {
                     includeFaces = includeHandsFaces,
                     preset = preset,
                     includeHands = true,
-                    // v0.28 phone stability hotfix: the original build starts
-                    // the GPU hand delegate and two native model calls at once.
-                    // Keep finger locking, object detection and the newer lock
-                    // logic, but use CPU and serialized inference until real
-                    // Android 16/Visor camera-stream testing proves overlap safe.
                     attemptGpu = false,
                     overlapModels = false,
+                    objectBackend = if (preset == DetectionPreset.YOLO26_SEG) VisionPipeline.ObjectBackend.YOLO26_SEG else VisionPipeline.ObjectBackend.EFFICIENT_DET,
+                    enableDepth = enableDepth,
+                    depthBackend = depthBackend,
                 )
                 mainHandler.post {
                     if (!running) {
@@ -506,7 +535,24 @@ class OverlayTrackingService : Service() {
                 "objects=$objectCount seq=${frame.sequence} objectsRan=$runObjects hands=$runHands " +
                     "skipped=$dropLocked handDelegate=${vision.handDelegate}",
             )
+            val currentPreset = preset
+            val currentDepth = if (enableDepth) depthBackendName else "OFF"
+            val currentObjMs = vision.lastObjectMs
+            val currentDepthMs = vision.lastDepthMs
+            val currentHandMs = vision.lastHandMs
+            mainHandler.post {
+                overlay?.setPipelineInfo(
+                    detector = if (currentPreset == DetectionPreset.YOLO26_SEG) "YOLO26n-seg" else currentPreset.name,
+                    depthBackend = currentDepth,
+                    objectMs = currentObjMs,
+                    depthMs = currentDepthMs,
+                    handMs = currentHandMs,
+                )
+            }
             val stampedSource = detections.copy(sequence = frame.sequence, capturedAtMs = frame.capturedAtMs)
+            if (privateCaptureEnabled) {
+                privateCapture?.captureFrame(rgb, frame.sequence, frame.capturedAtMs, stampedSource.boxes)
+            }
             if (runObjects) {
                 objectSkipUsed = false
                 lastObjectFrame = stampedSource
@@ -520,7 +566,9 @@ class OverlayTrackingService : Service() {
             } else {
                 stampedSource
             }
-            val fresh = session.fusion.offer(stamped, SystemClock.elapsedRealtime())
+            val nowElapsed = SystemClock.elapsedRealtime()
+            val fused = session.fusion.offer(stamped, nowElapsed)
+            val fresh = fused?.let { groundedCandidates.append(it, overlay?.groundingHint(), nowElapsed) }
             if (fresh == null) {
                 handoff.metrics.onStaleDetection()
                 deviceLog("drop", "stale seq=${frame.sequence}")
@@ -541,6 +589,7 @@ class OverlayTrackingService : Service() {
                     }
                 },
             )
+            maybeRequestGrounding(rgb, fresh)
             failureLog.remember(fresh, lockId)
             val motionQueued = anchor != null && MainThreadLockWait.queueDetection(lockResult.get())
             if (motionQueued) {
@@ -673,6 +722,36 @@ class OverlayTrackingService : Service() {
         }
     }
 
+    private fun maybeRequestGrounding(bitmap: Bitmap, frame: FrameDetections) {
+        if (!cloudGroundingEnabled) return
+        val hint = overlay?.groundingHint()
+        val now = SystemClock.elapsedRealtime()
+        if (!groundingGate.shouldRequest(hint, now) || hint == null) return
+        val snapshot = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        groundedVision.locatePointedObjects(
+            bitmap = snapshot,
+            hint = hint,
+            cloudConsentGranted = true,
+        ) { result ->
+            try {
+                if (!running) return@locatePointedObjects
+                if (result.error != null) {
+                    deviceLog("grounding", "failed: ${result.error}")
+                    return@locatePointedObjects
+                }
+                val boxes = result.objects.map { it.toObservation(frame.width, frame.height) }
+                groundedCandidates.replace(boxes, hint, SystemClock.elapsedRealtime())
+                deviceLog(
+                    "grounding",
+                    "objects=${boxes.size} latency=${result.latencyMs}ms seq=${hint.sequence}",
+                )
+            } finally {
+                snapshot.recycle()
+                groundingGate.complete()
+            }
+        }
+    }
+
     private val displayCallbacks = object : ComponentCallbacks {
         override fun onConfigurationChanged(newConfig: Configuration) {
             val view = overlay ?: return
@@ -797,6 +876,9 @@ class OverlayTrackingService : Service() {
     }
 
     @Suppress("DEPRECATION")
+    private var privateCapture: PrivateFrameCapture? = null
+    private var privateCaptureEnabled: Boolean = false
+
     private fun readVersion() {
         val info = packageManager.getPackageInfo(packageName, 0)
         versionName = info.versionName ?: "?"
@@ -863,6 +945,8 @@ class OverlayTrackingService : Service() {
         worker.shutdown()
         motionWorker.shutdown()
         pendingDetection.set(null)
+        groundingGate.reset()
+        groundedCandidates.clear()
         if (!failed) lastStatus = "SERVICE STOPPED | Tracking service is not running"
         super.onDestroy()
     }
@@ -878,9 +962,18 @@ class OverlayTrackingService : Service() {
     companion object {
         const val PREFS = "tracker"
         const val PREF_PRESET = "detector_preset"
+        const val PREF_DEPTH_BACKEND = "depth_backend"
+        const val PREF_ENABLE_DEPTH = "enable_depth"
+        const val PREF_STRICT_3D = "strict_3d_mode"
         const val PREF_HANDS_FACES = "detect_hands_faces"
         const val PREF_PROBE = "show_overlay_probe"
+        const val PREF_PRIVATE_CAPTURE = "opt_in_private_capture"
+        const val PREF_CLOUD_GROUNDING = "opt_in_cloud_grounding"
+        const val ACTION_CLEAR_PRIVATE_CAPTURES = "com.mattumali.visortracker.CLEAR_PRIVATE_CAPTURES"
         const val EXTRA_PRESET = "preset"
+        const val EXTRA_DEPTH_BACKEND = "depth_backend"
+        const val EXTRA_ENABLE_DEPTH = "enable_depth"
+        const val EXTRA_STRICT_3D = "strict_3d"
         const val ACTION_START = "com.mattumali.visortracker.START_OVERLAY"
         const val ACTION_STOP = "com.mattumali.visortracker.STOP_OVERLAY"
         const val ACTION_CALIBRATE = "com.mattumali.visortracker.CALIBRATE_DISTANCE"

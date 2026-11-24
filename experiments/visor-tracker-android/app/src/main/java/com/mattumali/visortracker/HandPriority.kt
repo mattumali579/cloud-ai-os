@@ -21,7 +21,7 @@ object HandPriority {
             hand.kind == "hand" && hand.points.size >= 21 && hand.area() > 0f
         }
         return observations.filterNot { candidate ->
-            candidate.kind == "object" && (
+            candidate.kind == "object" && !candidate.grounded && (
                 wearerArm(candidate, frameWidth, frameHeight) ||
                     (hands.isNotEmpty() && hands.any { hand ->
                         sameHandRegion(candidate, hand) || armLabeledPerson(candidate, hand)
@@ -38,6 +38,11 @@ object HandPriority {
         if (IndexPoint.extended(hand, frameWidth, frameHeight) != null) "pointing hand" else "hand"
 
     private fun sameHandRegion(person: BoxObservation, hand: BoxObservation): Boolean {
+        val neverHand = person.label.lowercase() in setOf(
+            "laptop", "tv", "bed", "couch", "chair", "dining table", "refrigerator", "bench", "table", "book", "clock", "airplane", "suitcase", "backpack", "handbag"
+        )
+        if (neverHand) return false
+
         val intersectionWidth = max(0f, min(person.right, hand.right) - max(person.left, hand.left))
         val intersectionHeight = max(0f, min(person.bottom, hand.bottom) - max(person.top, hand.top))
         val handArea = hand.area()
@@ -63,9 +68,10 @@ object HandPriority {
         val personH = person.bottom - person.top
         val personW = person.right - person.left
         val span = max(hand.right - hand.left, hand.bottom - hand.top).coerceAtLeast(24f)
-        val looksLikeBody = personH > personW * 1.6f &&
+        val looksLikeBody = (personH > personW * 1.6f &&
             personH > span * 6f &&
-            person.area() > hand.area() * 20f
+            person.area() > hand.area() * 20f) ||
+            (person.area() > hand.area() * 20f && personH > personW * 1.1f && personH > span * 3.5f)
         return !looksLikeBody
     }
 
@@ -86,13 +92,14 @@ object HandPriority {
         if (!fromLeft && !fromRight && !fromBottom) return false
         val boxH = person.bottom - person.top
         val boxW = person.right - person.left
+        if (fromBottom && !fromLeft && !fromRight && boxH < boxW * 1.05f) return false
         val frameArea = frameWidth.toFloat() * frameHeight.toFloat()
         val frac = person.area() / frameArea
         if (label != "person") {
             if (frac < 0.04f || frac > 0.35f) return false
             if (boxH < boxW * 1.05f) return false
         }
-        val standingFigure = boxH > boxW * 1.8f &&
+        val standingFigure = boxH > boxW * 1.20f &&
             person.top < frameHeight * 0.18f &&
             boxH > frameHeight * 0.50f
         return !standingFigure

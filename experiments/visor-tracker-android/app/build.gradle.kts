@@ -12,10 +12,16 @@ android {
         applicationId = "com.mattumali.visortracker.stable"
         minSdk = 26
         targetSdk = 35
-        versionCode = 40
-        versionName = "0.39.0"
+        versionCode = 43
+        versionName = "0.43.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        val geminiKey = System.getenv("VISOR_GEMINI_API_KEY").orEmpty()
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+        buildConfigField("String", "VISOR_GEMINI_API_KEY", "\"$geminiKey\"")
     }
+
+    buildFeatures { buildConfig = true }
 
     // Optional persistent signing for future in-place updates. With no stored
     // secret, CI continues producing a normal ephemeral debug APK for tests.
@@ -67,7 +73,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    testOptions { unitTests.isReturnDefaultValues = true }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            it.systemProperties(System.getProperties().mapKeys { (k, _) -> k.toString() })
+            it.environment(System.getenv())
+        }
+    }
 }
 
 dependencies {
@@ -75,7 +87,13 @@ dependencies {
     implementation("com.macedonga.visor:kit:0.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.19.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:core:1.6.1")

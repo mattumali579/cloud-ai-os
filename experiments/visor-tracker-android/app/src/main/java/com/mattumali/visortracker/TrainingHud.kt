@@ -18,9 +18,27 @@ object TrainingHud {
         val indexX: Float?,
         val indexY: Float?,
         val score: Float?,
+        val detector: String = "YOLO26n-seg",
+        val depthBackend: String = "YOLO26-Depth",
+        val objectMs: Long = 0L,
+        val depthMs: Long = 0L,
+        val handMs: Long = 0L,
+        val strict3DMode: Boolean = false,
+        val lockProvenance: String = "no_target",
     )
 
-    fun status(frame: FrameDetections, lockedId: Int?, ray: PointingRay? = IndexPoint.ray(frame)): Status {
+    fun status(
+        frame: FrameDetections,
+        lockedId: Int?,
+        ray: PointingRay? = IndexPoint.ray(frame),
+        detector: String = "YOLO26n-seg",
+        depthBackend: String = "YOLO26-Depth",
+        objectMs: Long = 0L,
+        depthMs: Long = 0L,
+        handMs: Long = 0L,
+        strict3DMode: Boolean = false,
+        lockProvenance: String = "no_target",
+    ): Status {
         val hands = frame.boxes.filter { it.kind == "hand" && !it.held && it.points.size >= 21 }
         val pointing = ray != null
         val primary = hands.firstOrNull { IndexPoint.extended(it, frame.width, frame.height) != null }
@@ -45,18 +63,39 @@ object TrainingHud {
             indexX = tip?.first,
             indexY = tip?.second,
             score = primary?.score,
+            detector = detector,
+            depthBackend = depthBackend,
+            objectMs = objectMs,
+            depthMs = depthMs,
+            handMs = handMs,
+            strict3DMode = strict3DMode,
+            lockProvenance = lockProvenance,
         )
     }
 
     fun lines(status: Status, decoderFps: Float = 0f): List<String> {
         val target = if (status.targetLabel != null && status.targetId != null) {
             "${status.targetLabel} #${status.targetId}"
+        } else if (status.strict3DMode && status.lockProvenance == "depth_frame_mismatch") {
+            "none (3D_UNAVAILABLE)"
         } else {
             "none"
         }
         val fps = if (decoderFps > 0f) "%.0f".format(java.util.Locale.US, decoderFps) else "--"
         val conf = status.score?.let { "%.2f".format(java.util.Locale.US, it) } ?: "--"
+        val depthText = if (status.strict3DMode) {
+            if (status.lockProvenance == "depth_frame_mismatch" || status.depthBackend == "OFF") {
+                "3D: STRICT [3D_UNAVAILABLE]"
+            } else {
+                "3D: STRICT [ACTIVE] (${status.depthMs}ms)"
+            }
+        } else {
+            if (status.depthBackend == "OFF") "Depth: OFF" else "Depth: ${status.depthBackend} (${status.depthMs}ms)"
+        }
         return listOf(
+            "Detector: ${status.detector} (${status.objectMs}ms)",
+            depthText,
+            "Latency: Obj ${status.objectMs}ms | Hand ${status.handMs}ms",
             "Hands: ${status.hands}",
             "LMK: ${status.landmarks}",
             "State: ${status.gesture}",
