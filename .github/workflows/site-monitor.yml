@@ -1,0 +1,76 @@
+name: Site & security monitor
+
+# Free, provider-native monitoring (public repo => Actions minutes are free).
+# Hourly: uptime + auth-denial + TLS-expiry checks of Matt's public endpoints.
+# Weekly (Mon): secret scan of full git history + dependency vulnerability audit.
+# A failing run makes GitHub send its normal failed-workflow notification.
+# Nothing here restarts or redeploys anything (no blind repair loops).
+
+on:
+  schedule:
+    - cron: "23 * * * *"   # hourly site checks
+    - cron: "41 14 * * 1"  # Mondays 08:41 America/Chicago (CST): security scans
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/site-monitor.yml"
+      - ".github/scripts/site_monitor.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-monitor-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  site:
+    if: github.event_name != 'schedule' || github.event.schedule == '23 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Self-test - the monitor must FAIL on a broken endpoint
+        run: |
+          set +e
+          python .github/scripts/site_monitor.py --tls-hosts \
+            --checks-json '[["deliberately broken page","https://mattumali579.github.io/cloud-ai-os/__monitor_selftest_missing__",200,null]]'
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then echo "::error::monitor did not detect a failure (exit $code)"; exit 1; fi
+          echo "self-test OK: broken endpoint was detected (exit 1)"
+      - name: Live checks
+        run: python .github/scripts/site_monitor.py
+
+  security-scan:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.event.schedule == '41 14 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Secret scan (gitleaks, full history, findings redacted)
+        run: |
+          curl -sSfL -o /tmp/gl.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          tar -xzf /tmp/gl.tgz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --no-banner --log-opts="--all" .
+      - name: Dependency vulnerability audit (pip-audit)
+        run: |
+          python -m pip install --quiet pip-audit
+          python - <<'PY' > /tmp/req.txt
+          import tomllib
+          deps = tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]
+          skip = {"pywinauto", "visor-kit"}  # Windows-only / not on the Linux runner
+          for d in deps:
+              name = d.split("[")[0].split(">")[0].split("<")[0].split("=")[0].strip().lower()
+              if name not in skip:
+                  print(d)
+          PY
+          pip-audit -r /tmp/req.txt --progress-spinner off

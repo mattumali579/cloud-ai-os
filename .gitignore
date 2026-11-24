@@ -29,3 +29,6 @@ uv.lock
 # Lead engine: company/contact data never goes into this PUBLIC repo
 data/lead_history/
 state/lead_engine/
+
+# Detailed security audit notes stay local (this repo is PUBLIC)
+docs/security/*.local.md

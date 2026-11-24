@@ -1,0 +1,5 @@
+# Reviewed 2026-11-23 (security task GB-1):
+# - INSTALL_STATUS.md: historical MCTB demo-dashboard token; workflow inactive (webhook 404), redacted at HEAD. Rotate before re-activating that workflow.
+# - .env.example: false positive (empty N8N_BASIC_AUTH_PASSWORD placeholder).
+b98086fa23612036be85691a38883c79ad02837c:products/missed-call-textback/INSTALL_STATUS.md:generic-api-key:17
+08f836c5c14cd25f9be1cdc57a365e01fbc7dd43:.env.example:generic-api-key:79
