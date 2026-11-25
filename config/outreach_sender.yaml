@@ -14,6 +14,15 @@ campaign:
   offer_key: google_reviews_maps
   copy_source: codex-personalized-v2
   authoritative_copy: true
+  # Fail-closed pause for prospect cold SMTP and for replenishing this
+  # campaign's queue. Sending stays off until BOTH switches are explicit:
+  #   1. this boolean is true
+  #   2. OUTREACH_PROSPECT_SEND_ENABLED is 1, true, yes, or on
+  #      (process env, or the GitHub Actions variable of the same name)
+  # Unset, empty, false, or any other value refuses. Rollback is those two
+  # flips and nothing else. This does not delete queue rows, copy, contacts,
+  # or logs. Reply, bounce, and unsubscribe handling does not read this flag.
+  enabled: false
 
 pacing:
   timezone: America/Chicago
