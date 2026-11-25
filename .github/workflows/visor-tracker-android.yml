@@ -1,0 +1,151 @@
+name: Visor Tracker Android
+
+on:
+  push:
+    tags:
+      - "visor-tracker-v*"
+  pull_request:
+    paths:
+      - "experiments/visor-tracker-android/**"
+      - ".github/workflows/visor-tracker-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+      - name: Install Android SDK platform
+        run: |
+          sdkmanager --list --channel=3 | grep -E "platforms;android-37" || true
+          sdkmanager --channel=3 --install "platforms;android-37.0" "build-tools;36.0.0"
+      - name: Verify existing Tracker app identity
+        working-directory: experiments/visor-tracker-android
+        run: |
+          grep -Fq 'applicationId = "com.mattumali.visortracker.stable"' app/build.gradle.kts
+          grep -Eq 'versionCode = [1-9][0-9]*' app/build.gradle.kts
+          if [[ "$GITHUB_REF" == refs/tags/visor-tracker-v* ]]; then
+            actual="$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -1)"
+            expected="${GITHUB_REF_NAME#visor-tracker-v}"
+            test "$actual" = "$expected" || { echo "Tag and app versionCode mismatch"; exit 1; }
+          fi
+      - name: Load persistent signing key when configured
+        id: stable_signing
+        env:
+          KEYSTORE_B64: ${{ secrets.VISOR_TRACKER_KEYSTORE_B64 }}
+        run: |
+          if [[ -n "$KEYSTORE_B64" ]]; then
+            umask 077
+            mkdir -p "$RUNNER_TEMP/visor-signing"
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/visor-signing/tracker.jks"
+            echo "file=$RUNNER_TEMP/visor-signing/tracker.jks" >> "$GITHUB_OUTPUT"
+            echo "Signing: persistent keystore (certificate must match installed app)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "file=" >> "$GITHUB_OUTPUT"
+            echo "Signing: temporary debug keystore. NOT suitable for in-place upgrades across runs." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Reject unsigned public releases
+        if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
+        env:
+          SIGNING_FILE: ${{ steps.stable_signing.outputs.file }}
+        run: |
+          test -n "$SIGNING_FILE" || { echo "No stable signing key; refusing release"; exit 1; }
+      - name: Build APK and run unit tests
+        working-directory: experiments/visor-tracker-android
+        env:
+          VISOR_SIGNING_STORE_FILE: ${{ steps.stable_signing.outputs.file }}
+          VISOR_SIGNING_STORE_PASSWORD: ${{ secrets.VISOR_TRACKER_STORE_PASSWORD }}
+          VISOR_SIGNING_KEY_ALIAS: ${{ secrets.VISOR_TRACKER_KEY_ALIAS }}
+          VISOR_SIGNING_KEY_PASSWORD: ${{ secrets.VISOR_TRACKER_KEY_PASSWORD }}
+        run: gradle --no-daemon assembleDebug testDebugUnitTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: visor-tracker-debug-apk
+          path: experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Publish stable signed update to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/visor-tracker-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp experiments/visor-tracker-android/app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/Visor-Fast-Tracking.apk"
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/Visor-Fast-Tracking.apk" \
+            --title "Visor Fast Tracking ${GITHUB_REF_NAME#visor-tracker-v}" \
+            --notes "Signed same-package update for com.mattumali.visortracker.stable. Downloaded by the app's built-in updater."
+          echo "Published signed Tracker APK as a public GitHub Release" >> "$GITHUB_STEP_SUMMARY"
+
+  validate-windows-migration-script:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate migration script using Windows PowerShell 5.1 parser
+        shell: powershell
+        run: |
+          $paths = @("experiments/visor-tracker-android/scripts/Migrate-VisorTracker.ps1", "experiments/visor-tracker-android/scripts/Diagnose-PhoneInstall-WiFi.ps1")
+          foreach ($path in $paths) {
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | Format-List -Force
+            throw "Migration script has PowerShell syntax errors."
+          }
+          Write-Host "$path syntax valid on Windows PowerShell 5.1."
+          }
+
+  install-android16-with-legacy-present:
+    name: Install stable replacement on Android 16 with legacy Tracker still installed
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download the freshly built stable replacement
+        uses: actions/download-artifact@v4
+        with:
+          name: visor-tracker-debug-apk
+          path: /tmp/new-tracker
+      - name: Download v0.5 legacy-package APK for conflict regression test
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download visor-tracker-v5 -R mattumali579/cloud-ai-os \
+            --pattern Visor-Fast-Tracking.apk --dir /tmp
+          printf '0e957c8dcf42fea00fe60584a603d17cd64e304b6bb2a97e86cf9468707f455e  /tmp/Visor-Fast-Tracking.apk\n' | sha256sum -c -
+      - name: Configure KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=1"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify legacy and new stable app can both install on Android 16
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 2048M
+          heap-size: 512M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            set -euxo pipefail
+            adb wait-for-device
+            adb install /tmp/Visor-Fast-Tracking.apk
+            adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
+            adb install /tmp/new-tracker/app-debug.apk
+            adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stable'
+            adb shell dumpsys package com.mattumali.visortracker.stable | grep -E 'versionCode=7'
+            echo "PASS: same-package v0.7 Tracker installs alongside legacy on Android 16, no signing conflict"

@@ -1,0 +1,51 @@
+name: Visor Tracker APK device install smoke test
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/visor-tracker-install-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-android-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [35, 36]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=1"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Download exact v0.5 published APK and verify release SHA-256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download visor-tracker-v5 -R mattumali579/cloud-ai-os --pattern Visor-Fast-Tracking.apk --dir /tmp
+          printf '0e957c8dcf42fea00fe60584a603d17cd64e304b6bb2a97e86cf9468707f455e  /tmp/Visor-Fast-Tracking.apk\n' | sha256sum -c -
+          test "$(stat -c%s /tmp/Visor-Fast-Tracking.apk)" = "77735018"
+      - name: Install published v0.5 on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 2048M
+          heap-size: 512M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            set -euxo pipefail
+            adb wait-for-device
+            adb shell getprop ro.build.version.release
+            adb install -r /tmp/Visor-Fast-Tracking.apk
+            adb shell pm list packages | grep -Fx 'package:com.mattumali.visortracker.stream'
+            adb shell dumpsys package com.mattumali.visortracker.stream | grep -E 'versionCode=5'
