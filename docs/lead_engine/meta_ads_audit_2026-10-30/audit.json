@@ -1,0 +1,252 @@
+{
+  "observed_on": "2026-10-30",
+  "filters": {
+    "country": "United States",
+    "ad_type": "all",
+    "active_status": "active"
+  },
+  "m2_marked_complete": false,
+  "method": "Named Facebook Page in the Meta Ad Library. A row is recorded only after the library rendered that page name. Keyword results that belonged to a different advertiser are excluded.",
+  "pages": [
+    {
+      "slug": "topdogs",
+      "page_name": "TopDogs Roofing&Sheetmetal LLC",
+      "market": "Denham Springs, LA",
+      "niche": "roofing",
+      "role": "prospect",
+      "page_url": "https://www.facebook.com/3TopDogsLLC/",
+      "page_id": "161220991477746",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=161220991477746",
+      "status": "NOT FOUND IN SEARCH",
+      "result_text": "No ads match your search criteria",
+      "advertiser_conclusion": "not verified",
+      "ads": []
+    },
+    {
+      "slug": "ccc",
+      "page_name": "Capital City Comfort",
+      "market": "Baton Rouge, LA",
+      "niche": "hvac",
+      "role": "active_advertiser",
+      "page_url": "https://www.facebook.com/capital.city.comfortBR/",
+      "page_id": "688657467993628",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=688657467993628",
+      "status": "ACTIVE",
+      "result_text": "~1 result",
+      "advertiser_conclusion": "active ad visible on the named page",
+      "ads": [
+        {
+          "library_id": "27451498844472099",
+          "permalink": "https://www.facebook.com/ads/library/?id=27451498844472099",
+          "started": "2026-07-13",
+          "cta": "Get Quote",
+          "creative_read": true,
+          "angle": "Energy-efficient HVAC system, financing from $129/month, free estimate."
+        }
+      ]
+    },
+    {
+      "slug": "cool-kings",
+      "page_name": "Cool Kings Heating and Air",
+      "market": "Baton Rouge / Denham Springs, LA",
+      "niche": "hvac",
+      "role": "prospect",
+      "page_url": "https://www.facebook.com/CoolkingsheatingandairLLC/",
+      "page_id": "108146504870595",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=108146504870595",
+      "status": "NOT FOUND IN SEARCH",
+      "result_text": "No ads match your search criteria",
+      "advertiser_conclusion": "not verified",
+      "ads": []
+    },
+    {
+      "slug": "shield",
+      "page_name": "Shield Heating & Cooling",
+      "market": "Baton Rouge, LA",
+      "niche": "hvac",
+      "role": "active_advertiser",
+      "page_url": "https://www.facebook.com/shieldhvacpros/",
+      "page_id": "596319463569442",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=596319463569442",
+      "status": "ACTIVE",
+      "result_text": "~7 results",
+      "advertiser_conclusion": "active ads visible on the named page",
+      "ads": [
+        {
+          "library_id": "1370927118207199",
+          "permalink": "https://www.facebook.com/ads/library/?id=1370927118207199",
+          "started": "2026-10-20",
+          "cta": "Visit Instagram profile",
+          "creative_read": true,
+          "angle": "Educational: homeowners wait until HVAC repairs are expensive; honest inspections."
+        },
+        {
+          "library_id": "2120633455235728",
+          "permalink": "https://www.facebook.com/ads/library/?id=2120633455235728",
+          "started": "2026-10-20",
+          "cta": "Get quote",
+          "creative_read": true,
+          "angle": "Founder story: Ronnie started as an HVAC helper in 1991 and later opened Shield."
+        },
+        {
+          "library_id": "2432622423938029",
+          "permalink": "https://www.facebook.com/ads/library/?id=2432622423938029",
+          "started": "2026-10-20",
+          "cta": "Get quote",
+          "creative_read": true,
+          "angle": "Service promise: show up, explain options, treat the home with respect."
+        },
+        {
+          "library_id": "1136310275412064",
+          "permalink": "https://www.facebook.com/ads/library/?id=1136310275412064",
+          "started": null,
+          "cta": null,
+          "creative_read": false,
+          "angle": null
+        },
+        {
+          "library_id": "1586610225947035",
+          "permalink": "https://www.facebook.com/ads/library/?id=1586610225947035",
+          "started": null,
+          "cta": null,
+          "creative_read": false,
+          "angle": null
+        },
+        {
+          "library_id": "4200080033622436",
+          "permalink": "https://www.facebook.com/ads/library/?id=4200080033622436",
+          "started": null,
+          "cta": null,
+          "creative_read": false,
+          "angle": null
+        },
+        {
+          "library_id": "1139481018500300",
+          "permalink": "https://www.facebook.com/ads/library/?id=1139481018500300",
+          "started": null,
+          "cta": null,
+          "creative_read": false,
+          "angle": null
+        }
+      ]
+    },
+    {
+      "slug": "wall2wall",
+      "page_name": "Wall2Wall Construction",
+      "market": "Baton Rouge, LA",
+      "niche": "roofing",
+      "role": "active_advertiser",
+      "page_url": "https://www.facebook.com/w2wbuilt/",
+      "page_id": "185512131307247",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=185512131307247",
+      "status": "ACTIVE",
+      "result_text": "~3 results",
+      "advertiser_conclusion": "active ads visible on the named page",
+      "ads": [
+        {
+          "library_id": "1126734843275110",
+          "permalink": "https://www.facebook.com/ads/library/?id=1126734843275110",
+          "started": "2026-10-30",
+          "cta": "Get quote",
+          "creative_read": true,
+          "angle": "Roof replacement and free inspections across Greater Baton Rouge."
+        },
+        {
+          "library_id": "1098393762982230",
+          "permalink": "https://www.facebook.com/ads/library/?id=1098393762982230",
+          "started": "2026-10-30",
+          "cta": "See details",
+          "creative_read": true,
+          "angle": "Free roof inspection because damage is not always visible from the ground. Meta labeled impressions under 100."
+        },
+        {
+          "library_id": "1404950382705151",
+          "permalink": "https://www.facebook.com/ads/library/?id=1404950382705151",
+          "started": "2026-10-30",
+          "cta": "See details",
+          "creative_read": true,
+          "angle": "Team training so inspectors can explain findings. Meta labeled impressions under 100."
+        }
+      ]
+    },
+    {
+      "slug": "resolute",
+      "page_name": "Resolute Fitness",
+      "market": "Denham Springs, LA",
+      "niche": "gym",
+      "role": "audited_gym",
+      "page_url": "https://www.facebook.com/107791292064516/",
+      "page_id": "107791292064516",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=107791292064516",
+      "status": "NOT FOUND IN SEARCH",
+      "result_text": "No ads match your search criteria",
+      "advertiser_conclusion": "not verified",
+      "ads": []
+    },
+    {
+      "slug": "strength-science",
+      "page_name": "Strength Science Studios, LLC",
+      "market": "Baton Rouge, LA",
+      "niche": "gym",
+      "role": "booking_comparison",
+      "page_url": "https://www.facebook.com/StrengthScienceStudios/",
+      "page_id": "245150672839904",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=245150672839904",
+      "status": "NOT FOUND IN SEARCH",
+      "result_text": "No ads match your search criteria",
+      "advertiser_conclusion": "not verified",
+      "ads": []
+    },
+    {
+      "slug": "the-well",
+      "page_name": "The Well",
+      "market": "Baton Rouge, LA",
+      "niche": "gym",
+      "role": "active_advertiser",
+      "page_url": "https://www.facebook.com/people/The-Well/61590421362661/",
+      "page_id": "1146388685224647",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=1146388685224647",
+      "status": "ACTIVE",
+      "result_text": "~1 result",
+      "advertiser_conclusion": "active ad visible on the named page",
+      "ads": [
+        {
+          "library_id": "940335198733362",
+          "permalink": "https://www.facebook.com/ads/library/?id=940335198733362",
+          "started": "2026-10-06",
+          "cta": "Learn More",
+          "creative_read": true,
+          "angle": "Baton Rouge small-group coaching for busy people; sit down and build a plan."
+        }
+      ]
+    },
+    {
+      "slug": "sandbox",
+      "page_name": "Sandbox Training, LLC.",
+      "market": "Baton Rouge, LA",
+      "niche": "gym",
+      "role": "prospect",
+      "page_url": "https://www.facebook.com/SandboxTrainingBatonRouge/",
+      "page_id": "143361279043651",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=143361279043651",
+      "status": "NOT FOUND IN SEARCH",
+      "result_text": "No ads match your search criteria",
+      "advertiser_conclusion": "not verified",
+      "ads": []
+    },
+    {
+      "slug": "red-stick",
+      "page_name": "Red Stick Health and Performance",
+      "market": "Baton Rouge, LA",
+      "niche": "gym",
+      "role": "booking_comparison",
+      "page_url": "https://www.facebook.com/redstickhealthperformance/",
+      "page_id": "112743192075581",
+      "library_url": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=112743192075581",
+      "status": "NOT FOUND IN SEARCH",
+      "result_text": "No ads match your search criteria",
+      "advertiser_conclusion": "not verified",
+      "ads": []
+    }
+  ]
+}
